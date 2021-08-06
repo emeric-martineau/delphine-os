@@ -41,7 +41,6 @@ INTERFACE
 
 
 {DEFINE DEBUG}
-{DEFINE DEBUG_SCHEDULE}
 
 
 {$I fs.inc}
@@ -58,22 +57,27 @@ function  do_signal (signr : dword) : boolean; external;
 procedure dump_task; external;
 procedure enable_IRQ (irq : byte); external;
 procedure farjump (tss : word ; ofs : pointer); external;
-procedure initialise_compteur; external;
+procedure initialize_PIT (freq : dword); external;
 procedure outb (port : word ; val : byte); external;
 procedure printk (format : string ; args : array of const); external;
 procedure set_intr_gate (n : dword ; addr : pointer); external;
 function  signal_pending (p : P_task_struct) : dword; external;
+procedure wake_up_process (task : P_task_struct); external;
 
 
 { External variables }
-
 var
-   compteur : dword; external name 'U_TIME_COMPTEUR';
-   current  : P_task_struct; external name 'U_PROCESS_CURRENT';
-
+   jiffies      : dword; external name 'U_TIME_JIFFIES';
+   current      : P_task_struct; external name 'U_PROCESS_CURRENT';
+   first_task   : P_task_struct; external name 'U_PROCESS_FIRST_TASK';
+   nr_nanosleep : dword; external name 'U_TIME_NR_NANOSLEEP';
+   nanosleep_wq : P_wait_queue; external name 'U_TIME_NANOSLEEP_WQ';
 
 
 IMPLEMENTATION
+
+
+{$I inline.inc}
 
 
 
@@ -87,15 +91,26 @@ IMPLEMENTATION
 procedure schedule; [public, alias : 'SCHEDULE'];
 
 var
-   prev     : P_task_struct;
-   tmp, sig : dword;
+   prev, first_tsk, tmp_tsk : P_task_struct;
+   sig : dword;
 
 begin
 
-   asm
-      pushfd
-      cli
-   end;
+	pushfd();
+	pushad();
+	cli();
+
+   { Check for any pending alarm }
+   first_tsk := first_task;
+   tmp_tsk   := first_task;
+   repeat
+      if (tmp_tsk^.alarm <> 0) and (tmp_tsk^.alarm < jiffies) then
+      begin
+      	tmp_tsk^.signal[0] := tmp_tsk^.signal[0] or (1 shl (SIGALRM - 1));
+	 		tmp_tsk^.alarm := 0;
+      end;
+      tmp_tsk := tmp_tsk^.next_task;
+   until (tmp_tsk = first_tsk);
 
    prev    := current;
    current := prev^.next_run;
@@ -104,7 +119,7 @@ begin
 
    if (prev^.state = TASK_INTERRUPTIBLE) and (sig <> 0) then
    begin
-      printk('schedule: PID %d has received a signal\n', [prev^.pid]);
+{      printk('schedule: PID %d has received a signal\n', [prev^.pid]);}
       add_to_runqueue(prev);
    end;
 
@@ -120,21 +135,17 @@ begin
        current := current^.next_run;
 
    if (current <> prev) then
-   begin
-{printk('schedule: %d -> %d (state=%d)\n', [prev^.pid, current^.pid, current^.state]);}
-      farjump(current^.tss_entry, NIL);
-   end;
+       farjump(current^.tss_entry, NIL);
 
    sig := signal_pending(current);
    if (sig <> 0) then
    begin
-      {printk('schedule: PID %d has received signal %d\n', [current^.pid, sig]);}
+{      printk('schedule: PID %d has received signal %d\n', [current^.pid, sig]);}
       do_signal(sig);
    end;
 
-   asm
-      popfd
-   end;
+	popad();
+	popfd();
 
 end;
 
@@ -143,7 +154,7 @@ end;
 {******************************************************************************
  * timer_intr
  *
- * Activée uniquement par l'IRQ 0. Permet d'obtenir une valeur de "compteur"
+ * Activée uniquement par l'IRQ 0. Permet d'obtenir une valeur de "jiffies"
  * valide et d'activer le scheduler à intervalles réguliers.
  *
  * REMARQUE: Les interruptions sont automatiquement coupées.
@@ -151,18 +162,41 @@ end;
 procedure timer_intr; interrupt;
 
 var
-   r_cs : dword;
+   r_cs, r_eip   : dword;
+   tmp_wq : P_wait_queue;
+   task   : P_task_struct;
 
 begin
 
    asm
       mov   eax, [ebp + 40]   { Get CS register value }
       mov   r_cs, eax
+		mov   eax, [ebp + 36]
+		mov   r_eip, eax
    end;
 
-   { Incrémente le compteur système }
-   compteur += INTERVAL;
-   current^.ticks += 1;  { Mise à jour du temps CPU utilisé par le processus }
+{printk(' %h ', [r_eip]);}
+
+   jiffies        += 1;
+
+	{ Mise à jour du temps CPU utilisé par le processus }
+	if (r_cs = $23) then
+		 current^.utime += 1
+	else
+		 current^.stime += 1;
+
+   if (nanosleep_wq <> NIL) then
+   begin
+      tmp_wq := nanosleep_wq;
+      while (tmp_wq <> NIL) do
+      begin
+      	task := tmp_wq^.task;
+	 		task^.timeout -= 1;
+	 		if (task^.timeout = 0) then
+	      	 wake_up_process(task);
+      	tmp_wq := tmp_wq^.next;
+      end;
+   end;
 
    asm
       mov   al , $20
@@ -170,7 +204,7 @@ begin
    end;
 
    { We call the scheduler every 200 ms and only if we are in user mode }
-   if ((compteur mod 200) = 0) and (r_cs = $23) then
+   if ((jiffies mod 20) = 0) and (r_cs = $23) then
         schedule();
 
 end;
@@ -190,7 +224,10 @@ begin
    {* On va reprogrammer le PIT pour qu'il déclenche une interruption toutes
     * les 10ms (environ) *}
 
-   initialise_compteur();
+   initialize_PIT(HZ);
+   jiffies      := 0;
+   nr_nanosleep := 0;
+   nanosleep_wq := NIL;
 
    set_intr_gate(32, @timer_intr);
    enable_IRQ(0);

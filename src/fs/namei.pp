@@ -1,17 +1,16 @@
 {******************************************************************************
  *  namei.pp
  *
- *  This file contains lookup(), namei() and dir_namei() and functions
- *  necessary to lookup() cache.
+ *  This file contains lookup(), sys_unlink(), namei() and dir_namei().
+ *  It also contains functions necessary to lookup_cache.
  *
  *  NOTE: Functions used to manage lookup_cache begin with 'lc_'
  *
  *  Copyleft (C) 2003
  *
- *  version 0.1 - 15/10/2003 - GaLi - lookup_cache management is nearly OK.
- *				      Just a few bugs left.
+ *  version 0.1 - 10/10/2003 - GaLi - lookup_cache management is ..NEARLY.. OK.
  *
- *  version 0.0 - 13/10/2003 - GaLi - Initial version
+ *  version 0.0 - 13/09/2003 - GaLi - Initial version
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -39,23 +38,28 @@ INTERFACE
 
 {$I errno.inc}
 {$I fs.inc}
+{$I lock.inc}
 {$I process.inc}
 
 {* Local macros *}
 
 {DEFINE DEBUG_LC_ADD_ENTRY}
+{DEFINE DEBUG_LC_DEL_ENTRY}
 {DEFINE DEBUG_LC_FIND_ENTRY}
 {DEFINE DEBUG_NAMEI}
 {DEFINE NAMEI_WARNING}
 {DEFINE DEBUG_DIR_NAMEI}
+{DEFINE DEBUG_SYS_UNLINK}
 {DEFINE DIR_NAMEI_WARNING}
 {DEFINE DEBUG_LOOKUP}
 
 
 {* External procedure and functions *}
 
+function  access_rights_ok (flags : dword ; inode : P_inode_t) : boolean; external;
 function  alloc_inode : P_inode_t; external;
 procedure free_inode (inode : P_inode_t); external;
+procedure free_lookup_cache; external;
 procedure kfree_s (adr : pointer ; len : dword); external;
 function  kmalloc (len : dword) : pointer; external;
 function  IS_DIR (inode : P_inode_t) : boolean; external;
@@ -63,8 +67,13 @@ procedure lock_inode (inode : P_inode_t); external;
 function  memcmp (src, dest : pointer ; size : dword) : boolean; external;
 procedure memcpy (src, dest : pointer ; size : dword); external;
 procedure memset (adr : pointer ; c : byte ; size : dword); external;
+procedure print_bochs (format : string ; args : array of const); external;
 procedure printk (format : string ; args : array of const); external;
+procedure read_lock (rw : P_rwlock_t); external;
+procedure read_unlock (rw : P_rwlock_t); external;
 procedure unlock_inode (inode : P_inode_t); external;
+procedure write_lock (rw : P_rwlock_t); external;
+procedure write_unlock (rw : P_rwlock_t); external;
 
 
 {* External variables *}
@@ -75,17 +84,19 @@ var
 
 {* Exported variables *}
 var
-   lookup_cache : array[1..1024] of P_lookup_cache_entry;
+   lookup_cache         : array[1..MAX_LOOKUP_ENTRIES] of P_lookup_cache_entry;
+	lookup_cache_lock    : rwlock_t;
    lookup_cache_entries : dword;
 
 
 {* Procedures and functions defined in this file *}
 
 function  dir_namei (path : pchar ; name : pointer) : P_inode_t;
-procedure lc_add_entry (dir : P_inode_t ; name : pchar ; len : dword ; res_inode : PP_inode_t);
-function  lc_find_entry (dir : P_inode_t ; name : pchar ; len : dword ; res_inode : PP_inode_t) : boolean;
-function  lookup (dir : P_inode_t ; name : pchar ; len : dword ; res_inode : PP_inode_t) : boolean;
+function  lc_add_entry (dir : P_inode_t ; name : pchar ; len : dword ; res_inode : PP_inode_t) : longint;
+function  lc_find_entry (dir : P_inode_t ; name : pchar ; len : dword ; res_inode : PP_inode_t) : longint;
+function  lookup (dir : P_inode_t ; name : pchar ; len : dword ; res_inode : PP_inode_t) : longint;
 function  namei (path : pchar) : P_inode_t;
+function  sys_unlink (path : pchar) : dword; cdecl;
 
 
 IMPLEMENTATION
@@ -102,11 +113,46 @@ IMPLEMENTATION
 
 
 {******************************************************************************
+ * lc_del_entry
+ *
+ * Del an entry in lookup_cache
+ *
+ *****************************************************************************}
+procedure lc_del_entry (ind : dword);
+
+var
+	lc_entry : P_lookup_cache_entry;
+
+begin
+
+	write_lock(@lookup_cache_lock);
+
+	lc_entry := lookup_cache[ind];
+
+	{$IFDEF DEBUG_LC_DEL_ENTRY}
+		print_bochs('lc_del_entry: i=%d  res_inode^.count=%d\n', [ind, lc_entry^.res_inode^.count]);
+	{$ENDIF}
+
+	free_inode(lc_entry^.dir);
+	kfree_s(lc_entry^.name, lc_entry^.len);
+	free_inode(lc_entry^.res_inode);
+	lookup_cache[ind] := NIL;
+	lookup_cache_entries -= 1;
+
+	write_unlock(@lookup_cache_lock);
+
+end;
+
+
+
+{******************************************************************************
  * lc_add_entry
  *
  * Add an entry in lookup_cache
+ *
+ * OUPUT : -1 on error, lookup_cache index in which the new entry is.
  *****************************************************************************}
-procedure lc_add_entry (dir : P_inode_t ; name : pchar ; len : dword ; res_inode : PP_inode_t);
+function lc_add_entry (dir : P_inode_t ; name : pchar ; len : dword ; res_inode : PP_inode_t) : longint; [public, alias : 'LC_ADD_ENTRY'];
 
 var
    new_ent : P_lookup_cache_entry;
@@ -114,16 +160,21 @@ var
 
 begin
 
-   if (lookup_cache_entries = 1024) then
+	result := -1;
+
+	write_lock(@lookup_cache_lock);
+
+   if (lookup_cache_entries = MAX_LOOKUP_ENTRIES) then
    begin
-      printk('lc_add_entry  (%d): lookup_cache is full\n', [current^.pid]);
-      exit;
+      print_bochs('lc_add_entry  (%d): lookup_cache is full\n', [current^.pid]);
+		free_lookup_cache();
    end;
 
    new_ent := kmalloc(sizeof(lookup_cache_entry));
    if (new_ent = NIL) then
    begin
       printk('lc_add_entry  (%d): WARNING -> not enough memory (1)\n', [current^.pid]);
+		write_unlock(@lookup_cache_lock);
       exit;
    end;
 
@@ -132,10 +183,11 @@ begin
    begin
       printk('lc_add_entry  (%d): WARNING -> not enough memory (2)\n', [current^.pid]);
       kfree_s(new_ent, sizeof(lookup_cache_entry));
+		write_unlock(@lookup_cache_lock);
       exit;
    end;
 
-   dir^.count += 1;
+   dir^.count        += 1;
    res_inode^^.count += 1;
 
    new_ent^.dir := dir;
@@ -144,14 +196,18 @@ begin
    new_ent^.res_inode := res_inode^;
 
    i := 1;
-   while (lookup_cache[i] <> NIL) and (i <= 1024) do i += 1;
+   while (lookup_cache[i] <> NIL) and (i < MAX_LOOKUP_ENTRIES) do i += 1;
 
    lookup_cache[i] := new_ent;
    lookup_cache_entries += 1;
 
+	write_unlock(@lookup_cache_lock);
+
    {$IFDEF DEBUG_LC_ADD_ENTRY}
-      printk('lc_add_entry  (%d): %d %s %d %d (i=%d)\n', [current^.pid, dir^.ino, name, len, res_inode^^.ino, i]);
+      print_bochs('lc_add_entry: %d %s %d %d (i=%d) %h\n', [dir^.ino, name, len, res_inode^^.ino, i, res_inode^]);
    {$ENDIF}
+
+	result := i;
 
 end;
 
@@ -160,9 +216,12 @@ end;
 {******************************************************************************
  * lc_find_entry
  *
+ * OUTPUT : -1 on error, 0 if entry was not found, lookup_cache index if entry
+ *          was found.
+ *
  * Find an entry in lookup_cache
  *****************************************************************************}
-function lc_find_entry (dir : P_inode_t ; name : pchar ; len : dword ; res_inode : PP_inode_t) : boolean;
+function lc_find_entry (dir : P_inode_t ; name : pchar ; len : dword ; res_inode : PP_inode_t) : longint;
 
 var
    i, i_max : dword;
@@ -173,51 +232,60 @@ begin
 {      printk('lc_find_entry (%d): %d %s %d\n', [current^.pid, dir^.ino, name, len]);}
    {$ENDIF}
 
-   result := FALSE;
+	read_lock(@lookup_cache_lock);
+
+   result := -1;
    i_max  := lookup_cache_entries;
 
-   for i := 1 to 1024 do
+   for i := 1 to MAX_LOOKUP_ENTRIES do
    begin
       if (lookup_cache[i] <> NIL) then
       begin
-	 if  (dir^.ino = lookup_cache[i]^.dir^.ino)
-	 and (dir^.dev_maj = lookup_cache[i]^.dir^.dev_maj)
-	 and (dir^.dev_min = lookup_cache[i]^.dir^.dev_min)
-	 and (len = lookup_cache[i]^.len)
-	 and (memcmp(name, lookup_cache[i]^.name, len) = TRUE) then
-	 begin
-	    {$IFDEF DEBUG_LC_FIND_ENTRY}
-	       printk('lc_find_entry (%d): entry found for %s i=%d, ino=%d (%h)\n', [current^.pid, name, i,
-	       									     lookup_cache[i]^.res_inode^.ino,
-										     lookup_cache[i]^.res_inode]);
-	    {$ENDIF}
-	    lookup_cache[i]^.res_inode^.count += 1;
-	    free_inode(res_inode^);
-	    res_inode^ := lookup_cache[i]^.res_inode;
-	    result := TRUE;
-	    exit;
-	 end
-	 else
-	 begin
-	    i_max -= 1;
-	    {$IFDEF DEBUG_LC_FIND_ENTRY}
-	    {printk('lc_find_entry (%d): i=%d  %d/%d, %d/%d, %d/%d, %s/%s %d/%d\n',
-	    								[current^.pid, i, dir^.ino, lookup_cache[i]^.dir^.ino,
-	    								 dir^.dev_maj, lookup_cache[i]^.dir^.dev_maj,
-									 dir^.dev_min, lookup_cache[i]^.dir^.dev_min,
-									 name, lookup_cache[i]^.name,
-									 len, lookup_cache[i]^.len]);}
-	    {$ENDIF}
-	    if (longint(i_max) <= 0) then
-	    begin
-	       {$IFDEF DEBUG_LC_FIND_ENTRY}
-	          printk('lc_find_entry (%d): entry NOT found for %s\n', [current^.pid, name]);
-	       {$ENDIF}
-	       exit;
-	    end;
-	 end;
+	 		if  (dir^.ino = lookup_cache[i]^.dir^.ino)
+	 		and (dir^.dev_maj = lookup_cache[i]^.dir^.dev_maj)
+	 		and (dir^.dev_min = lookup_cache[i]^.dir^.dev_min)
+	 		and (len = lookup_cache[i]^.len)
+	 		and (memcmp(name, lookup_cache[i]^.name, len) = TRUE) then
+	 		begin
+	    		{$IFDEF DEBUG_LC_FIND_ENTRY}
+	       		printk('lc_find_entry (%d): entry found for %s i=%d, ino=%d (%h)\n',
+							 [current^.pid, name, i,
+							  lookup_cache[i]^.res_inode^.ino,
+							  lookup_cache[i]^.res_inode]);
+	    		{$ENDIF}
+	    		lookup_cache[i]^.res_inode^.count += 1;
+	    		free_inode(res_inode^);
+	    		res_inode^ := lookup_cache[i]^.res_inode;
+	    		result := i;
+				read_unlock(@lookup_cache_lock);
+	    		exit;
+	 		end
+	 		else
+	 		begin
+	    		i_max -= 1;
+	    		{$IFDEF DEBUG_LC_FIND_ENTRY}
+	    			{printk('lc_find_entry (%d): i=%d  %d/%d, %d/%d, %d/%d, %s/%s %d/%d\n',
+								[current^.pid, i, dir^.ino, lookup_cache[i]^.dir^.ino,
+	    						dir^.dev_maj, lookup_cache[i]^.dir^.dev_maj,
+								dir^.dev_min, lookup_cache[i]^.dir^.dev_min,
+								name, lookup_cache[i]^.name,
+								len, lookup_cache[i]^.len]);}
+	    		{$ENDIF}
+	    		if (longint(i_max) <= 0) then
+	    		begin
+	       		{$IFDEF DEBUG_LC_FIND_ENTRY}
+	          		printk('lc_find_entry (%d): entry NOT found for %s\n', [current^.pid, name]);
+	       		{$ENDIF}
+					result := 0;
+					read_unlock(@lookup_cache_lock);
+	       		exit;
+	    		end;
+	 		end;
       end;
    end;
+
+	read_unlock(@lookup_cache_lock);
+
 end;
 
 
@@ -226,45 +294,88 @@ end;
  * lookup
  *
  * Input  : directory inode, file/directory we look for, size of 'name', inode
- *	    to fill
+ *	    		to fill
  *
- * Output : TRUE or FALSE
+ * Output : 0 if entry don't need to be in cache, -1 on error or index in
+ * 			lookup_cache if entry has been found or just added in cache.
  *
  * If everything is ok, 'res_inode' is fill with 'name' inode info
  *
- * FIXME: use a cache to speed up this function.
  *****************************************************************************}
-function lookup (dir : P_inode_t ; name : pchar ; len : dword ; res_inode : PP_inode_t) : boolean; [public, alias : 'LOOKUP'];
+function lookup (dir : P_inode_t ; name : pchar ; len : dword ; res_inode : PP_inode_t) : longint; [public, alias : 'LOOKUP'];
+
+var
+	ok  : boolean;
+	res : longint;
+
 begin
 
    {$IFDEF DEBUG_LOOKUP}
       printk('lookup (%d): looking for %s in inode directory %d\n', [current^.pid, name, dir^.ino]);
    {$ENDIF}
 
+   result := -1;
+
    if not IS_DIR(dir) then
    begin
-      printk('lookup (%d): inode %h is not a directory\n', [current^.pid]);
-      result := FALSE;
+      printk('lookup (%d): inode %d is not a directory\n', [current^.pid, dir^.ino]);
       exit;
    end;
 
-   if (lc_find_entry(dir, name, len, res_inode) = TRUE) then
-       result := TRUE
+   { First check if 'name' isn't an easy one  :-) }
+   if (len = 1) and (name[0] = '.') then
+   begin
+      dir^.count += 1;
+      free_inode(res_inode^);
+      res_inode^ := dir;
+      result := 0;
+      {$IFDEF DEBUG_LOOKUP}
+      	 printk('namei (%d): %s -> %d (%d) (easy 1)\n', [current^.pid, name, dir^.ino, dir^.count]);
+      {$ENDIF}
+      exit;
+   end
+   else if (len = 2) and (name[0] = '.') and (name[1] = '.')
+   	 and (dir = current^.root) then
+   begin
+      current^.root^.count += 1;
+      free_inode(res_inode^);
+      res_inode^ := current^.root;
+      result := 0;
+      {$IFDEF DEBUG_LOOKUP}
+      	 printk('namei (%d): %s -> %d (%d) (easy 2)\n', [current^.pid, name, current^.root^.ino, current^.root^.count]);
+      {$ENDIF}
+      exit;
+   end;
+
+   { So, 'name' is not so easy... }
+
+	res := lc_find_entry(dir, name, len, res_inode);
+   if (res > 0) then
+   begin
+      {$IFDEF DEBUG_LOOKUP}
+      	 printk('lookup (%d): found in cache\n', [current^.pid]);
+      {$ENDIF}
+      result := res;
+   end
    else
    begin
-       if (dir^.op <> NIL) and (dir^.op^.lookup <> NIL) then
-       begin
+		result := -1;
+      if (dir^.op <> NIL) and (dir^.op^.lookup <> NIL) then
+      begin
          lock_inode(dir);
-         result := dir^.op^.lookup(dir, name, len, res_inode);
-	 if (result = TRUE) then lc_add_entry(dir, name, len, res_inode);
+         ok := dir^.op^.lookup(dir, name, len, res_inode);
+	 		if (ok) then
+				 result := lc_add_entry(dir, name, len, res_inode);
          unlock_inode(dir);
-       end
-       else
-       begin
-          printk('lookup (%d): lookup() not defined for inode %d\n', [current^.pid, dir^.ino]);
-          result := FALSE;
-       end;
+      end
+      else
+         printk('lookup (%d): lookup() not defined for inode %d\n', [current^.pid, dir^.ino]);
    end;
+
+	{$IFDEF DEBUG_LOOKUP}
+		printk('lookup (%d): result=%d\n', [current^.pid, result]);
+	{$ENDIF}
+
 end;
 
 
@@ -310,7 +421,9 @@ begin
 
    tmp := path;
 
-   { 'filename' initialization }
+   {* 'filename' initialization (we copy path into filename)
+    *
+    * NOTE: path length MUST be < 255 *}
 
    i := 0;
    while (tmp^ <> #0) do
@@ -321,18 +434,10 @@ begin
    end;
    filename[i] := #0;
 
-   base := alloc_inode();
-   if (base = NIL) then
-   begin
-      printk('dir_namei (%d): not enough memory\n', [current^.pid]);
-      result := NIL;
-      exit;
-   end;
-
+   { base initialization }
    if (filename[0] = '/') then
    begin
-      {base := current^.root;}
-      memcpy(current^.root, base, sizeof(inode_t));
+      base := current^.root;
       { Remove the first character ('/') }
       i := 0;
       while (filename[i] <> #0) do
@@ -343,22 +448,14 @@ begin
       filename[i] := #0;
    end
    else
-      memcpy(current^.pwd, base, sizeof(inode_t));
-      {base := current^.pwd;}
-
-   if (filename[0] = #0) then   { It happens when path='/' }
-   begin
-      result := current^.root;
-      exit;
-   end;
+      base := current^.pwd;
 
    {* We are going to call lookup() for each directory in the path. So we
     * calculate how many directories there are *}
-
    nb_dir := 0;
    index  := 0;
+   i      := 0;
 
-   i := 0;
    while (filename[i] <> #0) do
    begin
       if (filename[i] = '/') then nb_dir += 1;
@@ -380,67 +477,85 @@ begin
    if (nb_dir = 0) then
        basename := filename
    else
-       for i := 1 to nb_dir do
-       begin
-	   j := 0;
-	   str_len := 0;
-	   while (filename[index] <> '/') do
-	   begin
-	      basename[j] := filename[index];
-	      str_len += 1;
-	      index   += 1;
-	      j       += 1;
-	   end;
-	   basename[j] := #0;   { A string MUST end with this character }
+	begin
+		for i := 1 to nb_dir do
+		begin
+	   	j       := 0;
+	   	str_len := 0;
+	   	while (filename[index] <> '/') do
+	   	begin
+	      	basename[j] := filename[index];
+	      	str_len += 1;
+	      	index   += 1;
+	      	j       += 1;
+	   	end;
+	   	basename[j] := #0;   { A string MUST end with this character }
 
-	   if not lookup(base, @basename, str_len, @inode) then
-	   begin
-	      { One of the directory in the path has not been found !!! }
-	      free_inode(inode);
-	      {printk('VFS (namei): cannot find directory %s (in %s)\n', [basename, path]);}
-	      result := -ENOENT;
-	      exit;
-	   end;
+			if (str_len <> 0) then
+	   	begin
+	      	{$IFDEF DEBUG_DIR_NAMEI}
+	         	printk('dir_namei (%d): calling lookup(%s) DIR\n', [current^.pid, basename]);
+	      	{$ENDIF}
+	      	if (lookup(base, @basename, str_len, @inode) < 0) then
+	      	begin
+	         	{ One of the directory in the path has not been found !!! }
+		 			{$IFDEF DEBUG_DIR_NAMEI}
+		    			printk('dir_namei (%d): %s has not been found by lookup()\n', [current^.pid, basename]);
+		 			{$ENDIF}
+	         	free_inode(inode);
+	         	result := -ENOENT;
+	         	exit;
+	      	end;
 
-	   { Check if 'inode' is really a directory }
-	   if not IS_DIR(inode) then
-	   begin
-	      free_inode(inode);
-	      printk('dir_namei (%d): %s is not a directory\n', [current^.pid, basename]);
-	      result := -ENOTDIR;
-	      exit;
-	   end;
+	      	{ Check if 'inode' is really a directory }
+	      	if not IS_DIR(inode) then
+	      	begin
+	         	{$IFDEF DEBUG_DIR_NAMEI}
+	            	printk('dir_namei (%d): %s is not a directory\n', [current^.pid, basename]);
+	         	{$ENDIF}
+	         	free_inode(inode);
+	         	result := -ENOTDIR;
+	         	exit;
+	      	end;
 
-           base  := inode;   { Next directory }
-	   index += 1;
-       end;
+	      	base  := inode;   { Next directory }
+	      	inode := alloc_inode();
+	      	if (inode = NIL) then
+	      	begin
+	         printk('dir_namei (%d): not enough memory\n', [current^.pid]);
+		 		result := NIL;
+		 		exit;
+	      	end;
+			end;
+	   	index += 1;
+		end;
+	end;
 
-   { Look for the file }
-   j       := 0;
    str_len := 0;
+   tmp     := name;
+   j       := 0;
    while (filename[index] <> #0) do
    begin
-      basename[j] := filename[index];
-      str_len     += 1;
-      index       += 1;
-      j           += 1;
+      tmp[j]  := filename[index];
+      str_len += 1;
+      j       += 1;
+      index   += 1;
    end;
-   basename[j] := #0;
+   tmp[j] := #0;
 
-{printk('calling lookup(%d, %s)\n', [base^.ino, basename]);}
-
-   if not lookup(base, @basename, str_len, @inode) then
+   if (str_len = 0) then
    begin
-      { File has not been found !!! }
+      {IFDEF DEBUG_DIR_NAMEI}
+         printk('dir_namei (%d): str_len=0\n', [current^.pid]);
+      {ENDIF}
       free_inode(inode);
-      {$IFDEF DIR_NAMEI_WARNING}
-         printk('dir_namei (%d): cannot find file %s (in %s)\n', [current^.pid, basename, path]);
-      {$ENDIF}
-      result := -ENOENT;
-      exit;
+      result := -EISDIR;
    end
    else
-      result := inode;
+   begin
+      free_inode(inode);
+      result := base;
+   end;
 
 end;
 
@@ -455,7 +570,8 @@ end;
  *
  * Returns the inode of the specified name.
  *
- * FIXME: for the moment, namei() doesn't check directories access rights
+ * FIXME: - for the moment, namei() doesn't check directories access rights
+ *        - Still a few bugs.
  *
  * NOTE: may be we could optimize this function 
  *****************************************************************************}
@@ -483,32 +599,6 @@ begin
    {$IFDEF DEBUG_NAMEI}
       printk('namei (%d): trying to find %s\n', [current^.pid, path]);
    {$ENDIF}
-
-   { First check if path isn't an easy one  :-) }
-   if (path[1] = #0) then
-   begin
-      if (path[0] = '.') then
-      begin
-         current^.pwd^.count += 1;
-	 result := current^.pwd;
-	 exit;
-      end
-      else if (path[0] = '/') then
-      begin
-         current^.root^.count += 1;
-	 result := current^.root;
-	 exit;
-      end;
-   end
-   else if (path[2] = #0) and (path[0] = '.') and (path[1] = '.')
-       and (current^.pwd = current^.root) then
-   begin
-      current^.root^.count += 1;
-      result := current^.root;
-      exit;
-   end;
-
-   { So, path is not so easy... }
 
    tmp := path;
 
@@ -542,7 +632,7 @@ begin
       base := current^.pwd;
 
    {* We are going to call lookup() for each directory in the path. So we
-    * count how many directories there are *}
+    * count how many directories there are (nb_dir) *}
    nb_dir := 0;
    index  := 0;
    i      := 0;
@@ -581,29 +671,41 @@ begin
 	   end;
 	   basename[j] := #0;   { A string MUST end with this character }
 
-	   if not lookup(base, @basename, str_len, @inode) then
+	   if (str_len <> 0) then
 	   begin
-	      { One of the directory in the path has not been found !!! }
-	      free_inode(inode);
-	      result := -ENOENT;
-	      exit;
-	   end;
+	      {$IFDEF DEBUG_NAMEI}
+	         printk('namei (%d): calling lookup(%s) DIR\n', [current^.pid, basename]);
+	      {$ENDIF}
+	      if (lookup(base, @basename, str_len, @inode) < 0) then
+	      begin
+	         { One of the directory in the path has not been found !!! }
+	         {$IFDEF DEBUG_NAMEI}
+	            printk('namei (%d): %s has not been found by lookup()\n', [current^.pid, basename]);
+	         {$ENDIF}
+	         free_inode(inode);
+	         result := -ENOENT;
+	         exit;
+	      end;
 
-	   { Check if 'inode' is really a directory }
-	   if not IS_DIR(inode) then
-	   begin
-	      free_inode(inode);
-	      result := -ENOTDIR;
-	      exit;
-	   end;
+	      { Check if 'inode' is really a directory }
+	      if not IS_DIR(inode) then
+	      begin
+	         {$IFDEF DEBUG_NAMEI}
+	            printk('namei (%d): %s is not a directory\n', [current^.pid, basename]);
+	         {$ENDIF}
+	         free_inode(inode);
+	         result := -ENOTDIR;
+	         exit;
+	      end;
 
-           base  := inode;   { Next directory }
-	   inode := alloc_inode();
-	   if (inode = NIL) then
-	   begin
-	      printk('namei (%d): not enough memory\n', [current^.pid]);
-	      result := NIL;
-	      exit;
+         base  := inode;   { Next directory }
+	      inode := alloc_inode();
+	      if (inode = NIL) then
+	      begin
+	         printk('namei (%d): not enough memory\n', [current^.pid]);
+	         result := NIL;
+	         exit;
+	      end;
 	   end;
 	   index += 1;
        end;
@@ -622,15 +724,19 @@ begin
 
    if (basename[0] = #0) then   { This happens when 'path' ends with a'/' }
    begin
-      result := inode;
+      {$IFDEF DEBUG_NAMEI}
+         printk('namei (%d): %s -> %d\n', [current^.pid, path, base^.ino]);
+      {$ENDIF}
+      free_inode(inode);
+      result := base;
       exit;
    end;
 
    {$IFDEF DEBUG_NAMEI}
-      printk('namei (%d): looking for %s in inode %d\n', [current^.pid, basename, base^.ino]);
+      printk('namei (%d): calling lookup(%s) FILE\n', [current^.pid, basename]);
    {$ENDIF}
 
-   if not lookup(base, @basename, str_len, @inode) then
+   if (lookup(base, @basename, str_len, @inode) < 0) then
    begin
       { File has not been found !!! }
       free_inode(inode);
@@ -649,6 +755,156 @@ begin
    {$IFDEF DEBUG_NAMEI}
       printk('namei (%d): %s -> %d\n', [current^.pid, path, inode^.ino]);
    {$ENDIF}
+
+end;
+
+
+
+{******************************************************************************
+ * sys_unlink
+ *
+ * Removes a directory entry
+ *
+ * FIXME: this function is not done
+ *****************************************************************************}
+function sys_unlink (path : pchar) : dword; cdecl; [public, alias : 'SYS_UNLINK'];
+
+var
+   len, ind         : dword;
+   name             : pchar;
+   dir_inode, inode, res_inode : P_inode_t;
+
+begin
+
+   {$IFDEF DEBUG_SYS_UNLINK}
+      printk('sys_unlink (%d): path=%s\n', [current^.pid, path]);
+   {$ENDIF}
+
+   if (path[0] = #0) then
+   begin
+      result := -EINVAL;
+      exit;
+   end;
+
+   name := kmalloc(255);
+   if (name = NIL) then
+   begin
+      printk('sys_unlink (%d): not enough memory\n', [current^.pid]);
+      result := -ENOMEM;
+      exit;
+   end;
+
+   dir_inode := dir_namei(path, name);
+   if (longint(dir_inode) < 0) then
+   begin
+      {$IFDEF DEBUG_SYS_UNLINK}
+      	 printk('sys_unlink (%d): no such file\n', [current^.pid]);
+      {$ENDIF}
+      result := longint(dir_inode);
+      kfree_s(name, 255);
+      exit;
+   end;
+
+   {$IFDEF DEBUG_SYS_UNLINK}
+      printk('sys_unlink (%d): name=%s (dir ino=%d)\n', [current^.pid, name, dir_inode^.ino]);
+   {$ENDIF}
+
+	{ Check if we can write in dir_inode }
+   if not access_rights_ok(O_WRONLY, dir_inode) then
+   begin
+      {$IFDEF DEBUG_SYS_UNLINK}
+      	 printk('sys_unlink (%d): cannot write to inode %d\n', [current^.pid, dir_inode^.ino]);
+      {$ENDIF}
+      result := -EPERM;
+      kfree_s(name, 255);
+      free_inode(dir_inode);
+      exit;
+   end;
+
+   len := 0;
+   while (name[len] <> #0) do len += 1;
+
+   inode := alloc_inode();
+   if (inode = NIL) then
+   begin
+      printk('sys_unlink: not enough memory for alloc_inode() (1)\n', []);
+      result := -ENOMEM;
+      exit;
+   end;
+
+	ind := lookup(dir_inode, name, len, @inode);
+
+   if (ind = -1) then
+   begin
+      {$IFDEF DEBUG_SYS_UNLINK}
+      	 printk('sys_unlink (%d): lookup() failed\n', [current^.pid]);
+      {$ENDIF}      
+      result := -ENOENT;
+      kfree_s(name, 255);
+      free_inode(dir_inode);
+      free_inode(inode);
+      exit;
+   end;
+
+   if not access_rights_ok(O_WRONLY, inode) then
+   begin
+      {$IFDEF DEBUG_SYS_UNLINK}
+      	 printk('sys_unlink (%d): cannot write to inode %d\n', [current^.pid, inode^.ino]);
+      {$ENDIF}
+      result := -EPERM;
+      kfree_s(name, 255);
+      free_inode(dir_inode);
+      free_inode(inode);
+      exit;
+   end;
+
+   if IS_DIR(inode) then
+   begin
+      {$IFDEF DEBUG_SYS_UNLINK}
+      	 printk('sys_unlink (%d): %s (ino=%d) is a directory\n', [current^.pid, name, inode^.ino]);
+      {$ENDIF}      
+      result := -EISDIR;
+      kfree_s(name, 255);
+      free_inode(dir_inode);
+      free_inode(inode);
+      exit;
+   end;
+
+   {$IFDEF DEBUG_SYS_UNLINK}
+      printk('sys_unlink (%d): %s ino=%d\n', [current^.pid, name, inode^.ino]);
+   {$ENDIF}
+
+   lock_inode(inode);
+
+   if (inode^.op <> NIL) and (inode^.op^.unlink <> NIL) then
+       result := inode^.op^.unlink(dir_inode, name, inode)
+   else
+   begin
+      printk('sys_unlink: unlink() operation not defined for %s\n', [path]);
+      result := -ENOSYS;
+   end;
+
+   if (result <> 0) then
+       printk('sys_unlink: error during fs-unlink() -> %d\n', [inode^.nlink, result]);
+
+   unlock_inode(inode);
+   kfree_s(name, 255);
+   free_inode(dir_inode);
+   free_inode(inode);
+
+
+	{ Remove inode from lookup_cache }
+
+	res_inode := alloc_inode();
+   if (res_inode = NIL) then
+   begin
+      printk('sys_unlink: not enough memory for alloc_inode() (2)\n', []);
+      result := -ENOMEM;
+      exit;
+   end;
+
+	if (ind <> 0) then
+		 lc_del_entry(ind);
 
 end;
 

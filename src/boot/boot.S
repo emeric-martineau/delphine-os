@@ -76,21 +76,21 @@
 
     ; Clear screen
     
-    push  es
-    mov   ax , 0B800h
-    mov   es , ax
-    xor   di , di
-    mov   ax , 0720h
-    mov   cx , 2000
-    rep   stosw
-    pop   es
+;    push  es
+;    mov   ax , 0B800h
+;    mov   es , ax
+;    xor   di , di
+;    mov   ax , 0720h
+;    mov   cx , 2000
+;    rep   stosw
+;    pop   es
 
     ; Put cursor in the top left corner
 
-    mov   ah , 02h
-    xor   bh , bh
-    xor   dx , dx
-    int   10h
+;    mov   ah , 02h
+;    xor   bh , bh
+;    xor   dx , dx
+;    int   10h
 
     ; Change screen color
 
@@ -488,10 +488,10 @@
         dw 0
 
     MSG:
-        db 'Loading DelphineOS...  ', FINCHAINE
+        db 0Ah, 0Dh, 'Loading DelphineOS...  ', FINCHAINE
 
     OK:
-        db 'OK', 0Ah, 0Dh, 0Ah, 0Dh, FINCHAINE
+        db 'OK', 0Ah, 0Dh, FINCHAINE
 
     bios_seg:
         dw 0

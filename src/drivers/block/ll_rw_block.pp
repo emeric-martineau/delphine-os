@@ -36,25 +36,31 @@ INTERFACE
 
 
 {DEFINE DEBUG}
+{DEFINE DEBUG_MAKE_REQUEST}
+{DEFINE DEBUG_END_REQUEST}
+{DEFINE DEBUG_LOCK_BUFFER}
+{DEFINE DEBUG_UNLOCK_BUFFER}
 
 
 { Déclaration des procédures externes }
 function  buffer_dirty (bh : P_buffer_head) : boolean; external;
 function  buffer_uptodate (bh : P_buffer_head) : boolean; external;
 procedure interruptible_sleep_on (wait : PP_wait_queue); external;
-procedure interruptible_wake_up (wait : PP_wait_queue); external;
+procedure interruptible_wake_up (p : PP_wait_queue ; schedule : boolean); external;
 procedure kfree_s (adr : pointer ; len : dword); external;
 function  kmalloc (len : dword) : pointer; external;
+procedure lock_buffer (bh : P_buffer_head); external;
+procedure memset (adr : pointer ; c : byte ; size : dword); external;
 procedure panic (reason : string); external;
 procedure printk (format : string ; args : array of const); external;
 procedure schedule; external;
-procedure sleep_on (wait : PP_wait_queue); external;
-procedure wake_up (wait : PP_wait_queue); external;
+procedure unlock_buffer (bh : P_buffer_head); external;
 
 
 { Variables externes }
 var
-   ide_wq : P_wait_queue; external name 'U_IDE_HD_IDE_WQ';
+   current : P_task_struct; external name 'U_PROCESS_CURRENT';
+   ide_wq  : P_wait_queue; external name 'U_IDE_HD_IDE_WQ';
 
 
 { Variables exportées }
@@ -66,79 +72,14 @@ var
 
 procedure end_request (major : byte ; uptodate : boolean);
 procedure ll_rw_block (rw : dword; bh : P_buffer_head);
-procedure lock_buffer (bh : P_buffer_head);
 procedure make_request (major : byte ; rw : dword ; bh : P_buffer_head);
-procedure unlock_buffer (bh : P_buffer_head);
 
 
 
 IMPLEMENTATION
 
 
-
-{******************************************************************************
- * lock_buffer
- *
- *****************************************************************************}
-procedure lock_buffer (bh : P_buffer_head);
-begin
-
-   {$IFDEF DEBUG}
-      printk('lock_buffer: Trying to lock buffer\n', []);
-   {$ENDIF}
-
-
-   asm
-      pushfd
-      cli
-   end;
-
-   { Wait for the buffer to be unlocked }
-   while (bh^.state and BH_Lock) = BH_Lock do
-      interruptible_sleep_on(@bh^.wait);
-
-   {$IFDEF DEBUG}
-      printk('lock_buffer: lock buffer\n', []);
-   {$ENDIF}
-
-   bh^.state := bh^.state or BH_Lock;
-
-   asm
-      popfd
-   end;
-
-end;
-
-
-
-{******************************************************************************
- * unlock_buffer
- *
- *****************************************************************************}
-procedure unlock_buffer (bh : P_buffer_head);
-begin
-
-   asm
-      cli
-   end;
-
-   if (bh^.state and BH_Lock) = 0 then
-      printk('unlock_buffer: buffer not locked !!!\n', [])
-   else
-   begin
-      {$IFDEF DEBUG}
-	 printk('unlock_buffer: unlock buffer and wake up processes\n', []);
-      {$ENDIF}
-      bh^.state := bh^.state and (not BH_Lock);
-      interruptible_wake_up(@bh^.wait);
-   end;
-
-   asm
-      sti
-   end;
-
-end;
-
+{$I inline.inc}
 
 
 {******************************************************************************
@@ -159,20 +100,20 @@ begin
       panic('kernel bug ???');
    end;
 
-   lock_buffer(bh);
-
    if ((rw = READ) and buffer_uptodate(bh))
    or ((rw = WRITE) and not buffer_dirty(bh)) then
    begin
-      {$IFDEF DEBUG}
-         printk('make_request: does not need to do anything\n', []);
-      {$ENDIF}
+      {IFDEF DEBUG_MAKE_REQUEST}
+         if (rw = READ) then
+             printk('make_request: does not need to read\n', [])
+	 		else
+	      	 printk('make_request: does not need to write\n', []);
+      {ENDIF}
       unlock_buffer(bh);
       exit;
    end;
 
    req := kmalloc(sizeof(request));
-
    if (req = NIL) then
    begin
       printk('make_request: not enough memory to add a request !!!\n', []);
@@ -180,54 +121,44 @@ begin
    end;
 
    { Initialize req }
-
+   memset(req, 0, sizeof(request));
    req^.major  := major;
    req^.minor  := bh^.minor;
    req^.cmd    := rw;
-   req^.errors := 0;
    req^.sector := bh^.rsector;
    req^.nr_sectors := bh^.size div 512;
    req^.buffer := bh^.data;
    req^.bh     := bh;
-   req^.next   := NIL;
 
    {* Add request
     * FIXME: order requests to avoid stupid read/write heads moves *}
 
-   asm
-      pushfd
-      cli   { Section critique }
-   end;
+	cli();
 
-   {$IFDEF DEBUG}
-      printk('make_request: going to add a new request\n', []);
+   {$IFDEF DEBUG_MAKE_REQUEST}
+      printk('make_request: adding request %h ', [req]);
    {$ENDIF}
 
    if (blk_dev[major].current_request) = NIL then
    begin
-      {$IFDEF DEBUG}
-         printk('make_request: no request in queue\n', []);
+      {$IFDEF DEBUG_MAKE_REQUEST}
+         printk('(0)\n', []);
       {$ENDIF}
       blk_dev[major].current_request := req;
-      asm
-        popfd   { Fin section critique }
-      end;
+		sti();
       blk_dev[major].request_fn(major);   { Execute the request }
    end
    else
    begin
-      {$IFDEF DEBUG}
-         printk('make_request: at least one request in queue\n', []);
+      {$IFDEF DEBUG_MAKE_REQUEST}
+         printk('(1)\n', []);
       {$ENDIF}
       tmp := blk_dev[major].current_request;
       while (tmp^.next <> NIL) do
 	     tmp := tmp^.next;
       tmp^.next := req;
-      asm
-         popfd   { Fin section critique }
-      end;
+		sti();
    end;
-
 end;
 
 
@@ -254,6 +185,7 @@ begin
    end;
 
    { On finit d'initialiser l'en-tête du tampon avant d'envoyer la requête }
+
    bh^.rsector := bh^.blocknr * (bh^.size shr 9);
 
    make_request(major, rw, bh);
@@ -274,54 +206,45 @@ var
 
 begin
 
-   asm
-      pushfd
-      cli   { Section critique }
-   end;
-
-   {$IFDEF DEBUG}
-      printk('end_request: %d\n', [uptodate]);
-   {$ENDIF}
+	pushfd();
+	cli();
 
    cur_req := blk_dev[major].current_request;
 
-   unlock_buffer(cur_req^.bh);
+   {$IFDEF DEBUG_END_REQUEST}
+      printk('end_request: req=%h major=%d  %d  sector=%d\n', [cur_req, major, uptodate, cur_req^.sector]);
+   {$ENDIF}
 
    if (uptodate = FALSE) then
    begin
-      printk('end_request: I/O error, dev %d:%d, sector %d !!!\n', [cur_req^.major, cur_req^.minor, cur_req^.sector]);
+
+      if (cur_req^.cmd = READ) then
+      	 printk('end_request: I/O error. Cannot read sector %d on dev %d:%d\n', [cur_req^.sector, cur_req^.major, cur_req^.minor])
+      else
+      	 printk('end_request: I/O error. Cannot write sector %d on dev %d:%d\n', [cur_req^.sector, cur_req^.major, cur_req^.minor]);
+
       cur_req^.bh^.state := cur_req^.bh^.state and (not BH_Uptodate);
-      {$IFDEF DEBUG}
-         printk('end_request: buffer is NOT uptodate\n', []);
-      {$ENDIF}
-      blk_dev[major].current_request := cur_req^.next;
-      asm
-         popfd   { Fin section critique }
-      end;
-      kfree_s(cur_req, sizeof(request));
-{   schedule;}
-      if (blk_dev[major].current_request <> NIL) then
-	  blk_dev[major].request_fn(major);
    end
    else
-   begin
-      cur_req^.bh^.state := cur_req^.bh^.state or BH_Uptodate;
-      {$IFDEF DEBUG}
-         printk('end_request: buffer is now uptodate\n', []);
-      {$ENDIF}
-      cur_req := blk_dev[major].current_request;
-      blk_dev[major].current_request := cur_req^.next;
-      asm
-         popfd   { Fin section critique }
-      end;
-      kfree_s(cur_req, sizeof(request));
-{   schedule;}
-      if (blk_dev[major].current_request <> NIL) then
-	  blk_dev[major].request_fn(major);
-   end;
+      cur_req^.bh^.state := cur_req^.bh^.state or BH_Uptodate and (not BH_dirty);
 
-{   wake_up(@wait_for_request); }   { Réveille les processus qui attendent une
-                                      demande de reqête !!! Inutile !!!}
+   {$IFDEF DEBUG_END_REQUEST}
+      printk('end_request: next req=%h\n', [cur_req^.next]);
+   {$ENDIF}
+
+   blk_dev[major].current_request := cur_req^.next;
+
+	popfd();
+
+   unlock_buffer(cur_req^.bh);
+   kfree_s(cur_req, sizeof(request));
+   if (blk_dev[major].current_request <> NIL) then
+   begin
+      {$IFDEF DEBUG_END_REQUEST}
+      	 printk('end_request: calling request_fn()\n', []);
+      {$ENDIF}
+      blk_dev[major].request_fn(major);
+   end;
 
 end;
 

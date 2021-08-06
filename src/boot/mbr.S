@@ -58,4 +58,5 @@
 
     jmp BOOT_SEG : 0000h
 
-times 352 db 90h   ; REALLY IMPORTANT !!!
+
+times 352 db 90h

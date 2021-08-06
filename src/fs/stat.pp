@@ -30,13 +30,15 @@ INTERFACE
 
 
 {DEFINE DEBUG_SYS_STAT}
-{$DEFINE DEBUG_SYS_STAT64}
+{DEFINE DEBUG_SYS_FSTAT}
+{DEFINE DEBUG_SYS_STAT64}
 
 
 {* Headers *}
 
 {$I errno.inc}
 {$I fs.inc}
+{$I process.inc}
 {$I stat.inc}
 
 
@@ -50,6 +52,8 @@ procedure printk (format : string ; args : array of const); external;
 
 
 {* External variables *}
+var
+   current : P_task_struct; external name 'U_PROCESS_CURRENT';
 
 
 {* Exported variables *}
@@ -57,13 +61,15 @@ procedure printk (format : string ; args : array of const); external;
 
 {* Procedures and functions defined in this file *}
 
-function sys_readlink (path : pchar ; buf : pchar ; bufsiz : dword) : dword; cdecl;
-function sys_stat (filename : pchar ; statbuf : P_stat_t) : dword; cdecl;
-function sys_stat64 (filename : pchar ; statbuf : P_stat64_t ; flags : dword) : dword; cdecl;
+function  sys_fstat (fd : dword ; statbuf : P_stat_t) : dword; cdecl;
+function  sys_readlink (path : pchar ; buf : pchar ; bufsiz : dword) : dword; cdecl;
+function  sys_stat (filename : pchar ; statbuf : P_stat_t) : dword; cdecl;
+function  sys_stat64 (filename : pchar ; statbuf : P_stat64_t ; flags : dword) : dword; cdecl;
 
 
 IMPLEMENTATION
 
+{$I inline.inc}
 
 {* Constants only used in THIS file *}
 
@@ -72,6 +78,60 @@ IMPLEMENTATION
 
 
 {* Variables only used in THIS file *}
+
+
+
+
+{******************************************************************************
+ * sys_fstat
+ *
+ *****************************************************************************}
+function sys_fstat (fd : dword ; statbuf : P_stat_t) : dword; cdecl; [public, alias : 'SYS_FSTAT'];
+
+var
+   fichier : P_file_t;
+   inode   : P_inode_t;
+
+begin
+
+   fichier := current^.file_desc[fd];
+   if ((fichier = NIL) or (fd >= OPEN_MAX)) then
+   begin
+      result := -EBADF;
+      exit;
+   end;
+
+   inode := fichier^.inode;
+
+   if (inode = NIL) then
+   begin
+      printk('sys_fstat (%d) fd %d has no inode\n', [current^.pid, fd]);
+      result := -EBADF;
+      exit;
+   end;
+
+   {$IFDEF DEBUG_SYS_FSTAT}
+      printk('sys_fstat: fd=%d  mode=%h\n', [fd, inode^.mode]);
+   {$ENDIF}
+
+   statbuf^.st_dev     := (inode^.dev_maj shl 8) + inode^.dev_min;
+   statbuf^.st_ino     := inode^.ino;
+   statbuf^.st_mode    := inode^.mode;    { FIXME: I don't know if there is some changes to do to inode^.mode
+                                                   before setting statbuf^.st_mode }
+   statbuf^.st_nlink   := inode^.nlink;
+   statbuf^.st_uid     := inode^.uid;
+   statbuf^.st_gid     := inode^.gid;
+   statbuf^.st_rdev    := (inode^.rdev_maj shl 8) + inode^.rdev_min;
+   statbuf^.st_size    := inode^.size;
+   statbuf^.st_blksize := inode^.blksize;
+   statbuf^.st_blocks  := inode^.blocks;
+   statbuf^.st_atime   := inode^.atime;
+   statbuf^.st_mtime   := inode^.mtime;
+   statbuf^.st_ctime   := inode^.ctime;
+
+   result := 0;
+
+end;
 
 
 
@@ -86,9 +146,11 @@ var
 
 begin
 
-   asm
-      sti
-   end;
+	sti();
+
+   {$IFDEF DEBUG_SYS_STAT}
+      printk('sys_stat: filename=%s\n', [filename]);
+   {$ENDIF}
 
    inode := namei(filename);
 
@@ -103,8 +165,8 @@ begin
       exit;
    end;
 
-   statbuf^.st_dev := (inode^.dev_maj shl 8) + inode^.dev_min;
-   statbuf^.st_ino   := inode^.ino;
+   statbuf^.st_dev     := (inode^.dev_maj shl 8) + inode^.dev_min;
+   statbuf^.st_ino     := inode^.ino;
    statbuf^.st_mode    := inode^.mode;    { FIXME: I don't know if there is some changes to do to inode^.mode
                                                    before setting statbuf^.st_mode }
    statbuf^.st_nlink   := inode^.nlink;
@@ -196,7 +258,7 @@ end;
 function sys_readlink (path : pchar ; buf : pchar ; bufsiz : dword) : dword; cdecl; [public, alias : 'SYS_READLINK'];
 begin
    printk('Welcome in sys_readlink (%c%s)\n', [path[0], path]);
-   result := -EINVAL;
+   result := -ENOSYS;
    exit;
 end;
 

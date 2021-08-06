@@ -39,7 +39,7 @@ INTERFACE
 {$I pci.inc}
 
 
-{DEFINE DEBUG}
+{$DEFINE DEBUG}
 
 
 { External procedures and functions }
@@ -88,7 +88,12 @@ procedure init_pci; [public, alias : 'INIT_PCI'];
 
 var
    base  : P_bios32;
+	tmp   : ^byte;
+	crc   : byte;
+	i     : dword;
    found : boolean;
+
+label again;
 
 begin
 
@@ -97,19 +102,31 @@ begin
    nb_pci_devices := 0;
 
    while ((found = false) and (base < pointer($100000))) do
-      begin
+	begin
+		if (base^.magic = $5F32335F) then
+		begin
+			{ Verify crc }
+			tmp := pointer(base);
+			crc := 0;
+			for i := 0 to ((base^.length * 16) - 1) do
+			begin
+				crc += byte(tmp^);
+				tmp += 1;
+			end;
 
-         if (base^.magic = $5F32335F) then
-	    begin
-	       found := true;
-	       check_pci_devices;
-	       exit;
-	    end; { -> if }
+			if (crc <> 0) then goto again;
 
-	 base := base + 1; {* <=> base := base + 16 bytes because base has type
-	                    * P_bios_32, it points to a 16 bytes structure *}
+			found := true;
+			printk('PCI: BSD entry point at %h\n', [base^.phys_entry]);
+			check_pci_devices();
+			exit;
+		end; { -> if }
 
-      end; { -> while }
+again:
+		base += 1;	{* <=> base := base + 16 bytes because base has type
+						 * P_bios_32, it points to a 16 bytes structure *}
+
+	end; { -> while }
 
 {   printk('PCI: not on this machine !!!\n', []);}
 
@@ -134,14 +151,14 @@ var
 
 begin
 
-   for i:=1 to nb do
-      begin
-         if(vendors[i].id = id) then 
-	    begin
-	       printk(vendors[i].name, []);
-	       exit;
-	    end;
-      end;
+   for i := 1 to nb do
+	begin
+		if(vendors[i].id = id) then 
+		begin
+			printk(vendors[i].name, []);
+			exit;
+		end;
+	end;
 
    printk('Unknown (%h) ', [id]);
 
@@ -177,110 +194,110 @@ begin
       printk('(class: %h2 %h2 ', [main_class, subclass]);
    {$ENDIF}
 
-   for i:=1 to classes do
-      begin
-         if (pci_classes[i].id = main_class) then
-	    begin
-	       case (main_class) of
+   for i := 1 to classes do
+	begin
+		if (pci_classes[i].id = main_class) then
+		begin
+			case (main_class) of
 	       
-	       $01: { mass storage controller }
-	          begin
-		     for j:=1 to storage_subclasses do
-		        begin
-			   if (pci_storage_subclasses[j].id = subclass) then
-			      begin
-			         printk(pci_storage_subclasses[j].name, []);
-				 exit;
-			      end;
-			end;
-			printk(pci_classes[i].name, []);
-		  end;
+			$01: { mass storage controller }
+				begin
+		      	for j := 1 to storage_subclasses do
+		         begin
+			   		if (pci_storage_subclasses[j].id = subclass) then
+			      	begin
+			         	printk(pci_storage_subclasses[j].name, []);
+				 			exit;
+			      	end;
+					end;
+					printk(pci_classes[i].name, []);
+		   	end;
 
-	       $02: { network controller }
-	          begin
-		     for j:=1 to network_subclasses do
-		        begin
-			   if (pci_network_subclasses[j].id = subclass) then
-			      begin
-			         printk(pci_network_subclasses[j].name, []);
-				 exit;
-			      end;
-			end;
-			printk(pci_classes[i].name, []);
-		  end;
+			$02: { network controller }
+				begin
+					for j := 1 to network_subclasses do
+					begin
+						if (pci_network_subclasses[j].id = subclass) then
+						begin
+							printk(pci_network_subclasses[j].name, []);
+				 			exit;
+			      	end;
+					end;
+					printk(pci_classes[i].name, []);
+		   	end;
 
-	       $03: { display controller }
-	          begin
-		     for j:=1 to display_subclasses do
-		        begin
-			   if (pci_display_subclasses[j].id = subclass) then
-			      begin
-			         printk(pci_display_subclasses[j].name, []);
-				 exit;
-			      end;
-			end;
-			printk(pci_classes[i].name, []);
-		  end;
+			$03: { display controller }
+				begin
+		      	for j := 1 to display_subclasses do
+		         begin
+			   		if (pci_display_subclasses[j].id = subclass) then
+			      	begin
+							printk(pci_display_subclasses[j].name, []);
+				 			exit;
+			      	end;
+					end;
+					printk(pci_classes[i].name, []);
+		   	end;
 
-	       $04: { multimedia controller }
-	          begin
-		     for j:=1 to multimedia_subclasses do
-		        begin
-			   if (pci_multimedia_subclasses[j].id = subclass) then
-			      begin
-			         printk(pci_multimedia_subclasses[j].name, []);
-				 exit;
-			      end;
-			end;
-			printk(pci_classes[i].name, []);
-		  end;
+			$04: { multimedia controller }
+				begin
+		      	for j := 1 to multimedia_subclasses do
+		         begin
+			   		if (pci_multimedia_subclasses[j].id = subclass) then
+			      	begin
+			         	printk(pci_multimedia_subclasses[j].name, []);
+				 		exit;
+			      	end;
+					end;
+					printk(pci_classes[i].name, []);
+		   	end;
 
-	       $05: { memory controller }
-	          begin
-		     for j:=1 to memory_subclasses do
-		        begin
-			   if (pci_memory_subclasses[j].id = subclass) then
-			      begin
-			         printk(pci_memory_subclasses[j].name, []);
-				 exit;
-			      end;
-			end;
-			printk(pci_classes[i].name, []);
-		  end;
+			$05: { memory controller }
+				begin
+		      	for j := 1 to memory_subclasses do
+		         begin
+			   		if (pci_memory_subclasses[j].id = subclass) then
+			      	begin
+			         	printk(pci_memory_subclasses[j].name, []);
+				 			exit;
+			      	end;
+					end;
+					printk(pci_classes[i].name, []);
+		   	end;
 
-	       $06: { bridge controller }
-	          begin
-		     for j:=1 to bridge_subclasses do
-		        begin
-			   if (pci_bridge_subclasses[j].id = subclass) then
-			      begin
-			         printk(pci_bridge_subclasses[j].name, []);
-				 break;
-			      end;
-			end;
-		     printk(pci_classes[i].name, []);
-		  end;
+			$06: { bridge controller }
+				begin
+		      	for j := 1 to bridge_subclasses do
+		         begin
+			   		if (pci_bridge_subclasses[j].id = subclass) then
+			      	begin
+			         	printk(pci_bridge_subclasses[j].name, []);
+				 			exit;
+			      	end;
+					end;
+		      	printk(pci_classes[i].name, []);
+		   	end;
 
-	       $0C: { serial controller }
-	          begin
-		     for j:=1 to serial_subclasses do
-		        begin
-			   if (pci_serial_subclasses[j].id = subclass) then
-			      begin
-			         printk(pci_serial_subclasses[j].name, []);
-				 exit;
-			      end;
-			end;
-			printk(pci_classes[i].name, []);
-		  end;
+			$0C: { serial controller }
+				begin
+		      	for j := 1 to serial_subclasses do
+		         begin
+			   		if (pci_serial_subclasses[j].id = subclass) then
+			      	begin
+			         	printk(pci_serial_subclasses[j].name, []);
+				 			exit;
+			      	end;
+					end;
+					printk(pci_classes[i].name, []);
+		   	end;
 
-	       else { -> Case }
-	          begin
-		     printk(pci_classes[i].name, []);
-		  end;
-	       end;
-	    end;
-      end;
+			else { -> Case }
+				begin
+		      	printk(pci_classes[i].name, []);
+		   	end;
+			end;
+		end;
+	end;
 end;
 
 
@@ -312,89 +329,89 @@ var
 begin
 
    for dev := 0 to 31 do
-      begin
-         for func := 0 to 7 do
-	 begin
-            read := pci_read_dword(bus, dev, func, PCI_CONFIG_VENDOR);
-	    vendor_id := read and $FFFF;
-	    device_id := read div 65536; { device_id := read shr 16 }
+	begin
+		for func := 0 to 7 do
+		begin
+			read := pci_read_dword(bus, dev, func, PCI_CONFIG_VENDOR);
+			vendor_id := read and $FFFF;
+			device_id := read div 65536; { device_id := read shr 16 }
 
-	    { Correction du bug }
+			{ Correction du bug }
 
-	    if (func = 0) then
-	        bug_tmp := device_id
-	    else if (device_id = bug_tmp) then
-	             break;
+			if (func = 0) then
+				bug_tmp := device_id
+			else if (device_id = bug_tmp) then
+				break;
 
-	    { Fin correction du bug }
+			{ Fin correction du bug }
 
-	    if ((vendor_id < $FFFF) and (vendor_id <> 0)) then
-	       begin
-                  {$IFDEF DEBUG}
-                     printk(' - ', []);
-	             showvendor(vendor_id);
-		  {$ENDIF}
+			if ((vendor_id < $FFFF) and (vendor_id <> 0)) then
+			begin
+				{$IFDEF DEBUG}
+					printk(' - ', []);
+					showvendor(vendor_id);
+				{$ENDIF}
 
-	          read := pci_read_dword(bus, dev, func, PCI_CONFIG_CLASS_REV);
-	          main_class := read div 16777216; { class := read shr 24 }
-	          sub_class := (read div 65536) and $FF;
+				read := pci_read_dword(bus, dev, func, PCI_CONFIG_CLASS_REV);
+				main_class := read div 16777216; { class := read shr 24 }
+				sub_class := (read div 65536) and $FF;
 
-                  {$IFDEF DEBUG}
-		     showclass(main_class, sub_class);
-		  {$ENDIF}
+				{$IFDEF DEBUG}
+					showclass(main_class, sub_class);
+				{$ENDIF}
 
-	          iobase := 0;
+				iobase := 0;
 
-	          for i := 0 to 5 do
-	             begin
-		        read := pci_read_dword(bus, dev, func, PCI_CONFIG_BASE_ADDR_0 + i);
-		        if (read and 1 = 1) then
-		           begin
-			      iobase := read and $FFFFFFFC;
-			      {$IFDEF DEBUG}
-			         printk(' %h', [iobase]);
-			      {$ENDIF}
-			      pci_devices^.io[i] := iobase;
-			   end;
-		     end;
+				for i := 0 to 5 do
+				begin
+		         read := pci_read_dword(bus, dev, func, PCI_CONFIG_BASE_ADDR_0 + i);
+		         if (read and 1 = 1) then
+					begin
+			      	iobase := read and $FFFFFFFC;
+			      	{$IFDEF DEBUG}
+			         	printk(' %h', [iobase]);
+			      	{$ENDIF}
+			      	pci_devices^.io[i] := iobase;
+			   	end;
+				end;
 
-	          read := pci_read_dword(bus, dev, func, PCI_CONFIG_INTR);
-	          ipin := (read div 256) and $FF;
-	          ilin := read and $FF;
+				read := pci_read_dword(bus, dev, func, PCI_CONFIG_INTR);
+				ipin := (read div 256) and $FF;
+				ilin := read and $FF;
                   
-		  {$IFDEF DEBUG}
-		  if (ipin > 0) and (ipin < 5) and (ilin < 32) then
-	              printk(', irq %d', [ilin]);
-		  {$ENDIF}
+				{$IFDEF DEBUG}
+		   		if (ipin > 0) and (ipin < 5) and (ilin < 32) then
+						printk(', irq %d', [ilin]);
+				{$ENDIF}
 
-                     pci_devices^.nb         := actual_nb;
-                     pci_devices^.bus        := bus;
-                     pci_devices^.dev        := dev;
-                     pci_devices^.func       := func;
-                     pci_devices^.irq        := ilin;
-                     pci_devices^.vendor_id  := vendor_id;
-                     pci_devices^.device_id  := device_id;
-		     pci_devices^.main_class := main_class;
-		     pci_devices^.sub_class  := sub_class;
+				pci_devices^.nb         := actual_nb;
+				pci_devices^.bus        := bus;
+				pci_devices^.dev        := dev;
+				pci_devices^.func       := func;
+				pci_devices^.irq        := ilin;
+				pci_devices^.vendor_id  := vendor_id;
+				pci_devices^.device_id  := device_id;
+				pci_devices^.main_class := main_class;
+				pci_devices^.sub_class  := sub_class;
 
-                     actual_nb := actual_nb + 1;
-                     if (actual_nb = nb_pci_devices) then
-                        begin
-                           pci_devices^.next := NIL;
-                        end
-                     else
-                        begin
-                           pci_devices^.next := pci_devices + 1;
-                           pci_devices       := pci_devices + 1;
-                        end;
+				actual_nb := actual_nb + 1;
+				if (actual_nb = nb_pci_devices) then
+				begin
+					pci_devices^.next := NIL;
+				end
+				else
+				begin
+					pci_devices^.next := pci_devices + 1;
+					pci_devices       := pci_devices + 1;
+				end;
 
-                     {$IFDEF DEBUG}
-                        printk('\n', []);
-		     {$ENDIF}
+				{$IFDEF DEBUG}
+					printk('\n', []);
+				{$ENDIF}
 
-	       end;
-	 end;
-      end;
+			end;
+		end;
+	end;
 end;
 
 
@@ -459,34 +476,26 @@ begin
 
    devs := 0;
 
-   for dev:=0 to (PCI_SLOTS - 1) do
-      begin
-         for func:=0 to 7 do
-	 begin
-            read := pci_read_dword(bus, dev, func, PCI_CONFIG_VENDOR);
-	    vendor_id := read and $FFFF;
-	    device_id := read div 65536;
+   for dev := 0 to (PCI_SLOTS - 1) do
+	begin
+		for func := 0 to 7 do
+	 	begin
+			read := pci_read_dword(bus, dev, func, PCI_CONFIG_VENDOR);
+	    	vendor_id := read and $FFFF;
+	    	device_id := read div 65536;
 
-	    { Correction du bug (voir procédure scanpci) }
+	    	{ Correction du bug (voir procédure scanpci) }
 
-	    if (func = 0) then
-	       begin
-	          bug_tmp := device_id;
-	       end
-	    else
-	       begin
-	          if (device_id = bug_tmp) then
-		     break;
-	       end;
+	    	if (func = 0) then
+				bug_tmp := device_id
+	    	else if (device_id = bug_tmp) then
+				break;
 
-	    { Fin correction du bug }
+	    	{ Fin correction du bug }
 
-	    if ((vendor_id < $FFFF) and (vendor_id <> 0)) then
-	       begin
-	          devs := devs + 1;
-	       end;
-	 end;
-      end;
+	    	if ((vendor_id < $FFFF) and (vendor_id <> 0)) then devs += 1;
+		end;
+	end;
 
    pci_device_count := devs;
 
@@ -511,19 +520,19 @@ var
 begin
 
    if (nb_pci_devices = 0 ) then
-      begin
-         pci_lookup := NIL;
-	 exit;
-      end;
+	begin
+		pci_lookup := NIL;
+	 	exit;
+	end;
 
    dev := first_pci_device;
 
    repeat
       if ((vendorid = dev^.vendor_id) and (deviceid = dev^.device_id)) then
-         begin
-	    pci_lookup := dev;
-	    exit;
-	 end;
+		begin
+	    	pci_lookup := dev;
+	    	exit;
+	 	end;
 
       dev := dev^.next;
 
@@ -551,10 +560,10 @@ var
 begin
 
    for i := 0 to 3 do
-      begin
-         devices[i] := pci_device_count(i);
-	 nb_pci_devices := nb_pci_devices + devices[i];
-      end;
+	begin
+		devices[i] := pci_device_count(i);
+	 	nb_pci_devices := nb_pci_devices + devices[i];
+	end;
 
    printk('PCI: ', []);
 
@@ -562,10 +571,10 @@ begin
    pci_devices      := first_pci_device;
    actual_nb        := 0;
 
-   for i:=0 to 3 do
-      begin
-         if (devices[i] > 0) then scanpci(i);
-      end;
+   for i := 0 to 3 do
+	begin
+		if (devices[i] > 0) then scanpci(i);
+	end;
 
    printk('%d devices found\n', [actual_nb]);
 

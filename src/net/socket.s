@@ -10,12 +10,14 @@ sys_getpeername:
 SYS_GETPEERNAME:
 	pushl	%ebp
 	movl	%esp,%ebp
-	subl	$4,%esp
+	subl	$8,%esp
 	pushl	%edi
 	pushl	%esi
 	pushl	%ebx
+	movl	%esp,-8(%ebp)
 	movl	$-88,-4(%ebp)
 	movl	-4(%ebp),%eax
+	movl	-8(%ebp),%esp
 	popl	%ebx
 	popl	%esi
 	popl	%edi
@@ -32,10 +34,11 @@ sys_socketcall:
 SYS_SOCKETCALL:
 	pushl	%ebp
 	movl	%esp,%ebp
-	subl	$40,%esp
+	subl	$44,%esp
 	pushl	%edi
 	pushl	%esi
 	pushl	%ebx
+	movl	%esp,-44(%ebp)
 	pushl	$-1
 	leal	-40(%ebp),%edi
 	pushl	%edi
@@ -63,6 +66,7 @@ SYS_SOCKETCALL:
 	movl	$-14,%eax
 	jmp	.L8
 .L22:
+	movl	$-38,-32(%ebp)
 	movl	8(%ebp),%eax
 	movl	TC__SOCKET$$_NARGS(,%eax,4),%eax
 	shll	$2,%eax
@@ -73,10 +77,10 @@ SYS_SOCKETCALL:
 	call	MEMCPY
 	movl	8(%ebp),%eax
 	cmpl	$7,%eax
-	jl	.L32
+	jl	.L34
 	subl	$7,%eax
 	jz	.L9
-	jmp	.L32
+	jmp	.L34
 .L9:
 	pushl	-20(%ebp)
 	pushl	-24(%ebp)
@@ -84,22 +88,22 @@ SYS_SOCKETCALL:
 	call	sys_getpeername
 	addl	$12,%esp
 	movl	%eax,-32(%ebp)
-	jmp	.L31
-.L32:
+	jmp	.L33
+.L34:
 	movl	8(%ebp),%edi
 	movl	%edi,-36(%ebp)
 	movl	$0,-40(%ebp)
 	pushl	$0
 	leal	-40(%ebp),%edi
 	pushl	%edi
-	pushl	$.L45
+	pushl	$.L47
 	call	PRINTK
-	movl	$-1,-4(%ebp)
-.L31:
+.L33:
 	movl	-32(%ebp),%edi
 	movl	%edi,-4(%ebp)
 	movl	-4(%ebp),%eax
 .L8:
+	movl	-44(%ebp),%esp
 	popl	%ebx
 	popl	%esi
 	popl	%edi
@@ -124,6 +128,16 @@ INIT$$SOCKET:
 
 .data
 	.balign 4
+.globl	TC__SOCKET$$_BITMAP
+	.type	TC__SOCKET$$_BITMAP,@object
+TC__SOCKET$$_BITMAP:
+	.long	16777215,268435455,1073741823,0,65535,8388607,268435455,1073741823,2147483647
+	.balign 4
+.globl	TC__SOCKET$$_BITMAP2
+	.type	TC__SOCKET$$_BITMAP2,@object
+TC__SOCKET$$_BITMAP2:
+	.long	4064,4080,4088,0,0,0,0,0,0
+	.balign 4
 .globl	TC__SOCKET$$_NARGS
 	.type	TC__SOCKET$$_NARGS,@object
 TC__SOCKET$$_NARGS:
@@ -132,7 +146,7 @@ TC__SOCKET$$_NARGS:
 .data
 .L15:
 	.ascii	"'WARNING: sys_socketcall always failed\\n\000"
-.L45:
+.L47:
 	.ascii	",WARNING sys_socketcall called with call=%d\\n\000"
 
 .data

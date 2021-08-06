@@ -34,6 +34,7 @@ INTERFACE
 {* Headers *}
 
 {$I 8390.inc}
+{$I tty.inc}
 
 {* Local macros *}
 
@@ -42,13 +43,15 @@ INTERFACE
 
 function  inb (port : word) : byte; external;
 procedure outb (port : word ; val : byte); external;
-procedure print_byte_s (nb : byte); external;
+procedure print_byte_s (nb : byte ; tty : P_tty_struct); external;
 procedure printk (format : string ; args : array of const); external;
-procedure putchar (car : char); external;
+procedure putchar (car : char ; tty : P_tty_struct); external;
 
 
 {* External variables *}
 
+var
+	current_tty : P_tty_struct; external name 'U_TTY__CURRENT_TTY';
 
 {* Exported variables *}
 
@@ -250,11 +253,11 @@ begin
    printk('hw_addr ', []);
    for i := 0 to (ETHER_ADDR_LEN - 1) do
    begin
-      print_byte_s(SA_prom[i]);
+      print_byte_s(SA_prom[i], current_tty);
       printk(':', []);
    end;
-   putchar(#8);
-   putchar(#10);
+   putchar(#8, current_tty);
+   putchar(#10, current_tty);
 
    result := TRUE;
 

@@ -402,6 +402,7 @@ var
    stepping        : word;
 
 begin
+
    {* Determines if ID flag (bit flag) can be set to 1 or 0. If yes,
     * execute CPUID instruction *}
 

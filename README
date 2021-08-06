@@ -21,10 +21,12 @@ TOCHANSKY Dmitriy (dtoch)       : dtoch@yandex.ru
 Goal:
 -----
 
-DelphineOS is a kernel for x86 CPU. We first made it to learn system
+DelphineOS is a kernel for x86 CPUs. We first made it to learn system
 programming.
 
 It implements multitasking, virtual memory, ...
+
+We try to make it POSIX compliant.
 
 It's written in pascal and assembler using the Free Pascal Compiler
 (www.freepascal.org) and nasm () under GNU/Linux and is distributed under the
@@ -41,21 +43,27 @@ DelphineOS can boot from a floppy or from a hard drive partition but it's
 better to use Bochs because it's the easiest way of testing it.
 
 You have to run ./install (as root) from the directory in which DelphineOS is
-installed. This script offers 2 choices :
+installed. This script offers 3 choices :
 
-	1 - Make a disk image
+	1 - Make a disk image for Bochs
 	2 - Make a bootable floppy
+	3 - Install on a hd partition
 
 If you choose the 1st, a file called delphineOS.img will be created in the
-"bochs/" directory. You have to correctly configure Bochs to lauch it (this file
-is a bootable hard drive image).
+"bochs/" directory. You have to correctly configure Bochs to launch it (this
+file is a bootable hard drive image).
 
-If you choose the 2nd, just insert a floppy in /dev/fd0 and reboot with it.
+If you choose the 2nd, just insert an ext2-formatted floppy in /dev/fd0 and
+reboot with it.
+
+If you choose the 3rd, DelphineOS will installed on a hd partition. This
+partition has to be ext2-formatted. You can launch it with LILO using a
+configuration similar to a DOS/Windows partition.
 
 The installation script creates a script called "flagger" which is used to
 compile C programs for DelphineOS using gcc. For example, if you want to compile
 a program which uses a Makefile, type : make CC=flagger (you must verify that
-the Makefile use $(CC) and doesn't directly call the C compiler.
+the Makefile use $(CC) and doesn't directly call the C compiler).
 
 
 
@@ -65,7 +73,7 @@ IMPORTANT NOTES (If you have made a bootable floppy) :
 
 If you get "Loading DelphineOS...  C", when booting from the disk, please format
 your disk with bad-blocks checking (mke2fs /dev/fd0 -c). The "C" means the
-loader can't read the floppy (certainly because of a bad block).
+loader can't read the floppy (probably because of a bad block).
 The system will crash because we haven't got a floppy driver. So, we can't read
 files from the floppy disk. Conclusion: use the bootable floppy to see if your
 hardware is correctly detected by DelphineOS.
@@ -84,6 +92,5 @@ For the moment, DelphineOS can't use :
 	- Graphic video modes
 
 
-Processes can't be bigger than 4Mb and you can't mount more than 10
-filesystems. DelphineOS only supports ext2 filesystem (may be ext3, not tested)
-in read-only mode.
+Processes can't be bigger than 1Go (should be ok...)
+DelphineOS only supports ext2 filesystems (may be ext3, not tested).

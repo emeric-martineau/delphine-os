@@ -1,19 +1,14 @@
 {******************************************************************************
  *  int.pp
  * 
- *  Ce fichier contient les procédures qui gèrent les exceptions.
+ *  Exceptions management.
  *
- *  CopyLeft 2002 GaLi
+ *  CopyLeft 2003 GaLi
  *
- *  version 0.2 - 14/05/2003 - GaLi - Page fault exception gives more stack.
- *                                    (A process has a 4096 bytes stack but
- *                                    now, we add 4096 bytes if the process
- *                                    has caused an exception because it uses
- *                                    too much stack).
+ *  version 0.2a - 20/09/2003 - GaLi - When a page fault is due to an
+ *    	             	      	      application error, a signal is sent.
  *
- *  version 0.1 - 20/06/2002 - GaLi - Begin "Copy On Write" management
- *
- *  version 0.0 - ??/??/2001 - GaLi - initial version
+ *  version 0.0  - ??/??/2001 - GaLi - initial version
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -37,27 +32,39 @@ unit int;
 INTERFACE
 
 {DEFINE DEBUG_14}
+{DEFINE DEBUG_DO_NO_PAGE}
+{DEFINE DEBUG_DO_WP_PAGE}
+{DEFINE DEBUG_ALLOC_BSS}
 
 {$I fs.inc}
 {$I mm.inc}
 {$I process.inc}
+{$I signal.inc}
 
 
 function  btod (val : byte) : dword; external;
 function  get_free_page : pointer; external;
 function  get_page_rights (adr : pointer) : dword; external;
-function  get_phys_addr (adr : pointer) : pointer; external;
+function  get_phys_addr (adr : dword) : pointer; external;
+function  get_pte (addr : dword) : P_pte_t; external;
 function  inb (port : word) : byte; external;
-function  kmalloc (size : dword) : pointer; external;
-function  MAP_NR (adr : pointer) : dword; external;
+function  MAP_NR (adr : dword) : dword; external;
 procedure memcpy (src, dest : pointer ; size : dword); external;
 procedure memset (adr : pointer ; c : byte ; size : dword); external;
 procedure outb (port : word ; val : byte); external;
 procedure panic (reason : string); external;
+procedure print_bochs (format : string ; args : array of const); external;
 procedure print_registers; external;
 procedure printk (format : string ; args : array of const); external;
 procedure schedule; external;
 procedure send_sig (sig : dword ; p : P_task_struct); external;
+procedure set_page_rights (adr : pointer ; r :dword); external;
+procedure set_pte (addr : dword ; pte : pte_t); external;
+
+
+function  do_no_page (addr : dword) : boolean;
+function  do_wp_page (addr : dword) : boolean;
+procedure ignore_int;
 
 
 var
@@ -70,6 +77,8 @@ var
 
 IMPLEMENTATION
 
+
+{$I inline.inc}
 
 
 {******************************************************************************
@@ -95,31 +104,21 @@ begin
    isr1 := inb($20);
    isr2 := inb($A0);
    printk('WARNING: Unknown interrupt (isr1=%h2, isr2=%h2)\n', [btod(isr1), btod(isr2)]);
-   outb($A0, $20);      { End of interrupt (EOI) pour l'esclave }
-   outb($20, $20);      { EOI pour le maitre }
+   outb($A0, $20);      { Send End Of Interrupt (EOI) to slave PIC }
+   outb($20, $20);      { EOI to master PIC }
 end;
 
 
 
 {******************************************************************************
- * exception_0
+ * exception_0 (Zero divide)
  *
  * Se déclenche lors d'une division par zéro
  ******************************************************************************}
 procedure exception_0; [public, alias : 'EXCEPTION_0'];
-
-var
-   r_eip : dword;
-
 begin
 
-   asm
-      mov   eax, [ebp + 4]
-      mov   r_eip, eax
-   end;
-   printk('\nEIP: %h', [r_eip]);
-
-   panic('Exception 0: zero divide.');
+   send_sig(SIGFPE, current);
 
 end;
 
@@ -246,24 +245,15 @@ end;
 
 
 {******************************************************************************
- * exception_6
+ * exception_6 (Unknown instruction)
  *
  * Se déclenche lorsque le processeur rencontre une instruction inconnue
  *****************************************************************************}
 procedure exception_6; [public, alias : 'EXCEPTION_6'];
-
-var
-   r_eip : dword;
-
 begin
 
-   asm
-      mov   eax, [ebp + 4]
-      mov   r_eip, eax
-   end;
-   printk('\nEIP: %h', [r_eip]);
-
-   panic('Exception 6: unknown instruction.');
+   send_sig(SIGILL, current);
+	schedule();
 
 end;
 
@@ -272,12 +262,12 @@ end;
 {******************************************************************************
  * exception_7
  *
- * Exception 7 is executed when a FPU instruction is executed without FPU or
- * when TS bit (register CR0) is set.
+ * Exception 7 is executed when a FPU instruction is executed without an
+ * installed FPU or if the TS bit (register CR0) is set.
  *
  * FIXME: test this with a user mode program which uses the FPU.
  *****************************************************************************}
-procedure exception_7; [public, alias : 'EXCEPTION_7'];
+procedure exception_7; [public, alias : 'EXCEPTION_7']; interrupt;
 
 const
    P_i387_regs : pointer = NIL;
@@ -286,28 +276,23 @@ begin
 
    if (fpu_present) then
    begin
-      if (P_i387_regs <> NIL) then
+{      if (P_i387_regs <> NIL) then
       begin
          if (P_i387_regs <> current) then
-	 begin
-	    { FIXME: Save FPU registers in P_i387_regs structure }
-	 end;
+	 		begin
+	    		{ FIXME: Save FPU registers in P_i387_regs structure }
+	 		end;
       end;
-      P_i387_regs := current;
-      { Unset TS bit in cr0 }
+      P_i387_regs := current;}
       asm
-         mov   eax, cr0
-	 or    al , $8
-	 mov   cr0, eax
+	 		clts   { Unset TS bit in cr0 }
+			finit
       end;
+   	printk('exception_7 (PID=%d): just setting the TS bit to 0\n', [current^.pid]);
+		
    end
    else
        panic('FPU instruction detected without coprocessor');
-
-   asm
-      leave
-      iret
-   end;
 
 end;
 
@@ -448,9 +433,9 @@ end;
 procedure exception_13; [public, alias : 'EXCEPTION_13'];
 
 var
-   r_cr0, r_cr3, flags : dword;
-   esp0, r_eip : dword;
-   error_code : dword;
+   r_cr0, r_cr3 : dword;
+   esp0, r_eip  : dword;
+   error_code   : dword;
 
 begin
    
@@ -463,14 +448,11 @@ begin
       mov   r_cr0, eax
       mov   eax, cr3
       mov   r_cr3, eax
-      pushfd
-      pop   eax
-      mov   flags, eax
       mov   eax, esp
       mov   esp0, eax
    end;
 
-   printk('\nPID=%d  CR0: %h  CR3: %h  flags: %h\n', [current^.pid, r_cr0, r_cr3, flags]);
+   printk('\nPID=%d  CR0: %h  CR3: %h\n', [current^.pid, r_cr0, r_cr3]);
    printk('EIP: %h  ESP: %h  error_code: %h\n', [r_eip, esp0, error_code]);
 
    panic('General Protection Fault');
@@ -482,8 +464,7 @@ end;
 {******************************************************************************
  * exception_14
  *
- * Se déclenche lorsqu'une page est demandée et n'est pas présente en mémoire.
- * Il faudra donc gerer la memoire virtuelle ici.
+ * Page fault handler.
  *
  * Error code bits definition :
  *
@@ -500,20 +481,18 @@ procedure exception_14; [public, alias : 'EXCEPTION_14'];
 
 var
    error_code : dword;
-   r_cr2      : pointer;
-   page_index : dword;
-   glob_index : dword;
-   fault_adr  : pointer;
-   new_page   : pointer;
+   address    : dword;
    r_eip, i   : dword;
-   page_table : P_pte_t;
+   pte 	     : P_pte_t;
+
+label bad_addr;
 
 begin
 
    asm
-      pushad   { FIXME: May be we could save more registers }
+      pushad   { NOTE: May be we could save more registers }
       mov   eax, cr2
-      mov   r_cr2, eax
+      mov   address, eax
       mov   eax, [ebp + 8]
       mov   r_eip, eax
       mov   eax, [ebp + 4]   { Get error code }
@@ -523,194 +502,216 @@ begin
    end;
 
    {$IFDEF DEBUG_14}
-      printk('exception_14 (%d): %d@%h  rights=%h2  EIP=%h ', [current^.pid, error_code, r_cr2,
-      							       get_page_rights(get_phys_addr(r_cr2)), r_eip]);
+      print_bochs('exception_14 (%d): %d@%h (%h) rights=%h2 BRK=%h %h\n',
+      	    		[current^.pid, error_code, address, get_pte(address),
+	      	   	 get_page_rights(get_phys_addr(address)), current^.brk,
+				   	 current^.end_data]);
    {$ENDIF}
 
-   if (error_code and $4) <> $4 then
+   if not ((address > $C0000000) and (address < current^.brk)) then
+      goto bad_addr;
+
+   pte := get_pte(address);
+
+   if ((longint(pte) = MAPPED_PAGE) or (pte = NIL))then
    begin
-      printk('\nPage fault in kernel mode (fuckin'' bad news !!!) PID=%d\n', [current^.pid]);
-      printk('CR2: %h -> %h  error_code: %d  EIP=%h -> %h\n', [r_cr2, get_phys_addr(r_cr2), error_code, r_eip,
-     							       get_phys_addr(pointer(r_eip))]);
-      panic('kernel panic');
+      if (do_no_page(address) = FALSE) then
+		goto bad_addr;
    end
-   else    { The page fault appeared in user mode }
+   else
    begin
-      if (error_code and $1) = $1 then   { Protection violation }
+      if (error_code and 2) = 2 then
+      { It's a write fault }
       begin
+			if (mem_map[MAP_NR(address)].flags and WRITE_PAGE) = 0 then
+	 		begin
+	    		printk('exception_14 (%d): try to write on a read-only page (%h) %d\n', [current^.pid, address, mem_map[MAP_NR(address)].flags]);
+	    		goto bad_addr;
+	 		end;
+			if (do_wp_page(address) = FALSE) then
+			goto bad_addr;
+      end
+      else
+      begin
+      	 printk('exception_14: don''t know what to do !!!\n', []);
+      	 panic('');
+      end;
+   end;
 
-         fault_adr := get_phys_addr(r_cr2);
+   asm
+      mov   eax, cr3
+      mov   cr3, eax
+      popad
+      leave
+      add   esp, 4
+      iret
+   end;
 
-	 {* Si fault_page appartient aux pages adressables par le
-	  * processus, on lui en alloue une autre. Sinon, on le tue
-	  * (il a tenté un accès illégal quand même !!!) *}
 
-	 if ((longint(fault_adr) and $FFFFF000) > $FFC01000) and
-	    ((longint(fault_adr) and $FFFFF000) < current^.brk) then
-	 begin
-	    {$IFDEF DEBUG_14}
-	       printk('mem_map count=%d', [mem_map[MAP_NR(fault_adr)].count]);
-	    {$ENDIF}
-	    if (mem_map[MAP_NR(fault_adr)].count > 1) then
-	    begin
-	       asm
-	          pushfd
-	          cli
-	       end;
-	       shared_pages -= 1;
-	       mem_map[MAP_NR(fault_adr)].count -= 1;
-	       asm
-		  popfd
-	       end;
-	       new_page := get_free_page();
-	       if (new_page = NIL) then panic('exception_14: not enough memory');
+bad_addr:
+   {IFDEF DEBUG_14}
+      printk('\nexception_14 (%d): bad_addr: %d@%h -> %h EIP=%h\n\n',
+				 [current^.pid, error_code, address, get_phys_addr(address), r_eip]);
+   {ENDIF}
+   send_sig(SIGSEGV, current);
+   schedule();
+   asm
+      popad
+      leave
+      add   esp, 4
+      iret
+   end;
 
-	       { On recopie les données qui sont dans la page partagée }
-	       memcpy(pointer(longint(fault_adr) and $FFFFF000), new_page, 4096);
-		   
-	       { On enregistre maintenant la nouvelle page avec un accès en écriture }
+end;
 
-	       asm
-	          mov   eax, r_cr2
-		  push  eax
-		  shr   eax, 22
-		  mov   glob_index, eax
-		  pop   eax
-		  shr   eax, 12
-		  and   eax, 1111111111b
-		  mov   page_index, eax
 
-                  mov   edi, cr3
-		  mov   eax, glob_index
-		  shl   eax, 2    { EAX = EAX * 4 }
-		  add   edi, eax
-		  mov   ebx, [edi]
-		  and   ebx, $FFFFF000
-		  mov   eax, page_index
-		  shl   eax, 2
-		  add   ebx, eax
-		  mov   eax, new_page
-		  or    eax, 7   { Access rights }
-		  mov   [ebx], eax
-		  mov   eax, cr3  {* On vide le cache pour que la
-			           * nouvelle entrée soit prise en
-			           * compte* }
-		  mov   cr3, eax
-	       end;
-	    end
-	    else
-	    begin
-	       asm
-		  mov   eax, r_cr2
-		  push  eax
-		  shr   eax, 22
-		  mov   glob_index, eax
-		  pop   eax
-		  shr   eax, 12
-		  and   eax, 1111111111b
-		  mov   page_index, eax
 
-		  mov   edi, cr3
-		  mov   eax, glob_index
-		  shl   eax, 2   { EAX = EAX * 4 }
-		  add   edi, eax
-		  mov   ebx, [edi]
-		  and   ebx, $FFFFF000
-		  mov   eax, page_index
-		  shl   eax, 2
-		  add   ebx, eax
-		  mov   eax, [ebx]
-		  or    eax, 7
-		  mov   [ebx], eax
-		  mov   eax, cr3
-		  mov   cr3, eax
-	       end;
-	    end;
-	    {$IFDEF DEBUG_14}
-	       printk('\n', []);
-	    {$ENDIF}
-	    asm
-	       popad
-	       leave
-	       add   esp, 4   {* On enlève le code d'erreur de la pile
-		               * (voir docs Intel) *}
-	       iret
-	    end;
-	 end
-	 else
-	 begin
-	    printk('Process %d is trying to accces a protected page !!!\n', [current^.pid]);
-	    printk('%d@%h  EIP=%h\n', [error_code, r_cr2, r_eip]);
-	    printk('Killing it !!!\n\n', []);
-	    send_sig(SIGKILL, current);
-	    schedule();
-	    asm
-	       popad
-	       leave
-	       add   esp, 4   {* On enlève le code d'erreur de la pile
-		               * (voir docs Intel) *}
-	       iret
-            end;
-	 end
-       end
-       else
-       begin
-          {* Si on arrive ici, c'est la faute a été causé par un processus
-	   * en mode utilisateur qui veut accéder à une de ces pages
-	   * alors que celle-ci n'est pas pésente en RAM. C'est donc ici
-	   * que l'on devra gérer une partie du swapping *}
-		
-	  { Check if the process needs more stack. If it needs more, we add 4096 bytes for the stack (but not more) }
-	  if ((longint(r_cr2) > $FFBFF000) and (longint(r_cr2) < $FFC00000)) then
-	  begin
-	     page_table := get_free_page();
-	     new_page   := get_free_page();
-	     if ((page_table = NIL) or (new_page = NIL)) then panic('exception_14: not enough memory');
-	     memset(page_table, 0, 4096);
-	     memset(new_page, 0, 4096);
-	     current^.cr3[1022] := longint(page_table) or USER_PAGE;
-	     page_table[1023]   := longint(new_page) or USER_PAGE;
-	     {$IFDEF DEBUG_14}
-	        printk('-> more stack\n', []);
-	     {$ENDIF}
-	     asm
-	        mov   eax, cr3   { Flush TLB, don't know if we really need this. }
-	        mov   cr3, eax   { I put it to be careful }
-	        popad
-		leave
-		add   esp, 4
-		iret
-	     end;
-	  end
-	  else
-	  { The process needs more than 8192 bytes for his stack...  Fuck it  :-) }
-	  if (longint(r_cr2) < $FFBFF000) and (longint(r_cr2) > $FFB00000)then
-	  begin
-	     {printk('\nCR2: %h  error_code: %d  EIP=%h\n', [r_cr2, error_code, r_eip]);}
-	     printk('\n\n---!!!---===***===---!!!---\n', []);
-	     printk('PID %d is using too much stack. (CR2=%h)\n', [current^.pid, r_cr2]);
-	     printk('DelphineOS gives processes 8192 stack bytes (not more), Sorry...\n', []);
-	     printk('Killing PID %d\n---!!!---===***===---!!!---\n\n', [current^.pid]);
-	     send_sig(SIGKILL, current);
-	     schedule();
-	     asm
-	        popad
-		leave
-		add   esp, 4
-		iret
-	     end;
-	  end
-	  else
-	  begin
-	     printk('\nSwapping not implemented yet (PID=%d) !!!\n', [current^.pid]);
-	     printk('CR2: %h  error_code: %d  EIP=%h\n', [r_cr2, error_code, r_eip]);
-	     page_index := (longint(r_cr2) and $FFFF) div 4096;
-	     printk('Current process page table entry #%d dump: ', [page_index]);
-	     printk('%h\n', [current^.page_table[page_index]]);
-	     panic('');
-	  end;
-       end;
-    end;
+{******************************************************************************
+ * do_wp_page
+ *
+ * This function is used to manage Copy On Write
+ *****************************************************************************}
+function do_wp_page (addr : dword) : boolean;
+
+var
+   new_page : pointer;
+
+begin
+
+   result := FALSE;
+
+   if (mem_map[MAP_NR(addr)].count > 1) then
+   begin
+      {$IFDEF DEBUG_DO_WP_PAGE}
+      	 print_bochs('do_wp_page: count > 1 => COW (%d)\n',
+			 				 [mem_map[MAP_NR(addr)].flags]);
+      {$ENDIF}
+		pushfd();
+		cli();
+      shared_pages -= 1;
+      mem_map[MAP_NR(addr)].count -= 1;
+		popfd();
+      new_page := get_free_page();
+      if (new_page = NIL) then
+      begin
+			printk('do_wp_page: not enough memory\n', []);
+	 		exit;
+      end;
+      memcpy(pointer(addr and $FFFFF000), new_page, 4096);
+      set_pte(addr, longint(new_page) or USER_PAGE);
+      {$IFDEF DEBUG_DO_WP_PAGE}
+      	 print_bochs('do_wp_page: new_page=%h -> %d\n',
+			 				 [new_page, mem_map[longint(new_page) shr 12].flags]);
+      {$ENDIF}
+   end
+   else
+   begin
+      {$IFDEF DEBUG_DO_WP_PAGE}
+      	 print_bochs('do_wp_page: COW (just setting page rights)\n', []);
+      {$ENDIF}
+      set_page_rights(pointer(addr), USER_PAGE);
+   end;
+
+	result := TRUE;
+
+end;
+
+
+
+{******************************************************************************
+ * do_no_page
+ *
+ * This function is called when a page fault is due to a non present page.
+ *****************************************************************************}
+function do_no_page (addr : dword) : boolean;
+
+var
+   fichier       : file_t;
+   new_page, buf : pointer;
+   page_nb	     : dword;
+   res           : longint;
+
+begin
+
+   result := FALSE;
+
+   if (addr >= current^.end_data) then
+   { Just allocate one more page for the bss section }
+   begin
+{		if (mapped) then
+		begin
+			panic('mapped file');
+		end
+		else
+		begin}
+		{$IFDEF DEBUG_ALLOC_BSS}
+       	print_bochs('do_no_page: allocating a new page for bss (addr=%h, brk=%h)\n', [addr, current^.brk]);
+      {$ENDIF}
+      new_page := get_free_page();
+      if (new_page = NIL) then
+      begin
+			printk('do_no_page: not enough memory for bss\n', []);
+	 		exit;
+      end;
+      memset(new_page, 0, 4096);   { FIXME: Do we REALLY need this ??? }
+      set_pte(addr, longint(new_page) or USER_PAGE);
+      current^.real_size += 1;
+      result := TRUE;
+{		end;}
+   end
+   else if (addr < BASE_ADDR) then
+   begin
+      {$IFDEF DEBUG_DO_NO_PAGE}
+      	 print_bochs('do_no_page: got to expand stack (%h -> %d)\n', [addr, 1023 - ((BASE_ADDR - addr) div 4096)]);
+      {$ENDIF}
+      new_page := get_free_page();
+      if (new_page = NIL) then
+      begin
+			printk('do_no_page: not enough memory for stack\n', []);
+	 		exit;
+      end;
+      memset(new_page, 0, 4096);   { FIXME: Do we REALLY need this ??? }
+      set_pte(addr, longint(new_page) or USER_PAGE);
+      result := TRUE;
+   end
+   else
+   begin
+      { We have to load the page from disk (text or data section) }
+      if (current^.executable = NIL) then exit;
+      page_nb := (addr - BASE_ADDR) div 4096;
+      if (page_nb > current^.executable^.size div 4096) then exit;
+      {$IFDEF DEBUG_DO_NO_PAGE}
+      	 print_bochs('do_no_page: going to load page %d from disk (addr=%h)\n', [page_nb, addr]);
+      {$ENDIF}
+      buf := get_free_page();
+      if (buf = NIL) then
+      begin
+			printk('do_no_page: not enough memory to read a page from disk\n', []);
+	 		exit;
+      end;
+      memset(@fichier, 0, sizeof(fichier));
+      fichier.pos   := page_nb * 4096;
+      fichier.inode := current^.executable;
+      res := current^.executable^.op^.default_file_ops^.read(@fichier, buf, 4096);
+      if (res <= 0) then
+      begin
+			printk('do_no_page: cannot read from disk\n', []);
+	 		exit;
+      end;
+      
+      { Setting page rights }
+      if (addr < current^.end_code) then
+      	  set_pte(addr, longint(buf) or RDONLY_PAGE)
+      else
+      	  set_pte(addr, longint(buf) or USER_PAGE);
+
+      {$IFDEF DEBUG_DO_NO_PAGE}
+      	 print_bochs('do_no_page: %h -> %h (dump=%h) page %d\n', [addr, get_pte(addr), longint(buf^), page_nb]);
+      {$ENDIF}
+      current^.real_size += 1;
+      result := TRUE;
+   end;
+
 end;
 
 
@@ -718,7 +719,7 @@ end;
 {******************************************************************************
  * exception_15
  *
- * Exception reservée
+ * Reserved by Intel
  *****************************************************************************}
 procedure exception_15; [public, alias : 'EXCEPTION_15'];
 
@@ -814,7 +815,7 @@ end;
 {******************************************************************************
  * exception_19
  *
- * ???
+ * Reserved by Intel
  *****************************************************************************}
 procedure exception_19; [public, alias : 'EXCEPTION_19'];
 
@@ -838,7 +839,7 @@ end;
 {******************************************************************************
  * exception_20
  *
- * ???
+ * Reserved by Intel
  *****************************************************************************}
 procedure exception_20; [public, alias : 'EXCEPTION_20'];
 
@@ -862,7 +863,7 @@ end;
 {******************************************************************************
  * exception_21
  *
- * ???
+ * Reserved by Intel
  *****************************************************************************}
 procedure exception_21; [public, alias : 'EXCEPTION_21'];
 
@@ -886,7 +887,7 @@ end;
 {******************************************************************************
  * exception_22
  *
- * ???
+ * Reserved by Intel
  *****************************************************************************}
 procedure exception_22; [public, alias : 'EXCEPTION_22'];
 
@@ -910,7 +911,7 @@ end;
 {******************************************************************************
  * exception_23
  *
- * ???
+ * Reserved by Intel
  *****************************************************************************}
 procedure exception_23; [public, alias : 'EXCEPTION_23'];
 
@@ -934,7 +935,7 @@ end;
 {******************************************************************************
  * exception_24
  *
- * ???
+ * Reserved by Intel
  *****************************************************************************}
 procedure exception_24; [public, alias : 'EXCEPTION_24'];
 
@@ -958,7 +959,7 @@ end;
 {******************************************************************************
  * exception_25
  *
- * ???
+ * Reserved by Intel
  *****************************************************************************}
 procedure exception_25; [public, alias : 'EXCEPTION_25'];
 
@@ -982,7 +983,7 @@ end;
 {******************************************************************************
  * exception_26
  *
- * ???
+ * Reserved by Intel
  *****************************************************************************}
 procedure exception_26; [public, alias : 'EXCEPTION_26'];
 
@@ -1006,7 +1007,7 @@ end;
 {******************************************************************************
  * exception_27
  *
- * ???
+ * Reserved by Intel
  *****************************************************************************}
 procedure exception_27; [public, alias : 'EXCEPTION_27'];
 
@@ -1031,7 +1032,7 @@ end;
 {******************************************************************************
  * exception_28
  *
- * ???
+ * Reserved by Intel
  *****************************************************************************}
 procedure exception_28; [public, alias : 'EXCEPTION_28'];
 
@@ -1055,7 +1056,7 @@ end;
 {******************************************************************************
  * exception_29
  *
- * ???
+ * Reserved by Intel
  *****************************************************************************}
 procedure exception_29; [public, alias : 'EXCEPTION_29'];
 
@@ -1079,7 +1080,7 @@ end;
 {******************************************************************************
  * exception_30
  *
- * ???
+ * Reserved by Intel
  *****************************************************************************}
 procedure exception_30; [public, alias : 'EXCEPTION_30'];
 
@@ -1103,7 +1104,7 @@ end;
 {******************************************************************************
  * exception_31
  *
- * ???
+ * Reserved by Intel
  *****************************************************************************}
 procedure exception_31; [public, alias : 'EXCEPTION_31'];
 

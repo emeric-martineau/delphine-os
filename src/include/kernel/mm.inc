@@ -41,15 +41,18 @@ type
    end;
 
    mmap_struct = record
-      start, length, prot : dword;
-      flags, fd, offset   : dword;
+      addr, len, prot  : dword;
+      flags, fd, pgoff : dword;
    end;
 
    mmap_req = record   { This is used to record mmap requests in task_struct }
-      addr : pointer;
-      size : dword;
-      next : ^mmap_req;
-      prev : ^mmap_req;
+      addr  : pointer;
+      size  : dword;
+		flags : byte;
+		prot  : byte;
+		count : word;
+      next  : ^mmap_req;
+      prev  : ^mmap_req;
    end;
 
 
@@ -59,14 +62,19 @@ const
 
     bitmap2 : array[1..9] of dword = (4064, 4080, 4088, 0, 0, 0, 0, 0, 0);
 
+
 { Définition (index) des bits du champ 'flags' du type 'T_page' }
 
     PG_reserved = 0;
     PG_DMA      = 1;
 
+
 { Page table entries flags }
 
-    USER_PAGE    = 7;   { PRESENT_PAGE or WRITE_PAGE or USER_MODE }
+    NULL_PAGE    = $200; { The page has been chosen but not allocated }
+	 MAPPED_PAGE  = $200;
+    USER_PAGE    = 7;    { PRESENT_PAGE or WRITE_PAGE or USER_MODE }
+    RDONLY_PAGE  = 5;    { PRESENT_PAGE or USER_MODE }
     KERNEL_PAGE  = 1;
 
     USER_MODE    = 4;
@@ -87,11 +95,17 @@ const
 
     MAP_SHARED    = $01;   { Share changes }
     MAP_PRIVATE   = $02;   { Changes are private }
+	 MAP_TYPE		= $0f;	{ Mask for type of mapping }
     MAP_FIXED     = $10;   { Interpret addr exactly }
     MAP_ANONYMOUS = $20;   { don't use a file }
 
+	 {* Unused flags *}
+	 MAP_DENYWRITE  = $0800;
+	 MAP_EXECUTABLE = $1000;
+
+
     MREMAP_MAYMOVE = 1;
-    MREMAP_FIXED = 2;
+    MREMAP_FIXED   = 2;
 
 
 {$ENDIF}

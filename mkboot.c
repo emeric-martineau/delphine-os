@@ -17,15 +17,17 @@ int blocks_to_read, fd, kinode_block, kinode_offset;
 FILE* outfile;
 
 
-char superbloc[128];
-unsigned int* ipg = (unsigned int*)&superbloc[40];
-unsigned int* blk_size = (unsigned int*)&superbloc[24];
-unsigned short* magic = (unsigned short*)&superbloc[56];
-short drive, ipb, partition_ofs, nb_sec, blocks_to_64k;
-short max_kernel_blocs;
 
 int main (int argc, char *argv[])
 {
+
+	char 					superbloc[128];
+	unsigned int* 		ipg = (unsigned int*)&superbloc[40];
+	unsigned int* 		blk_size = (unsigned int*)&superbloc[24];
+	unsigned short*	magic = (unsigned short*)&superbloc[56];
+	short 				drive, ipb, partition_ofs, nb_sec, blocks_to_64k;
+	short 				max_kernel_blocs;
+
    if (argc != 3) {
       puts("\nmkboot : You must specify device and kernel file ...");
       puts("Ex : mkboot /dev/hda1 /mnt/kernel\n");
@@ -33,13 +35,13 @@ int main (int argc, char *argv[])
    }
 
    if (stat(argv[2], &st) != 0) {   
-      perror("stat");
+      perror("mkboot: stat");
       return -1;
    }
 
    major = st.st_dev >> 8;
    minor = st.st_dev & 0xFF;
-      
+
    if ((major == 2) && (minor == 0)) {
       drive = 0;
       partition_ofs = 0;
@@ -70,46 +72,52 @@ int main (int argc, char *argv[])
       drive = 0x80;
       partition_ofs = 0x1BE;
    }
-   
+
    if ((major == 3) && (minor > 64)) {
       drive = 0x81;
    }
-   
-   if ((fd = open(argv[1], O_RDONLY )) < 0) {
-      printf("\nCan't open device !!!\n\n");
+drive = 0x80;
+partition_ofs = 0x1BE;
+   if ((fd = open(argv[1], O_RDONLY)) < 0) {
+      printf("\nmkboot: Can't open device !!!\n\n");
       return(-1);
    }
 
 /* On va lire le superbloc pour avoir le nombre d'inodes par bloc */
-   
-   if (lseek (fd,0x400,SEEK_SET) != 0x400) {
-      printf("\nCan't open device !!!\n\n");
+
+   if (lseek(fd, 0x400, SEEK_SET) != 0x400) {
+		perror("\n\nfseek");
+      printf("mkboot: Can't open device (1) !!!\n\n");
       return(-1);
    }
-   
+
    if (read(fd, superbloc, 128) != 128) {
-      printf("\n\nCan't read device !!!");
+      perror("\n\nread");
+		printf("mkboot: Can't read device (2) !!!\n\n");
       return(-1);
    }
-   
+
 /* On ne gère (pour l'instant) que le 1er groupe de blocs. On va vérifier si
  * l'inode à lire fait partie du 1er groupe de blocs */
    
    if ( st.st_ino > *ipg ) {
-      printf("\nInode number must be < %d\n\n",*ipg);
+      printf("\nmkboot: Inode number must be < %d\n\n",*ipg);
       return(-1);
    }
    
    switch (*blk_size) {
+
     case 0:
-      { *blk_size = 1;}
+		*blk_size = 1;
       break;
+
     case 1:
-	{ *blk_size = 2;}
-        break;
+		*blk_size = 2;
+		break;
+
     case 2:
-	{*blk_size = 4;}
-      break;
+		*blk_size = 4;
+		break;
    }
 
    ipb = ( *blk_size * 1024 ) / 128;   
@@ -147,20 +155,20 @@ int main (int argc, char *argv[])
  * source du boot loader */
    
    if ( blocks_to_read > max_kernel_blocs ) {
-      printf("\nKernel too big for actual loader !!!\n\n");
+      printf("\nmkboot: Kernel too big for actual loader !!!\n\n");
       return(-1);
    }
 
    if ((outfile = fopen("./src/boot/boot.dat","w")) == NULL) {
-      perror("Can't create data file ");
+      perror("mkboot: Can't create data file ");
       return(-1);
    }
 
    calc = div(st.st_ino, ipb);
    kinode_block = calc.quot;
-   kinode_offset = (calc.rem * 128) - 128; /* On commence à compter les inodes
-					    * à partir de 1 et non pas à partir
-					    * de 0 !!! */
+   kinode_offset = (calc.rem * 128) - 128;
+	/* On commence à compter les inodes à partir de 1 et non pas à partir
+	 * de 0 !!! */
    
    fprintf(outfile, "drive EQU %d\n", drive);
    fprintf(outfile, "partition_ofs EQU %d\n", partition_ofs);

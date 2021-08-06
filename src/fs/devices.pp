@@ -44,6 +44,10 @@ var
    blkdevs : array[0..MAX_NR_BLOCK_DEV] of device_struct; external name 'U_VFS_BLKDEVS';
 
 
+function  blkdev_open (inode : P_inode_t ; filp : P_file_t) : dword;
+function  chrdev_open (inode : P_inode_t ; filp : P_file_t) : dword;
+
+
 
 IMPLEMENTATION
 

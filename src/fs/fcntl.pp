@@ -39,6 +39,7 @@ INTERFACE
 
 {DEFINE DEBUG_SYS_FCNTL}
 {DEFINE DEBUG_SYS_DUP}
+{DEFINE DEBUG_SYS_DUP2}
 
 {* External procedure and functions *}
 
@@ -57,11 +58,12 @@ var
 {* Procedures and functions defined in this file *}
 
 function  sys_dup (fildes : dword) : dword; cdecl;
-function  sys_dup2 (fildes, fildes2 : dword) : dword; cdecl;
+function  sys_dup2 (oldfd, newfd : dword) : dword; cdecl;
 
 
 IMPLEMENTATION
 
+{$I inline.inc}
 
 {* Constants only used in THIS file *}
 
@@ -104,25 +106,49 @@ end;
  *
  * FIXME: not tested
  *****************************************************************************}
-function sys_dup2 (fildes, fildes2 : dword) : dword; cdecl; [public, alias : 'SYS_DUP2'];
+function sys_dup2 (oldfd, newfd : dword) : dword; cdecl; [public, alias : 'SYS_DUP2'];
+
+label out;
+
 begin
 
-   if (fildes >= OPEN_MAX) or (current^.file_desc[fildes] = NIL) then
+   {$IFDEF DEBUG_SYS_DUP2}
+      printk('sys_dup2 (%d): %d %d\n', [current^.pid, oldfd, newfd]);
+   {$ENDIF}
+
+	sti();
+
+   if (oldfd >= OPEN_MAX) or (current^.file_desc[oldfd] = NIL) then
    begin
       result := -EBADF;
+		{$IFDEF DEBUG_SYS_DUP2}
+			printk('sys_dup2 (%d): %s is not a valid fd\n', [current^.pid, oldfd]);
+		{$ENDIF}
       exit;
    end;
 
-   if (fildes2 >= OPEN_MAX) then
+	result := newfd;
+
+	if (newfd = oldfd) then goto out;
+
+   if (newfd >= OPEN_MAX) then
    begin
       result := -EINVAL;
    end
    else
    begin
-      sys_close(fildes2);
-      current^.file_desc[fildes2] := current^.file_desc[fildes];
-      result := fildes2;
+      sys_close(newfd);
+      current^.file_desc[oldfd]^.count += 1;
+      current^.file_desc[newfd] := current^.file_desc[oldfd];
    end;
+
+out:
+
+	current^.close_on_exec := current^.close_on_exec and ( not (1 shl newfd));
+
+	{$IFDEF DEBUG_SYS_DUP2}
+		printk('sys_dup2 (%d): result=%d\n', [current^.pid, result]);
+	{$ENDIF}
 
 end;
 
@@ -140,11 +166,13 @@ var
 
 begin
 
-   asm
-      sti
-   end;
+   {$IFDEF DEBUG_SYS_DUP}
+      printk('sys_dup (%d): fildes=%d (%h)\n', [current^.pid, fildes, current^.file_desc[fildes]]);
+   {$ENDIF}
 
-   if (fildes >= OPEN_MAX) {or (current^.file_desc[fildes] = NIL)} then
+	sti();
+
+   if (fildes >= OPEN_MAX) or (current^.file_desc[fildes] = NIL) then
    begin
       result := -EBADF;
       exit;
@@ -156,21 +184,23 @@ begin
           fd += 1;
 
    if (current^.file_desc[fd] = NIL) then
-       { There is at least one free file descriptor }
-       begin
-	  current^.file_desc[fildes]^.count += 1;
-	  current^.file_desc[fildes]^.inode^.count += 1;
-          current^.file_desc[fd] := current^.file_desc[fildes];
-          {$IFDEF DEBUG_SYS_DUP}
-	     printk('sys_dup (%d): %d -> %d\n', [current^.pid, fildes, fd]);
-	  {$ENDIF}
-	  result := fd;
-       end
+	{ There is at least one free file descriptor }
+	begin
+		current^.file_desc[fildes]^.count += 1;
+{		current^.file_desc[fildes]^.inode^.count += 1;}
+		current^.file_desc[fd] := current^.file_desc[fildes];
+		{$IFDEF DEBUG_SYS_DUP}
+			printk('sys_dup (%d): %d -> %d\n', [current^.pid, fildes, fd]);
+		{$ENDIF}
+		result := fd;
+	end
    else
-       begin
-          printk('sys_dup (%d): too many opened files\n', [current^.pid]);
-	  result := -EMFILE;
-       end;
+	begin
+		printk('sys_dup (%d): too many opened files\n', [current^.pid]);
+		result := -EMFILE;
+	end;
+
+	current^.close_on_exec := current^.close_on_exec and ( not (1 shl fd));
 
 end;
 
@@ -188,9 +218,7 @@ var
 
 begin
 
-   asm
-      sti
-   end;
+	sti();
 
    fichier := current^.file_desc[fd];
 
@@ -200,30 +228,40 @@ begin
       exit;
    end;
 
+   result := -ENOSYS;
+
    case (cmd) of
       F_DUPFD: result := sys_dup(fd);
+
       F_GETFD: begin
                   result := (current^.close_on_exec shr fd) and 1;
-      		  printk('F_GETFD (fd=%d): close_on_exec=%h\n', [fd, current^.close_on_exec]);
+      		   	printk('F_GETFD (fd=%d): close_on_exec=%h\n', [fd, current^.close_on_exec]);
       	       end;
+
       F_SETFD: begin
-      		  if (arg and 1) = 1 then   { We set the flag }
-		      current^.close_on_exec := current^.close_on_exec or (1 shl fd)
-		  else
-		  begin   { We unset the flag }
-{		     printk('F_SETFD (fd=%d, arg=%d): %h ', [fd, arg, current^.close_on_exec]);}
-		     current^.close_on_exec := current^.close_on_exec and ( not (1 shl fd));
-{		     printk('%h\n', [current^.close_on_exec]);}
-		  end;
-		  result := 0;
+      		   	if (arg and 1) = 1 then   { We set the flag }
+							 current^.close_on_exec := current^.close_on_exec or (1 shl fd)
+		   			else
+		   			begin   { We unset the flag }
+{		      			printk('F_SETFD (fd=%d, arg=%d): %h ', [fd, arg, current^.close_on_exec]);}
+		      			current^.close_on_exec := current^.close_on_exec and ( not (1 shl fd));
+{		      			printk('%h\n', [current^.close_on_exec]);}
+		   			end;
+		   			result := 0;
       	       end;
-      F_GETFL: result := fichier^.flags;
+
+      F_GETFL:  result := fichier^.flags;
+
       else
          printk('sys_fcntl (%d): unknown command (%h)\n', [current^.pid, cmd]);
    end;
 
    {$IFDEF DEBUG_SYS_FCNTL}
-      printk('sys_fcntl (%d): cmd=%d, fd=%d, arg=%d -> res=%d\n', [current^.pid, cmd, fd, arg, result]);
+      if (cmd = F_DUPFD) then
+          printk('sys_fcntl (%d): have called sys_dupfd(%d)\n', [current^.pid, fd])
+      else
+          printk('sys_fcntl (%d): cmd=%d, fd=%d, arg=%d -> res=%d (%d)\n', [current^.pid, cmd, fd, arg, result,
+	   				fichier^.flags]);
    {$ENDIF}
 
 end;

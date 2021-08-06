@@ -1,9 +1,11 @@
 {******************************************************************************
  *  ide.pp
  * 
- *  ATA/ATAPI devices management
+ *  ATA/ATAPI devices detection
  *
- *  CopyLeft 2002 GaLi
+ *  CopyLeft 2003 GaLi
+ *
+ *  version 0.6 - 27/09/2003 - GaLi - Lots of clean up   :-)
  *
  *  version 0.5 - 23/11/2002 - GaLi - Add support for really old hard drives
  *
@@ -11,20 +13,20 @@
  *
  *  version 0.3 - ??/??/2001 - GaLi - initial version
  *
- *  NOTE: special support for Promise 20262 PCI mass storage controller
- *        (because this is what I have)   :-)
+ *  NOTE: special (very limited) support for Promise 20262 PCI mass storage
+ *    	  controller (because this is what I have)   :-)
  *
- *  Major number stands for the IDE interface on which the device is
+ *  Major number stands for the IDE interface on which the device is.
  *  Minor number stands for device partition.
  *
  *  You must specify both major and minor numbers when calling a procedure or
  *  a function.
  *
  *  Major numbers :
- *      - hda, hdb : 3
- *      - hdc, hdd : 4
- *      - hde, hdf : 5
- *      - hdg, hdh : 6
+ *      - hda, hdb : IDE0_MAJOR (3)
+ *      - hdc, hdd : IDE1_MAJOR (4)
+ *      - hde, hdf : IDE2_MAJOR (5)
+ *      - hdg, hdh : IDE3_MAJOR (6)
  * 
  *  Minor numbers :
  *      - 0        : Master device itself (no filesystem support)
@@ -53,10 +55,10 @@
 unit ide_init;
 
 
+
 INTERFACE
 
-{DEFINE DEBUG}
-{DEFINE SHOW_PART_TYPE}
+
 
 {$I blk.inc}
 {$I buffer.inc}
@@ -65,6 +67,12 @@ INTERFACE
 {$I major.inc}
 {$I process.inc}
 {$I pci.inc}
+
+
+
+{DEFINE DEBUG}
+{DEFINE SHOW_PART_TYPE}
+
 
 
 { External procedures }
@@ -90,8 +98,9 @@ var
    first_pci_device : P_pci_device; external name 'U_PCI_INIT_FIRST_PCI_DEVICE';
    nb_pci_devices : dword; external name 'U_PCI_INIT_NB_PCI_DEVICES';
    
-   ide_hd_nb_intr : dword; external name 'U_IDE_HD_IDE_HD_NB_INTR';
-   ide_hd_nb_sect : dword; external name 'U_IDE_HD_IDE_HD_NB_SECT';
+   ide_hd_nb_intr       : dword; external name 'U_IDE_HD_IDE_HD_NB_INTR';
+   ide_hd_nb_sect_read  : dword; external name 'U_IDE_HD_IDE_HD_NB_SECT_READ';
+   ide_hd_nb_sect_write : dword; external name 'U_IDE_HD_IDE_HD_NB_SECT_WRITE';
 
 
 { Exported variables }
@@ -105,8 +114,10 @@ procedure detect_drive (major, minor : byte);
 function  drive_busy (major, minor : byte) : boolean;
 procedure extended_part (major, minor : byte ; p_begin : dword);
 procedure init_ide;
+function  lba_capacity_is_ok (id : P_drive_id) : boolean;
 procedure partition_check (major, minor : byte);
 procedure print_ide_info (command : byte ; major, minor : byte);
+procedure select_drive (major, minor : byte);
 
 
 
@@ -129,6 +140,103 @@ var
 
 
 {******************************************************************************
+ * lba_capacity_is_ok
+ *
+ * Performs a sanity check on the claimed "lba_capacity" value for a drive.
+ *
+ * Returns: 1 if lba_capacity looks sensible
+ *    	    0 otherwise
+ *
+ * NOTE: Code from Linux 2.4.22 (drivers/ide/ide-disk.c)
+ *****************************************************************************}
+function lba_capacity_is_ok (id : P_drive_id) : boolean;
+
+var
+   lba_sects, chs_sects, head, tail : dword;
+
+begin
+
+   if (((id^.command_set_2 and $400) = $400) and
+       ((id^.cfs_enable_2 and $400) = $400)) then
+   begin
+      { 48-bit Drive. Not supported by DelphineOS }
+      printk('48-bit Drive (not supported) ', []);
+      result := FALSE;
+      exit;
+   end;
+
+   {*
+    * The ATA spec tells large drives to return
+    * C/H/S = 16383/16/63 independent of their size.
+    * Some drives can be jumpered to use 15 heads instead of 16.
+    * Some drives can be jumpered to use 4092 cyls instead of 16383.
+    *}
+   if (((id^.cyls = 16383) or ((id^.cyls = 4092) and (id^.cur_cyls = 16383)))
+      and (id^.sectors = 63) and ((id^.heads = 15) or (id^.heads = 16))
+      and (id^.lba_capacity >= 16383*63*id^.heads)) then
+   begin
+      result := TRUE;
+      exit;
+   end;
+
+   lba_sects := id^.lba_capacity;
+   chs_sects := id^.cyls * id^.heads * id^.sectors;
+
+   {* perform a rough sanity check on lba_sects:  within 10% is OK *}
+   if ((lba_sects - chs_sects) < chs_sects div 10) then
+   begin
+      result := TRUE;
+      exit;
+   end;
+
+   {* some drives have the word order reversed *}
+   asm
+      mov   eax, lba_sects
+      shr   eax, 16
+      and   eax, $FFFF
+      mov   head, eax	{ head = ((lba_sects >> 16) & 0xffff); }
+   end;
+   tail := lba_sects and $FFFF;
+   asm
+      mov   eax, tail
+      shl   eax, 16
+      or    eax, head
+      mov   lba_sects, eax
+   end;
+   if ((lba_sects - chs_sects) < chs_sects div 10) then
+   begin
+      id^.lba_capacity := lba_sects;
+      result := TRUE;
+      exit;   {* lba_capacity is (now) good *}
+   end;
+
+   result := FALSE;   {* lba_capacity value may be bad *}
+
+end;
+
+
+
+{******************************************************************************
+ * select_drive
+ *
+ *****************************************************************************}
+procedure select_drive (major, minor : byte);
+
+var
+   base : word;
+   drive_nb : byte;
+
+begin
+
+   base     := drive_info[major, minor div 64].IO_base;
+   drive_nb := drive[minor div 64];
+   outb(base + DRIVE_HEAD_REG, drive_nb);
+
+end;
+
+
+
+{******************************************************************************
  * drive_busy
  *
  * Input  : major and minor number
@@ -137,51 +245,27 @@ var
  * Return TRUE if device is busy (or if there is no device) and FALSE if device
  * is ready. 
  *****************************************************************************}
-function drive_busy(major, minor : byte) : boolean; [public, alias : 'DRIVE_BUSY'];
+function drive_busy (major, minor : byte) : boolean; [public, alias : 'DRIVE_BUSY'];
 
 var
-   ret, drive_nb : byte;
-   base          : word;
+   i    : dword;
+   base : word;
 
 begin
 
-   base     := drive_info[major, minor div 64].IO_base;
-   drive_nb := drive[minor div 64];
+   base   := drive_info[major, minor div 64].IO_base;
+   result := TRUE;
 
-   asm
-       mov   ebx, 70000            { Number of tests }
+   for i := 1 to 70000 do
+   begin
+      if (inb(base + STATUS_REG) and BUSY_STAT) = 0 then
+      begin
+      	 result := FALSE;
+	 exit;
+      end;
+   end;
 
-       mov   dx , base
-       add   dx , DRIVE_HEAD_REG   { Drive register }
-       mov   al , drive_nb
-       out   dx , al
-
-       inc   dx                    { Status register }
-
-       @loop_while_busy:
-           dec   ebx
-           cmp   ebx, 0
-           jz    @time_out
-           in    al , dx
-           and   al , $80           { Look at 'busy bit' }
-           cmp   al , $80           { Set to 1 ? (device busy) }
-           je @loop_while_busy      { Yes -> test again }
-
-       mov   ret , 0
-       jmp   @end_func
-
-     @time_out:
-       mov   ret , 1
-
-     @end_func:
-   end; { -> asm }
-
-   if (ret = 1) then
-       result := TRUE
-   else
-       result := FALSE;
-
-end; { -> procedure }
+end;
 
 
 
@@ -192,51 +276,27 @@ end; { -> procedure }
  * Input  : major and minor number
  * Output : TRUE or FALSE
  *
- * Return TRUE is data is available
+ * Return TRUE if data can be transferred
  *****************************************************************************}
-function data_ready (major, minor : byte) : boolean;
+function data_ready (major, minor : byte) : boolean; [public, alias : 'DATA_READY'];
 
 var
-   drive_nb, ret : byte;
-   base          : word;
+   i    : dword;
+   base : word;
 
 begin
 
-   base     := drive_info[major, minor div 64].IO_base;
-   drive_nb := drive[minor div 64];
+   base   := drive_info[major, minor div 64].IO_base;
+   result := FALSE;
 
-   asm
-      mov   ebx, 40000
-
-      mov   dx , base
-      add   dx , DRIVE_HEAD_REG    { Drive register }
-      mov   al , drive_nb
-      out   dx , al
-
-      inc   dx                     { Status register }
-
-      @wait_data:
-         dec   ebx
-	 cmp   ebx, 0
-	 jz    @time_out
-	 in    al , dx
-	 and   al , $08
-	 cmp   al , $08
-	 jne   @wait_data
-
-      mov   ret, 0
-      jmp   @end_func
-
-      @time_out:
-         mov   ret, 1
-
-      @end_func:
+   for i := 1 to 70000 do
+   begin
+      if (inb(base + STATUS_REG) and (DRQ_STAT or BUSY_STAT)) = DRQ_STAT then
+      begin
+         result := TRUE;
+	 exit;
+      end;
    end;
-
-   if (ret = 1) then
-       result := FALSE
-   else
-       result := TRUE;
 
 end;
 
@@ -253,32 +313,13 @@ end;
 function drive_error (major, minor : byte) : boolean;
 
 var
-   drive_nb, ret : byte;
-   base          : word;
+   base : word;
 
 begin
 
-   base     := drive_info[major, minor div 64].IO_base;
-   drive_nb := drive[minor div 64];
+   base := drive_info[major, minor div 64].IO_base;
 
-   asm
-      mov   dx , base
-      add   dx , STATUS_REG
-      in    al , dx
-      and   al , $01
-      cmp   al , $01
-      je    @error
-
-      mov   ret, 0
-      jmp   @end_func
-
-      @error:
-         mov   ret, 1
-
-      @end_func:
-   end;
-
-   if (ret = 1) then
+   if (inb(base + STATUS_REG) and ERR_STAT) = ERR_STAT then
        result := TRUE
    else
        result := FALSE;
@@ -342,13 +383,11 @@ begin
    outb(base + DRIVE_HEAD_REG, tete or drv);   { Head }
    outb(base + CMD_REG, WIN_READ);             { Read sector command }
 
-   if not drive_error(major, minor) then 
+   if (not drive_error(major, minor)) and
+       data_ready(major, minor) then 
    begin
-      while (not data_ready(major, minor)) do
-      begin
-      end;
       { Data are there, no error }
-      port := base;
+      port    := base;
       buf_adr := addr(buffer);
 
       asm
@@ -363,9 +402,7 @@ begin
       end; { -> asm }
    end
    else
-   begin
       printk('\nextended_part: cannot read sector\n', []);
-   end;
 
    if (buffer.magic_word) <> $AA55 then
        printk('!', []);
@@ -381,13 +418,14 @@ begin
 	    begin
 	       if (buffer.entry[i].type_part <> 0) then
 	       begin
-	          drive_info[major, min].part[ext_no].p_type := buffer.entry[i].type_part;
+	          drive_info[major, min].part[ext_no].p_type  := buffer.entry[i].type_part;
 	          drive_info[major, min].part[ext_no].p_begin := buffer.entry[i].dist_sec + p_begin;
-		  drive_info[major, min].part[ext_no].p_size := buffer.entry[i].taille_part;
+		  drive_info[major, min].part[ext_no].p_size  := buffer.entry[i].taille_part;
 		  printk(hd_str[major, min], []);
 		  printk('%d ', [ext_no]);
 		  {$IFDEF SHOW_PART_TYPE}
-		     printk('(%h2: %d->%d) ', [buffer.entry[i].type_part, buffer.entry[i].dist_sec, buffer.entry[i].dist_sec + buffer.entry[i].taille_part]);
+		     printk('(%h2 (%d Mo) ', [buffer.entry[i].type_part, ((buffer.entry[i].taille_part *
+		     512) div 1024) div 1024]);
 		  {$ENDIF}
 		  ext_no += 1;
 	       end;
@@ -440,13 +478,11 @@ begin
    outb(base + DRIVE_HEAD_REG, drive[min]);    { Head 0 }
    outb(base + CMD_REG, WIN_READ);             { Read sector command }
 
-   if not drive_error(major, minor) then
+   if (not drive_error(major, minor))
+       and data_ready(major, minor) then
    begin
-      while (not data_ready(major, minor)) do
-      begin
-      end;
       { Data is ready, no error }
-      port := base;
+      port    := base;
       buf_adr := addr(buffer);
 
       asm
@@ -461,9 +497,7 @@ begin
       end; { -> asm }
    end
    else
-   begin
       printk('partition_check: cannot read sector\n', []);
-   end;
 
    { Verify 'magic word' to know if the partition table is valid }
    if (buffer.magic_word = $AA55) then
@@ -478,7 +512,8 @@ begin
 	    printk(hd_str[major, min], []);
             printk('%d ', [i]);
 	    {$IFDEF SHOW_PART_TYPE}
-	       printk('(%h2: %d->%d) ', [buffer.entry[i].type_part, buffer.entry[i].dist_sec, buffer.entry[i].dist_sec + buffer.entry[i].taille_part]);
+      	       printk('(%h2 (%d Mo)) ', [buffer.entry[i].type_part, ((buffer.entry[i].taille_part *
+      	       512) div 1024) div 1024]);
 	    {$ENDIF}
 
             case (buffer.entry[i].type_part) of
@@ -574,30 +609,23 @@ begin
         printk(', ', []);
 
         { Print hard drive size }
+
         { Does it support LBA ? }
-        i := ata_buffer.capability;
 
-        asm
-            mov   al , i
-            and   al , 2
-            mov    i , al
-        end; { -> asm }
-
-        if (i = 2) then
+        if ((ata_buffer.capability and 2) = 2) and
+	     lba_capacity_is_ok(@ata_buffer) then
 	begin
             { Device supports LBA }
             drive_info[major, min].ide_type := drive_info[major, min].ide_type or $80;
             printk('%d', [ata_buffer.lba_capacity div 2048]);
             printk('Mb ', []);
             drive_info[major, min].lba_sectors := ata_buffer.lba_capacity;
-	    drive_info[major, min].cyls    := ata_buffer.cur_cyls;
-	    drive_info[major, min].heads   := ata_buffer.cur_heads;
-	    drive_info[major, min].sectors := ata_buffer.cur_sectors;
+	    drive_info[major, min].cyls        := ata_buffer.cur_cyls;
+	    drive_info[major, min].heads       := ata_buffer.cur_heads;
+	    drive_info[major, min].sectors     := ata_buffer.cur_sectors;
 
             if (ata_buffer.buf_size <> 0) then
-	    begin
                 printk('w/%dk cache ', [ata_buffer.buf_size div 2]);
-            end;
 
             printk('using LBA ', []);
         end { -> then }
@@ -630,8 +658,8 @@ begin
                 printk(' w/%dk cache', [ata_buffer.buf_size div 2]);
 
             printk(', CHS=%d/%d/%d ', [drive_info[major, min].cyls,
-                                        drive_info[major, min].heads,
-                                        drive_info[major, min].sectors]);
+                                       drive_info[major, min].heads,
+                                       drive_info[major, min].sectors]);
         end; { -> if.. then.. else...}
 
         { Does it support 32bits I/O ? }
@@ -706,6 +734,8 @@ begin
    min    := minor div 64;
    base   := drive_info[major, min].IO_base;
 
+   select_drive(major, minor);
+
    {$IFDEF DEBUG}
       printk('Trying to find dev %d:%d at io %h4\n', [major, minor, base]);
    {$ENDIF}
@@ -717,7 +747,6 @@ begin
       if not drive_busy(major, minor) then
       begin
          if (data_ready(major, minor) and not drive_error(major, minor)) then
-	 { if (((a and $1) = 0) and ((a and $8) = 8)) then }
 	 { Data is ready, no error }
 	 begin
 	    printk(hd_str[major, min], []);
@@ -911,9 +940,11 @@ var
 
 begin
 
-   ide_hd_nb_intr := 0;
-   ide_hd_nb_sect := 0;
+   ide_hd_nb_intr       := 0;
+   ide_hd_nb_sect_read  := 0;
+   ide_hd_nb_sect_write := 0;
 
+   memset(@drive_info, 0, sizeof(drive_info));
    drive_info[IDE0_MAJOR, MASTER].IO_base := $1F0;
    drive_info[IDE0_MAJOR, MASTER].irq     := 14;
    drive_info[IDE0_MAJOR, SLAVE].IO_base  := $1F0;
@@ -929,24 +960,16 @@ begin
 
    init_pci_ide();
 
+   do_hd := @unexpected_hd_intr;
+
    { We give all devices type FFh (no drive), it will be modified if a drive
      is detected }
-
-   do_hd  := @unexpected_hd_intr;
-
    for i := IDE0_MAJOR to IDE3_MAJOR do
    begin
-      drive_info[i, MASTER].ide_type    := $FF;
-      drive_info[i, SLAVE].ide_type     := $FF;
-      drive_info[i, MASTER].ide_sem     := $01;
-      drive_info[i, SLAVE].ide_sem      := $01;
-      drive_info[i, MASTER].lba_sectors := $00;
-      drive_info[i, SLAVE].lba_sectors  := $00;
-      for j := 1 to MAX_NR_PART do
-      begin
-         drive_info[i, MASTER].part[j].p_type := $00;
-	 drive_info[i, SLAVE].part[j].p_type  := $00;
-      end;
+      drive_info[i, MASTER].ide_type := $FF;
+      drive_info[i, SLAVE].ide_type  := $FF;
+      drive_info[i, MASTER].ide_sem  := $01;
+      drive_info[i, SLAVE].ide_sem   := $01;
    end;
 
    { Check IDE interfaces 0 and 1 (standard interfaces) }
@@ -996,10 +1019,10 @@ begin
 
 { May be we have to reset all the controllers (software reset). Don't know. }
 
-   outb($3F6, 4);
+{   outb($3F6, 4);
    drive_busy(4, 0);
    outb($3F6, 0);
-   drive_busy(4, 0);
+   drive_busy(4, 0);}
 
 end; { -> procedure }
 

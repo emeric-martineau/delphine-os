@@ -90,31 +90,31 @@ begin
    end;
 
    {$IFDEF DEBUG_SYS_GETDENTS}
-      printk('Welcome in sys_getdents: %d %h %d ', [fd, dirent, count]);
+      printk('sys_getdents: fd=%d  dirent=%h  count=%d\n', [fd, dirent, count]);
    {$ENDIF}
 
    fichier := current^.file_desc[fd];
 
    if (fd >= OPEN_MAX) or (fichier = NIL) then
    begin
-      printk('\nsys_getdents: fd %d is not a valid fd\n', [fd]);
+      printk('sys_getdents: fd %d is not a valid fd\n', [fd]);
       result := -EBADF;
       exit;
    end;
 
    if (not IS_DIR(fichier^.inode)) then
    begin
-      printk('\nsys_getdents: fd %d is not a directory\n', [fd]);
+      printk('sys_getdents: fd %d is not a directory\n', [fd]);
       result := -ENOTDIR;
       exit;
    end;
 
-   result := -ENOTSUP;   { FIXME: another error code ? }
+   result := -ENOSYS;   { FIXME: another error code ? }
 
    if ((fichier^.op <> NIL) and (fichier^.op^.read <> NIL)) then
         result := fichier^.op^.read(fichier, dirent, count)
    else
-        printk('\nsys_getdents: no read operation defined for fd %d\n', [fd]);
+        printk('sys_getdents: no read operation defined for fd %d\n', [fd]);
 
    {$IFDEF DEBUG_SYS_GETDENTS}
       printk('sys_getdents: result=%d\n', [result]);

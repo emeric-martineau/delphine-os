@@ -1,5 +1,7 @@
 const
+
    INTERVAL = 10;             { en ms }
+   HZ 	    = 1000 div INTERVAL;
    PIT_COMPTEUR_16BITS = 0;
    PIT_COMPTEUR_MODE_3 = 6;   { envoie les poids faibles, puis les poids forts }
    PIT_CONTROL_MODE_LH = $30; { On selectionne le mode 3 du compteur car il
@@ -20,6 +22,7 @@ type
    P_tms      = ^tms;
    P_timeval  = ^timeval;
    P_timezone = ^timezone;
+   P_timespec = ^timespec;
 
    tm = record
       tm_sec    : dword;     { Seconds after a minute }
@@ -55,4 +58,9 @@ type
    timezone = record
       tz_minuteswest : dword;   { minutes west of Greenwich }
       tz_dsttime     : dword;   { type of dst correction }
+   end;
+
+   timespec = record
+      tv_sec  : dword;   { seconds }
+      tv_nsec : dword;   { nanoseconds }
    end;

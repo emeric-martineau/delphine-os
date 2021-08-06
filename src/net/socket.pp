@@ -32,6 +32,7 @@ INTERFACE
 {* Headers *}
 
 {$I errno.inc}
+{$I process.inc}
 {$I socket.inc}
 
 {* Local macros *}
@@ -112,21 +113,20 @@ begin
       exit;
    end;
 
-   if (longint(args) < $FFC00000) then
+   if (longint(args) < BASE_ADDR) then
    begin
       result := -EFAULT;
       exit;
    end;
+
+   res := -ENOSYS;
 
    memcpy(args, @a, nargs[call] * 4);
 
    case (call) of
       NSYS_GETPEERNAME: res := sys_getpeername(a[0], pointer(a[1]), pointer(a[2]));
       else
-         begin
-            printk('WARNING sys_socketcall called with call=%d\n', [call]);
-	    result := -1;
-	 end;
+      	 printk('WARNING sys_socketcall called with call=%d\n', [call]);
    end;
 
    result := res;

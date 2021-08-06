@@ -28,7 +28,7 @@ Détail de la mémoire physique (sans pagination):
   C0000h  ->   FFFFFh  : Réservé (mappage des cartes ISA et PCI ???)
  100000h  ->  100FFFh  : Données fondamentales du noyau (Voir plus bas)
  101000h  ->  101FFFh  : Répertoire global de pages pour le noyau (4Ko)
-                           (accès à toutes la mémoire)
+                         (accès à toute la mémoire)
  102000h  ->  102FFFh  : 1ere table de pages du noyau (4Ko)
  103000h  ->  ??????h  : Tables de pages du noyau
 
@@ -53,13 +53,14 @@ Organisation de la "zone de données fondamentale du noyau" :
 Adressage des processus:
 ------------------------
 
-Chaque processus dispose de 4Mo de mémoire ainsi que de 2 piles de 4Ko. (Une
-pour le mode noyau et une pour le mode utilisateur).
+Chaque processus dispose de 1Go de mémoire (code + données) et de 4Mo de pile
+en mode utilisateur.
+
 
 Les adresses virtuelles sont donc :
 
-   0xFFC01000 -> 0xFFFFFFFF : code et données du processus
-   0xFFC00000 -> 0xFFC00FFF : pile (mode utilisateur)
+   0xC0400000 -> 0xFFFFFFFF : code et données du processus
+   0xC0000000 -> 0xC03FFFFF : pile (mode utilisateur)
 
 
 -------------------------------------------------------------------------------

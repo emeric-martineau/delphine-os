@@ -70,6 +70,8 @@ type
      it registers information returned by IDE drives 'identify' command
      (ATA-2 standard) }
 
+   P_drive_id = ^drive_id;
+
    drive_id = record
       config         : word;    { General configuration (obselete) }
       cyls           : word;    { Number of cylinders }
@@ -91,7 +93,7 @@ type
       vendor3        : byte;    { vendor unique }
       dword_io       : word;    { 0 = not_implemented; 1 = implemented }
       vendor4        : byte;    { vendor unique }
-      capability     : byte;    { bits 0:DMA 1:LBA 2:IORDYsw 3:IORDYsup }
+      capability     : byte;    { bits 0:DMA  1:LBA  2:IORDYsw  3:IORDYsup }
       reserved50     : word;    { reserved (word 50) }
       vendor5        : byte;    { vendor unique }
       tPIO           : byte;    { 0=slow, 1=medium, 2=fast }
@@ -126,11 +128,73 @@ type
       word79         : word;
       word80         : word;
       word81         : word;
-      command_sets   : word;    { bits 0:Smart 1:Security 2:Removable 3:PM }
-      word83         : word;    { bits 14:Smart Enabled 13:0 zero }
+      command_set_1  : word;		{  15: Obsolete
+      	             	      		14: NOP command
+				   							13: READ_BUFFER
+				   							12: WRITE BUFFER
+				   							11: Obsolete
+				   							10: Host Protected Area
+				   							09: DEVICE Reset
+				   							08: SERVICE Interrupt
+				   							07: Release Interrupt
+				   							06: look-ahead
+				   							05: write cache
+				   							04: PACKET Command
+				   							03: Power Management Feature Set
+				   							02: Removable Feature Set
+				   							01: Security Feature Set
+				   							00: SMART Feature Set }
+
+      command_set_2  : word;     {  15: Shall be ZERO
+      	             	      	 	14: Shall be ONE
+				   							13: FLUSH CACHE EXT
+				   							12: FLUSH CACHE
+				   							11: Device Configuration Overlay
+				   							10: 48-bit Address Feature Set
+				   							09: Automatic Acoustic Management
+				   							08: SET MAX security
+				   							07: reserved 1407DT PARTIES
+				   							06: SetF sub-command Power-Up
+				   							05: Power-Up in Standby Feature Set
+				   							04: Removable Media Notification
+				   							03: APM Feature Set
+				   							02: CFA Feature Set
+				   							01: READ/WRITE DMA QUEUED
+				   							00: Download MicroCode }
       word84         : word;
-      word85         : word;
-      word86         : word;
+      cfs_enable_1   : word;     {  15: Obsolete
+      	             	      	   14: NOP command
+				   							13: READ_BUFFER
+				   							12: WRITE BUFFER
+				   							11: Obsolete
+				   							10: Host Protected Area
+				   							09: DEVICE Reset
+				   							08: SERVICE Interrupt
+				   							07: Release Interrupt
+				   							06: look-ahead
+				   							05: write cache
+				   							04: PACKET Command
+				   							03: Power Management Feature Set
+				   							02: Removable Feature Set
+				   							01: Security Feature Set
+				   							00: SMART Feature Set }
+
+      cfs_enable_2   : word;     {  15: Shall be ZERO
+      	             	      	   14: Shall be ONE
+				   							13: FLUSH CACHE EXT
+				   							12: FLUSH CACHE
+				   							11: Device Configuration Overlay
+				   							10: 48-bit Address Feature Set
+				   							09: Automatic Acoustic Management
+				   							08: SET MAX security
+				   							07: reserved 1407DT PARTIES
+				   							06: SetF sub-command Power-Up
+				   							05: Power-Up in Standby Feature Set
+				   							04: Removable Media Notification
+				   							03: APM Feature Set
+				   							02: CFA Feature Set
+				   							01: READ/WRITE DMA QUEUED
+				   							00: Download MicroCode }
       word87         : word;
       dma_ultra      : word;
       word89         : word;
@@ -181,9 +245,12 @@ const
    MASTER = 0;
    SLAVE  = 1;
 
+   NB_RETRY = 3;  { Nb of times we retry when a command fails }
+
    { IDE drives commands }
 
    WIN_READ       = $20;
+   WIN_WRITE      = $30;
    ATA_IDENTIFY   = $EC;
    ATAPI_IDENTIFY = $A1;
 
@@ -200,15 +267,14 @@ const
    STATUS_REG     = $07;
    CMD_REG        = $07;
 
-   { State register bits }
-
-   ERR_STAT   = $01;
-   INDEX_STAT = $02;
-   ECC_STAT   = $04;
-   DRQ_STAT   = $08;
-   SEEK_STAT  = $10;
-   WRERR_STAT = $20;
-   READY_STAT = $40;
-   BUSY_STAT  = $80;
+   { Status register bits }
+   ERR_STAT   = $01; 	{ error register contains error information }
+   INDEX_STAT = $02; 	{ disk index has just passed }
+   ECC_STAT   = $04; 	{ Data error }
+   DRQ_STAT   = $08; 	{ Data can be transferred }
+   SEEK_STAT  = $10; 	{ Head positioning (seek) complete }
+   WRERR_STAT = $20; 	{ Write fault }
+   READY_STAT = $40; 	{ Drive is ready }
+   BUSY_STAT  = $80; 	{ Drive is busy }
 
 {$ENDIF}

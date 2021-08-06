@@ -3,7 +3,7 @@
  *
  *  Ext2 inodes management
  *
- *  Copyleft 2002 GaLi
+ *  Copyleft 2003 GaLi
  *
  *  version 0.0 - 07/08/2002 - initial version
  *
@@ -29,26 +29,35 @@ unit _ext2_inode;
 INTERFACE
 
 
-{DEFINE DEBUG}
-{DEFINE DEBUG_EXT2_LOOKUP}
-
-
+{$I blk.inc}
 {$I buffer.inc}
+{$I config.inc}
+{$I errno.inc}
 {$I ext2.inc}
 {$I fs.inc}
 {$I process.inc}
 
 
 function  bread (major, minor : byte ; block, size : dword) : P_buffer_head; external;
+procedure brelse (bh : P_buffer_head); external;
 function  buffer_uptodate (bh : P_buffer_head) : boolean; external;
-function  inode_uptodate (inode : P_inode_t) : boolean; external;
+procedure ext2_free_block (inode : P_inode_t ; block : dword); external;
+procedure ext2_free_inode (inode : P_inode_t); external;
 function  IS_BLK (inode : P_inode_t) : boolean; external;
 function  IS_CHR (inode : P_inode_t) : boolean; external;
 function  IS_DIR (inode : P_inode_t) : boolean; external;
 function  IS_FIFO (inode : P_inode_t) : boolean; external;
+function  IS_LNK (inode : P_inode_t) : boolean; external;
 function  IS_REG (inode : P_inode_t) : boolean; external;
+procedure ll_rw_block (rw : dword ; bh : P_buffer_head); external;
+procedure lock_buffer (bh : P_buffer_head); external;
+procedure mark_buffer_dirty (bh : P_buffer_head); external;
+procedure mark_inode_clean (inode : P_inode_t); external;
+procedure mark_inode_dirty (inode : P_inode_t); external;
 procedure memset (adr : pointer ; c : byte ; size : dword); external;
+procedure print_bochs (format : string ; args : array of const); external;
 procedure printk (format : string ; args : array of const); external;
+procedure wait_on_buffer (bh : P_buffer_head); external;
 
 
 var
@@ -59,8 +68,11 @@ var
    ext2_file_inode_operations : inode_operations; external name 'U__EXT2_FILE_EXT2_FILE_INODE_OPERATIONS';
 
 
-function  ext2_lookup (dir : P_inode_t ; name : pchar ; len : dword ; res_inode : PP_inode_t) : boolean;
+procedure ext2_delete_inode (inode : P_inode_t);
+procedure ext2_free_data (inode : P_inode_t);
 procedure ext2_read_inode (inode : P_inode_t);
+procedure ext2_truncate (inode : P_inode_t);
+procedure ext2_write_inode (inode : P_inode_t);
 
 
 
@@ -89,69 +101,69 @@ var
 
 begin
 
-   {$IFDEF DEBUG}
-      printk('inode to read: %d  ', [inode^.ino]);
-      printk('inodes count: %d  ', [inode^.sb^.ext2_sb.inodes_count]);
-      printk('inodes per group: %d\n', [inode^.sb^.ext2_sb.inodes_per_group]);
-      printk('groups count: %d  ', [inode^.sb^.ext2_sb.groups_count]);
-      printk('desc per block: %d\n', [inode^.sb^.ext2_sb.desc_per_block]);
+   {$IFDEF DEBUG_EXT2_READ_INODE}
+      print_bochs('inode to read: %d  ', [inode^.ino]);
+      print_bochs('inodes count: %d  ', [inode^.sb^.ext2_sb.inodes_count]);
+      print_bochs('inodes per group: %d\n', [inode^.sb^.ext2_sb.inodes_per_group]);
+      print_bochs('groups count: %d  ', [inode^.sb^.ext2_sb.groups_count]);
+      print_bochs('desc per block: %d\n', [inode^.sb^.ext2_sb.desc_per_block]);
    {$ENDIF}
 
    major := inode^.sb^.dev_major;
    minor := inode^.sb^.dev_minor;
 
-   if (inode^.ino <> 2) and (inode^.ino < 11) and
+   inode^.state := inode^.state and (not I_Uptodate);
+
+   if (inode^.ino <> EXT2_ROOT_INO) and
+      (inode^.ino < EXT2_GOOD_OLD_FIRST_INO) and
       (inode^.ino > inode^.sb^.ext2_sb.inodes_count) then
-      begin
-         printk('EXT2-fs (ext2_read_inode): bad inode number (%d)\n', [inode^.ino]);
-	 inode^.state := 0;
-	 exit;
-      end;
+   begin
+      printk('ext2_read_inode: bad inode number (%d)\n', [inode^.ino]);
+      exit;
+   end;
 
    { block_group contains the inode we are looking for }
    block_group := (inode^.ino - 1) div (inode^.sb^.ext2_sb.inodes_per_group);
    if (block_group >= inode^.sb^.ext2_sb.groups_count) then
-      begin
-         printk('EXT2-fs (ext2_read_inode): block_group >= groups_count\n', []);
-	 inode^.state := 0;
-	 exit;
-      end;
+   begin
+      printk('ext2_read_inode: block_group >= groups_count (ino=%d)\n', [inode^.ino]);
+      exit;
+   end;
 
-   {$IFDEF DEBUG}
-      printk('block_group: %d  ', [block_group]);
+   {$IFDEF DEBUG_EXT2_READ_INODE}
+      print_bochs('block_group: %d  ', [block_group]);
    {$ENDIF}
 
    { group_desc defines the index used to read ext2_sb.group_desc[] }
    group_desc := block_group div inode^.sb^.ext2_sb.desc_per_block;
 
-   {$IFDEF DEBUG}
-      printk('group desc: %d  ', [group_desc]);
+   {$IFDEF DEBUG_EXT2_READ_INODE}
+      print_bochs('group desc: %d  ', [group_desc]);
    {$ENDIF}
 
    {* desc défini le descripteur concerné à l'intérieur de
     * ext2_sb.group_desc[group_desc] *}
    desc := block_group and (inode^.sb^.ext2_sb.desc_per_block - 1);
 
-   {$IFDEF DEBUG}
-      printk('desc: %d\n', [desc]);
+   {$IFDEF DEBUG_EXT2_READ_INODE}
+      print_bochs('desc: %d\n', [desc]);
    {$ENDIF}
 
-   { group_desc[group_desc] a été initialisé lors de la lecture du superbloc
-     ext2 }
+   { group_desc[group_desc] a été initialisé lors du montage du
+     système de fichiers }
    bh := inode^.sb^.ext2_sb.group_desc[group_desc];
    if (bh = NIL) then
-      begin
-         printk('EXT2-fs (ext2_read_inode): descriptor not loaded (%d)\n', [block_group]);
-	 inode^.state := 0;
-	 exit;
-      end;
+   begin
+      printk('ext2_read_inode: descriptor not loaded (%d)\n', [block_group]);
+      exit;
+   end;
 
    { gdp est un pointeur vers le bloc contenant le descripteur de groupe }
    gdp := bh^.data;
 
-   {$IFDEF DEBUG}
-      printk('inode table: %d  ', [gdp[desc].inode_table]);
-      printk('dirs: %d\n', [gdp[desc].used_dirs_count]);
+   {$IFDEF DEBUG_EXT2_READ_INODE}
+      print_bochs('inode table: %d  ', [gdp[desc].inode_table]);
+      print_bochs('dirs: %d\n', [gdp[desc].used_dirs_count]);
    {$ENDIF}
 
    { On doit maintenant lire le bloc contenant l'inode demandé }
@@ -161,27 +173,25 @@ begin
    offset := (inode^.ino - 1) mod inode^.sb^.ext2_sb.inodes_per_block *
               sizeof(ext2_inode);
 
-   {$IFDEF DEBUG}
-      printk('offset: %d  ', [offset]);
+   {$IFDEF DEBUG_EXT2_READ_INODE}
+      print_bochs('offset: %d  ', [offset]);
    {$ENDIF}
 
    { block défini le bloc contenant l'inode demandé }
-   block := gdp[desc].inode_table +  (((inode^.ino - 1) mod 
+   block := gdp[desc].inode_table + (((inode^.ino - 1) mod 
             inode^.sb^.ext2_sb.inodes_per_group * sizeof(ext2_inode)) 
  	    shr (inode^.sb^.ext2_sb.log_block_size + 10));
 
-   {$IFDEF DEBUG}
-      printk('block: %d\n', [block]);
+   {$IFDEF DEBUG_EXT2_READ_INODE}
+      print_bochs('block: %d\n', [block]);
    {$ENDIF}
 
-   bh := bread(major, minor, block, inode^.sb^.blocksize);
-
+   bh := bread(major, minor, block, inode^.sb^.blksize);
    if (bh = NIL) then
-      begin
-         printk('EXT2-fs: unable to read inode block %d\n', [block]);
-	 inode^.state := 0;
-	 exit;
-      end;
+   begin
+      printk('EXT2-fs: unable to read inode block %d\n', [block]);
+      exit;
+   end;
 
    raw_inode := bh^.data + offset;
 
@@ -190,7 +200,6 @@ begin
    inode^.rdev_maj := major;
    inode^.rdev_min := minor;
    inode^.state    := inode^.state or I_Uptodate;
-   inode^.count    := 1;
    inode^.atime    := raw_inode^.atime;
    inode^.ctime    := raw_inode^.ctime;
    inode^.mtime    := raw_inode^.mtime;
@@ -200,29 +209,29 @@ begin
    inode^.gid      := raw_inode^.gid;
    inode^.nlink    := raw_inode^.links_count;
    inode^.size     := raw_inode^.size;
+   inode^.blksize  := inode^.sb^.blksize;
    inode^.blocks   := raw_inode^.blocks;
    inode^.ext2_i.block_group := block_group;
 
-   { Define 'inodes_operations' }
-
    if (IS_BLK(inode) or IS_CHR(inode)) then
-      begin
-         inode^.rdev_maj := hi(lo(raw_inode^.block[1]));
-	 inode^.rdev_min := lo(lo(raw_inode^.block[1]));
-      end
+   begin
+      inode^.rdev_maj := hi(lo(raw_inode^.block[0]));
+      inode^.rdev_min := lo(lo(raw_inode^.block[0]));
+   end
    else
-      begin
-         inode^.rdev_maj := major;
-	 inode^.rdev_min := minor;
-	 for i := 1 to 15 do
-	     inode^.ext2_i.data[i] := raw_inode^.block[i];
-	 {$IFDEF DEBUG}
-	    for i := 1 to 15 do
-	        printk('%d ', [raw_inode^.block[i]]);
-	    printk('\n', []);
-	 {$ENDIF}
-      end;
+   begin
+      inode^.rdev_maj := major;
+      inode^.rdev_min := minor;
+      for i := 0 to 14 do
+      	 inode^.ext2_i.data[i] := raw_inode^.block[i];
+      {$IFDEF DEBUG_EXT2_READ_INODE}
+			for i := 0 to 14 do
+      	    print_bochs('%d ', [raw_inode^.block[i]]);
+				 print_bochs('\n', []);
+      {$ENDIF}
+   end;
 
+   { Define 'inodes_operations' }
    if IS_DIR(inode) then
       inode^.op := @ext2_dir_inode_operations
    else if IS_REG(inode) then
@@ -232,124 +241,267 @@ begin
    else if IS_BLK(inode) then
       inode^.op := @blkdev_inode_operations
    else
-      begin
-         inode^.op := NIL;
-         printk('EXT2-fs (read_inode): no operations defined for this type of file\n', []);
-      end;
+   begin
+      inode^.op := NIL;
+      printk('EXT2-fs (read_inode): no operations defined for this type of file (%h)\n', [inode^.mode]);
+   end;
+
+   brelse(bh);
 
 end;
 
 
 
 {******************************************************************************
- * ext2_lookup
+ * ext2_write_inode
  *
- * Cette fonction recherche 'name' dans le répertoire 'dir'. En cas d'échec,
- * elle renvoie FALSE. Autrement, 'res_inode' est rempli avec les informations
- * de l'inode de 'name' et la fonction renvoie TRUE.
- *
- * FIXME: - on ne lit que les blocs directs de l'inode 'dir' (cela ne devrait
- *          pas poser de problème...   j'espère)
- *
- *        - il faudrait 'traverser' les points de montage afin de remplir
- *          correctement le champ sb de la variable inode lors de l'appel
- *          de ext2_read_inode().
  *****************************************************************************}
-function ext2_lookup (dir : P_inode_t ; name : pchar ; len : dword ; res_inode : PP_inode_t) : boolean; [public, alias : 'EXT2_LOOKUP'];
+procedure ext2_write_inode (inode : P_inode_t); [public, alias : 'EXT2_WRITE_INODE'];
 
 var
-   bh           : P_buffer_head;
-   entry        : P_ext2_dir_entry;
-   i, j, ofs    : dword;
-   blocksize    : dword;
-   major, minor : byte;
-   ok           : boolean;
+   group, group_desc, blocksize : dword;
+   desc, offset, block : dword;
+   major, minor, i     : byte;
+   raw_inode           : P_ext2_inode;
+   gdp                 : P_ext2_group_desc;
+   bh 	               : P_buffer_head;
 
 begin
 
-   major     := dir^.dev_maj;
-   minor     := dir^.dev_min;
-   blocksize := dir^.sb^.blocksize;
-   result    := FALSE;
-
-   for i := 1 to 12 do   { On ne lit que les blocs directs }
-   begin
-      if (dir^.ext2_i.data[i] <> 0) then
+   if (inode^.ino <> EXT2_ROOT_INO) and
+      (inode^.ino < EXT2_GOOD_OLD_FIRST_INO) and
+      (inode^.ino > inode^.sb^.ext2_sb.inodes_count) then
       begin
-         bh := bread(major, minor, dir^.ext2_i.data[i], blocksize);
-         if (bh = NIL) then
-         begin
-            printk('ext2_lookup (%d): cannot read block %d\n', [current^.pid, dir^.ext2_i.data[i]]);
-	    result := FALSE;
-	    exit;
-         end;
+         printk('ext2_write_inode: bad inode number (%d)\n', [inode^.ino]);
+	 		inode^.state := 0;
+	 		exit;
+      end;
 
-         ofs := 0;
-
-	 while (ofs < blocksize) do
-	 begin
-            entry := bh^.data + ofs;
-
-	    {$IFDEF DEBUG_EXT2_LOOKUP}
-	       printk('ext2_lookup: (%d, %d, %d)\n', [entry^.name_len, entry^.rec_len, ofs]);
-	    {$ENDIF}
-
-	    ofs += entry^.rec_len;
-
-	    if (entry^.name_len = len) then
-	    begin
-               {$IFDEF DEBUG_EXT2_LOOKUP}
-	          printk('ext2_lookup: good entry ??? -> ', []);
-	       {$ENDIF}
-	       ok := TRUE;
-	       for j := 0 to (len - 1) do
-	       begin
-	          if (name[j] <> entry^.name[j]) then
-		  begin
-		     ok := FALSE;
-		     break;
-		  end;
-	       end;
-
-	       if (ok) then
-	       { Le fichier a été trouvé. On va lire son inode }
-	       begin
-	          {$IFDEF DEBUG_EXT2_LOOKUP}
-		     printk('YES\n', []);
-		  {$ENDIF}
-	          res_inode^^.ino := entry^.inode;
-	          res_inode^^.sb  := dir^.sb;
-	          ext2_read_inode(res_inode^);
-	          if not inode_uptodate(res_inode^) then
-	          begin
-		     res_inode^^.state := 0;
-		     printk('ext2_lookup (%d): WARNING -> check res_inode state\n', [current^.pid]);
-		     exit;
-		  end
-	          else
-	          begin
-	             result := TRUE;
-		     exit;
-		  end;
-	       end
-	       else
-	       begin
-	          {$IFDEF DEBUG_EXT2_LOOKUP}
-		     printk('NO\n', []);
-		  {$ENDIF}
-	       end;
-	    end;
-	 end;   { while }
-
-      end { if }
-      else
-          break;   { Il n'y a plus de bloc de données à lire }
-
-   end; { for }
-
-   {$IFDEF DEBUG_EXT2_LOOKUP}
-      printk('\n', []);
+   {$IFDEF DEBUG_EXT2_WRITE_INODE}
+      print_bochs('ext2_write_inode: ino=%d, ', [inode^.ino]);
    {$ENDIF}
+
+   { group contains the inode we are looking for }
+   group := (inode^.ino - 1) div (inode^.sb^.ext2_sb.inodes_per_group);
+   if (group >= inode^.sb^.ext2_sb.groups_count) then
+   begin
+      printk('ext2_write_inode: group >= groups_count\n', []);
+      inode^.state := 0;
+      exit;
+   end;
+
+   { group_desc defines the index used to read ext2_sb.group_desc[] }
+   group_desc := group div inode^.sb^.ext2_sb.desc_per_block;
+
+   {* desc défini le descripteur concerné à l'intérieur de
+    * ext2_sb.group_desc[group_desc] *}
+   desc := group and (inode^.sb^.ext2_sb.desc_per_block - 1);
+
+   {$IFDEF DEBUG_EXT2_WRITE_INODE}
+      print_bochs('group=%d, group_desc=%d, desc=%d, ', [group, group_desc, desc]);
+   {$ENDIF}
+
+   { group_desc[group_desc] a été initialisé lors du montage du
+     système de fichiers }
+   bh := inode^.sb^.ext2_sb.group_desc[group_desc];
+   if (bh = NIL) then
+   begin
+      printk('ext2_write_inode: descriptor not loaded (group=%d)\n', [group]);
+      inode^.state := 0;
+      exit;
+   end;
+
+   { gdp est un pointeur vers le bloc contenant le descripteur de groupe }
+   gdp := bh^.data;
+
+   {* Un bloc contient plusieurs inodes. offset défini l'offset ou commence
+    * l'inode demandé dans le bloc contenant cet inode }
+   offset := (inode^.ino - 1) mod inode^.sb^.ext2_sb.inodes_per_block *
+              sizeof(ext2_inode);
+
+   { block défini le bloc contenant l'inode demandé }
+   block := gdp[desc].inode_table + (((inode^.ino - 1) mod 
+            inode^.sb^.ext2_sb.inodes_per_group * sizeof(ext2_inode)) 
+ 	    		shr (inode^.sb^.ext2_sb.log_block_size + 10));
+
+   major := inode^.sb^.dev_major;
+   minor := inode^.sb^.dev_minor;
+
+   {$IFDEF DEBUG_EXT2_WRITE_INODE}
+      print_bochs('block=%d\n', [block]);
+   {$ENDIF}
+
+   bh := bread(major, minor, block, inode^.blksize);
+   if (bh = NIL) then
+   begin
+      printk('ext2_write_inode: unable to read inode block %d\n', [block]);
+      inode^.state := 0;
+      exit;
+   end;
+
+   raw_inode := bh^.data + offset;
+   blocksize := inode^.blksize;
+
+   { raw_inode initialization }
+   memset(raw_inode, 0, sizeof(ext2_inode));
+   raw_inode^.mode 			:= inode^.mode;
+   raw_inode^.uid  			:= inode^.uid;
+   raw_inode^.size 			:= inode^.size;
+   raw_inode^.blocks 	   := inode^.blocks * (blocksize div 512);
+   raw_inode^.atime  	   := inode^.atime;
+   raw_inode^.ctime  	   := inode^.ctime;
+   raw_inode^.mtime  	   := inode^.mtime;
+   raw_inode^.dtime  	   := inode^.dtime;
+   raw_inode^.gid    	   := inode^.gid;
+   raw_inode^.links_count  := inode^.nlink;
+   raw_inode^.flags  	   := 0;
+   for i := 0 to 14 do
+       raw_inode^.block[i] := inode^.ext2_i.data[i];
+
+   {$IFDEF DEBUG_EXT2_WRITE_INODE}
+      print_bochs('ext2_write_inode: size=%d  blocks(512 bytes)=%d\n',
+						[raw_inode^.size, raw_inode^.blocks]);
+   {$ENDIF}
+
+   mark_buffer_dirty(bh);
+	mark_inode_clean(inode);
+
+end;
+
+
+
+{******************************************************************************
+ * ext2_truncate
+ *
+ * Set inode size to zero by calling ext2_free_data().
+ *****************************************************************************}
+procedure ext2_truncate (inode : P_inode_t); [public, alias : 'EXT2_TRUNCATE'];
+begin
+
+   if (IS_DIR(inode) or not IS_REG(inode) or IS_LNK(inode)) then exit;
+
+   if (inode^.blocks <> 0) then
+       ext2_free_data(inode);
+
+end;
+
+
+{******************************************************************************
+ * ext2_free_data
+ *
+ * Free all allocated data blocks.
+ *****************************************************************************}
+procedure ext2_free_data (inode : P_inode_t); [public, alias : 'EXT2_FREE_DATA'];
+
+var
+   nblocks, blocksize : dword;
+   major, minor, n	 : dword;
+   tmp	             : pointer;
+   bh                 : P_buffer_head;
+
+label finish;
+
+begin
+
+   blocksize := inode^.blksize;
+   nblocks   := inode^.size div blocksize;
+   if (inode^.size mod blocksize) <> 0 then nblocks += 1;
+
+   {$IFDEF DEBUG_EXT2_FREE_DATA}
+      printk('ext2_free_data (%d): inode size=%d -> going to free %d blocks\n', [current^.pid, inode^.size, nblocks]);
+   {$ENDIF}
+
+   { Free direct blocks }
+   n := 0;
+   while (n < EXT2_NDIR_BLOCKS) and (nblocks <> 0) do
+   begin
+      if (inode^.ext2_i.data[n] <> 0) then
+      begin
+      	 {$IFDEF DEBUG_EXT2_FREE_DATA}
+	    printk('ext2_free_data (%d): freeing file block %d (%d)\n', [current^.pid, n, inode^.ext2_i.data[n]]);
+	 {$ENDIF}
+	 ext2_free_block(inode, inode^.ext2_i.data[n]);
+	 inode^.ext2_i.data[n] := 0;
+	 nblocks -= 1;
+      end;
+      n += 1;
+   end;
+
+   major := inode^.dev_maj;
+   minor := inode^.dev_min;
+
+   if (nblocks <> 0) then
+   begin
+      if (inode^.ext2_i.data[EXT2_IND_BLOCK] <> 0) then
+      { We have to free simple indirection blocks }
+      begin
+      	 bh := bread(major, minor, inode^.ext2_i.data[EXT2_IND_BLOCK], blocksize);
+	 if (bh = NIL) then
+	 begin
+	    printk('ext2_free_data (%d): cannot read simple indirection block (%d)\n', [current^.pid, inode^.ext2_i.data[EXT2_IND_BLOCK]]);
+	    goto finish;
+	 end;
+	 tmp := bh^.data;
+	 while (nblocks <> 0) and (tmp < (bh^.data + blocksize)) do
+	 begin
+	    if (longint(tmp^) <> 0) then
+	    begin
+	       {$IFDEF DEBUG_EXT2_FREE_DATA}
+	          printk('ext2_free_data (%d): going to free block %d\n', [current^.pid, longint(tmp^)]);
+	       {$ENDIF}
+	       ext2_free_block(inode, longint(tmp^));
+	       nblocks -= 1;
+	    end;
+	    tmp += 4;
+	 end;
+	 brelse(bh);
+	 ext2_free_block(inode, inode^.ext2_i.data[EXT2_IND_BLOCK]);
+      end;
+   end;
+
+   if (nblocks <> 0) then
+   begin
+      if (inode^.ext2_i.data[EXT2_DIND_BLOCK] <> 0) then
+      { We have to free double indirection blocks }
+      begin
+      	 printk('ext2_free_data (%d): got to free double indirection blocks (not implemented)\n', [current^.pid]);
+	 goto finish;
+      end;
+   end;
+
+
+finish:
+
+   inode^.size   := 0;
+   inode^.blocks := 0;
+   mark_inode_dirty(inode);
+
+end;
+
+
+
+{******************************************************************************
+ * ext2_delete_inode
+ *
+ * Called by free_inode() when inode^.count=0.
+ *****************************************************************************}
+procedure ext2_delete_inode (inode : P_inode_t); [public, alias : 'EXT2_DELETE_INODE'];
+begin
+
+   {$IFDEF DEBUG_EXT2_DELETE_INODE}
+      printk('ext2_delete_inode: ino=%d size=%d blocks=%d group=%d\n',
+      	     [inode^.ino, inode^.size, inode^.blocks, inode^.ext2_i.block_group]);
+   {$ENDIF}
+
+   { FIXME: modify m_time }
+
+   ext2_truncate(inode);
+
+   {$IFDEF DEBUG_EXT2_DELETE_INODE}
+      printk('ext2_delete_inode: calling ext2_free_inode()\n', []);
+   {$ENDIF}
+
+   ext2_free_inode(inode);
 
 end;
 

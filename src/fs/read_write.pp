@@ -1,9 +1,9 @@
 {******************************************************************************
  *  read_write.pp
  * 
- *  seek(), read() and write() system calls management
+ *  lseek(), read() and write() system calls management
  *
- *  CopyLeft 2002 GaLi
+ *  CopyLeft 2003 GaLi
  *
  *  version 0.0 - ??/??/2001 - GaLi - initial version
  *
@@ -29,7 +29,12 @@ unit read_write;
 INTERFACE
 
 
-{DEFINE DEBUG}
+{$DEFINE SHOW_SYS_READ_ERRORS}
+{$DEFINE SHOW_SYS_WRITE_ERRORS}
+
+{DEFINE DEBUG_SYS_LSEEK}
+{DEFINE DEBUG_SYS_READ}
+{DEFINE DEBUG_SYS_WRITE}
 
 
 {$I errno.inc}
@@ -57,10 +62,16 @@ function  sys_write (fd : dword ; buf : pointer ; count : dword) : dword; cdecl;
 IMPLEMENTATION
 
 
+{$I inline.inc}
 
 
 {******************************************************************************
  * sys_lseek
+ *
+ * whence values:
+ * 	0 : Set offset to 'offset'
+ * 	1 : Add 'offset' to current position
+ * 	2 : Add 'offset' to current file size
  *
  *****************************************************************************}
 function sys_lseek (fd, offset, whence : dword) : dword; cdecl; [public, alias : 'SYS_LSEEK'];
@@ -70,92 +81,82 @@ var
 
 begin
 
-   {$IFDEF DEBUG}
-      printk('Welcome in sys_lseek  %d, %d, %d\n', [fd, offset, whence]);
-   {$ENDIF}
+	sti();
 
-   asm
-      sti   { Put interrupts on }
-   end;
-
-   result := -EBADF;
-
-   if (fd >= OPEN_MAX) then
-       begin
-          printk('sys_lseek: fd number is too big (%d)\n', [fd]);
-	  exit;
-       end;
-
+   result  := -EBADF;
    fichier := current^.file_desc[fd];
 
-   if (fichier = NIL) then
-       begin
-          printk('sys_lseek: fd %d is not a valid file desciptor\n', [fd]);
-	  exit;
-       end;
+   if (fd >= OPEN_MAX) or (fichier = NIL) then exit;
+
+   {$IFDEF DEBUG_SYS_LSEEK}
+      printk('sys_lseek (%d): fd=%d  ofs=%d  whence=%d  fichier^.pos=%d  ',
+				 [current^.pid, fd, offset, whence, fichier^.pos]);
+   {$ENDIF}
 
    if (fichier^.inode = NIL) then
-       begin
-          printk('sys_lseek: inode not defined fo fd %d (kernel bug ???)\n', [fd]);
-	  exit;
-       end;
+   begin
+      printk('sys_lseek: inode not defined fo fd %d (kernel bug ???)\n', [fd]);
+      exit;
+   end;
 
    if (IS_REG(fichier^.inode)) then
-       begin
-          case (whence) of
-             SEEK_SET: begin
-                          if (offset > fichier^.inode^.size) then
-		              begin
-		                 printk('sys_lseek: offset > file size\n', [fd]);
-			         result := -EINVAL;
-			         exit;
-		              end
-		          else
-		              fichier^.pos := offset;
-                        end;
-             SEEK_CUR: begin
-                          if (fichier^.pos + offset > fichier^.inode^.size) then
-		              begin
-		                 printk('sys_lseek: current ofs + ofs > file size (fd=%d)\n', [fd]);
-			         result := -EINVAL;
-			         exit;
-		              end
-		          else
-		              fichier^.pos += offset;
-                        end;
-             SEEK_END: begin
-	                  if (offset = 0) then
-			      fichier^.pos := fichier^.inode^.size
-			  else
-			  begin
-                              printk('sys_lseek: cannot add offset to current file size (not supported, fd=%d offset=%d)\n', [fd,offset]);
-       		              result := -ENOTSUP;
-		              exit;
-			  end;
-                       end;
-             else
-                begin
-		   printk('sys_lseek: whence parameter has a bad value (fd=%d, whence=%d)\n', [fd, whence]);
-		   result := -EINVAL;
-		   exit;
-		end;
-          end;
-          result := fichier^.pos;
-       end
-   else
-      begin
-         if (fichier^.op = NIL) or (fichier^.op^.seek = NIL) then
-	     begin
-	        printk('sys_lseek: no seek operation defined for fd %d (ofs=%d whence=%d)\n', [fd, offset, whence]);
-		result := -ENOTSUP;
-	     end
-	 else
-	     begin
-	        lock_inode(fichier^.inode);
-	        result := fichier^.op^.seek(fichier, offset, whence);
-		unlock_inode(fichier^.inode);
-	     end;
+   begin
+      case (whence) of
+      	SEEK_SET: begin
+	                	 fichier^.pos := offset;
+                   end;
+         SEEK_CUR: begin
+							 if (longint(fichier^.pos + offset) < 0) then
+							 begin
+							 	 result := -EINVAL;
+								 exit;
+							 end;
+                      if (fichier^.pos + offset > fichier^.inode^.size) then
+		      			 begin
+		         		 	 printk('sys_lseek: current ofs + ofs > file size (fd=%d)\n', [fd]);
+			 					 result := -EINVAL;
+		         			 exit;
+		      			 end
+		      			 else
+		         		    fichier^.pos += offset;
+                   end;
+         SEEK_END: begin
+	               	 if (offset = 0) then
+			   			 	  fichier^.pos := fichier^.inode^.size
+		      			 else
+		      			 begin
+                         printk('sys_lseek: cannot add offset to current file size (not supported, fd=%d offset=%d)\n', [fd,offset]);
+       		         	 result := -ENOSYS;
+		         			 exit;
+		      			 end;
+                   end;
+         else
+         begin
+	    	   printk('sys_lseek: whence parameter has a bad value (fd=%d, whence=%d)\n', [fd, whence]);
+	    		result := -EINVAL;
+	    		exit;
+	 		end;
       end;
+      result := fichier^.pos;
+   end
+   else
+   begin
+      if (fichier^.op = NIL) or (fichier^.op^.seek = NIL) then
+      begin
+         printk('sys_lseek: no seek operation defined for fd %d (ofs=%d whence=%d)\n', [fd, offset, whence]);
+	 		result := -ENOSYS;   { FIXME: another error code ??? }
+      end
+      else
+      begin
+	 		lock_inode(fichier^.inode);
+	 		result := fichier^.op^.seek(fichier, offset, whence);
+	 		unlock_inode(fichier^.inode);
+      end;
+   end;
+
+   {$IFDEF DEBUG_SYS_LSEEK}
+      printk('OUT (%d, %d)\n', [result, fichier^.pos]);
+   {$ENDIF}
 
 end;
 
@@ -177,67 +178,92 @@ var
 
 begin
 
-   asm
-      sti   { Put interrupts on }
-   end;
+	sti();
 
    { Check parameters }
-   
-   if (fd >= OPEN_MAX) then
-       begin
-          printk('sys_read (%d): fd is too big (%d)\n', [current^.pid, fd]);
-	  result := -EINVAL;
-	  exit;
-       end;
-   if (count < 0) then
-       begin
-          printk('sys_read (%d): count < 0 (%d)\n', [current^.pid, count]);
-	  result := -EINVAL;
-	  exit;
-       end;
 
    fichier := current^.file_desc[fd];
 
-   if (fichier = NIL) then
-       begin
-          printk('sys_read (%d): fd %d not defined\n', [current^.pid, fd]);
-	  result := -EBADF;
-	  exit;
-       end;
+   {$IFDEF DEBUG_SYS_READ}
+      printk('sys_read (%d): fd=%d  count=%d  pos=%d  ', [current^.pid, fd, count, fichier^.pos]);
+   {$ENDIF}
+
+   if (fd >= OPEN_MAX) or (fichier = NIL) then
+   begin
+      {$IFDEF SHOW_SYS_READ_ERRORS}
+      	 printk('sys_read (%d): bad fd (%d)\n', [current^.pid, fd]);
+      {$ENDIF}
+      result := -EBADF;
+      exit;
+   end;
+
+   if (count < 0) then
+   begin
+		{$IFDEF SHOW_SYS_READ_ERRORS}
+      	printk('sys_read (%d): count < 0 (%d)\n', [current^.pid, count]);
+		{$ENDIF}
+      result := -EINVAL;
+      exit;
+   end;
+
    if (fichier^.inode = NIL) then
-       begin
-          printk('sys_read (%d): inode not defined for fd %d\n', [current^.pid, fd]);
-	  result := -1;
-	  exit;
-       end;
+   begin
+		{$IFDEF SHOW_SYS_READ_ERRORS}
+      	printk('sys_read (%d): inode not defined for fd %d\n', [current^.pid, fd]);
+		{$ENDIF}
+      result := -EBADF;
+      exit;
+   end;
+
    if (fichier^.op = NIL) then
-       begin
-          printk('sys_read (%d): file operations not defined for fd %d\n', [current^.pid, fd]);
-	  result := -1;
-	  exit;
-       end;
+   begin
+		{$IFDEF SHOW_SYS_READ_ERRORS}
+      	printk('sys_read (%d): file operations not defined for fd %d\n', [current^.pid, fd]);
+		{$ENDIF}
+      result := -1;
+      exit;
+   end;
+
    if (fichier^.op^.read = NIL) then
-       begin
-          printk('sys_read (%d): read operation not defined for fd %d\n', [current^.pid, fd]);
-	  result := -1;
-	  exit;
-       end;
+   begin
+      {$IFDEF SHOW_SYS_READ_ERRORS}
+			printk('sys_read (%d): read operation not defined for fd %d\n', [current^.pid, fd]);
+      {$ENDIF}
+		result := -1;
+      exit;
+   end;
+
+{	if (buf < pointer(BASE_ADDR)) then
+	begin
+		{$IFDEF SHOW_SYS_READ_ERRORS}
+			printk('sys_read (%d): buf=%h\n', [current^.pid, buf]);
+		{$ENDIF}
+		result := -EFAULT;
+		exit;
+	end;}
 
    if (count = 0) then
-      begin
-         result := 0;
-         exit;
-      end;
+   begin
+      result := 0;
+      exit;
+   end;
 
    if (fichier^.flags = O_WRONLY) then
    begin
-      result := -EBADF;
+		{$IFDEF SHOW_SYS_READ_ERRORS}
+			printk('sys_read (%d): permission denied\n', [current^.pid]);
+		{$ENDIF}
+      result := -EPERM;
       exit;
    end;
 
    lock_inode(fichier^.inode);
    result := fichier^.op^.read(fichier, buf, count);
    unlock_inode(fichier^.inode);
+
+   {$IFDEF DEBUG_SYS_READ}
+      printk('OUT (%d)\n', [result]);
+   {$ENDIF}
 
 end;
 
@@ -259,79 +285,80 @@ var
 
 begin
 
-{ FIXME: Il faudrait verifier si on a le droit d'écrire !!! }
-
-   {$IFDEF DEBUG}
-      printk('sys_write: going to write %d bytes from %h to file %d\n', [count, buf, fd]);
-   {$ENDIF}
-
-   asm
-      sti   { Put interrupts on }
-   end;
-
+	sti();
 
    { Check parameters }
 
-   if (fd >= OPEN_MAX) then
-       begin
-          printk('sys_write (%d): fd is too big (%d)\n', [current^.pid, fd]);
-	  result := -EINVAL;
-	  exit;
-       end;
-   
-   
-   if (count < 0) then
-       begin
-          printk('sys_write (%d): count < 0 (%d)\n', [current^.pid, count]);
-	  result := -EINVAL;
-	  exit;
-       end;
-   
    fichier := current^.file_desc[fd];   
-   
-   if (fichier = NIL) then
-      begin
-         printk('sys_write (%d): fd %d not defined\n', [current^.pid, fd]);
-         result := -EBADF;
-	 exit;
-      end;
 
-   if (fichier^.inode = NIL) then
-      begin
-         printk('sys_write (%d): inode not defined for fd %d\n', [current^.pid, fd]);
-         result := -1;
-	 exit;
-      end;
+   {$IFDEF DEBUG_SYS_WRITE}
+      printk('sys_write (%d): fd=%d  count=%d  pos=%d  ', [current^.pid, fd, count, fichier^.pos]);
+   {$ENDIF}
 
-   if (fichier^.op = NIL) then
-      begin
-         printk('sys_write (%d): file operations not defined for fd %d\n', [current^.pid, fd]);
-         result := -1;
-	 exit;
-      end;
-
-   if (fichier^.op^.write = NIL) then
-      begin
-         printk('sys_write (%d): write operation not defined for fd %d\n', [current^.pid, fd]);
-         result := -1;
-	 exit;
-      end;
-
-   if (count = 0) then
-      begin
-         result := 0;
-         exit;
-      end;
-
-   if (fichier^.flags = O_RDONLY) then
+   if (fd >= OPEN_MAX) or (fichier = NIL) then
    begin
+      {$IFDEF SHOW_SYS_WRITE_ERRORS}
+      	 printk('sys_write (%d): bad fd (%d)\n', [current^.pid, fd]);
+      {$ENDIF}
       result := -EBADF;
       exit;
    end;
+   
+   
+   if (count < 0) then
+   begin
+		{$IFDEF SHOW_SYS_WRITE_ERRORS}
+      	printk('sys_write (%d): count < 0 (%d)\n', [current^.pid, count]);
+		{$ENDIF}
+      result := -EINVAL;
+      exit;
+   end;
+   
+   if (fichier^.inode = NIL) then
+   begin
+		{$IFDEF SHOW_SYS_WRITE_ERRORS}
+      	printk('sys_write (%d): inode not defined for fd %d\n', [current^.pid, fd]);
+      {$ENDIF}
+		result := -EBADF;
+      exit;
+   end;
 
-   lock_inode(fichier^.inode);
-   result := fichier^.op^.write(fichier, buf, count);
-   unlock_inode(fichier^.inode);
+   if (fichier^.op = NIL) then
+   begin
+		{$IFDEF SHOW_SYS_WRITE_ERRORS}
+      	printk('sys_write (%d): file operations not defined for fd %d\n', [current^.pid, fd]);
+      {$ENDIF}
+		result := -1;
+      exit;
+   end;
+
+   if (fichier^.op^.write = NIL) then
+   begin
+		{$IFDEF SHOW_SYS_WRITE_ERRORS}
+      	printk('sys_write (%d): write operation not defined for fd %d\n', [current^.pid, fd]);
+      {$ENDIF}
+		result := -1;
+      exit;
+   end;
+
+   if (count = 0) then
+   begin
+      result := 0;
+      exit;
+   end;
+
+   if ((fichier^.flags and (O_RDWR or O_WRONLY)) <> 0) then
+   begin
+      lock_inode(fichier^.inode);
+      result := fichier^.op^.write(fichier, buf, count);
+      unlock_inode(fichier^.inode);
+   end
+   else
+      result := -EPERM;
+
+   {$IFDEF DEBUG_SYS_WRITE}
+      printk('OUT (%d)\n', [result]);
+   {$ENDIF}
 
 end;
 

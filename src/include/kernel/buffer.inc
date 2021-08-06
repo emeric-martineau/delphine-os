@@ -13,6 +13,7 @@ type
    buffer_head = record
       blocknr : dword;   { Numéro de bloc logique }
       size    : dword;   { Taille du bloc en octets }
+      count   : dword;
       major   : byte;    { Numéro majeur du périphérique concerné }
       minor   : byte;    { Numéro mineur du périphérique concerné }
       state   : byte;    { Etat du tampon }
@@ -42,9 +43,5 @@ const
    { Il est défini si le tampon est vérouillé, ce qui se produit si le tampon
      est impliqué dans un transfert de disque. La valeur de ce drapeau est
      renvoyée par la fonction buffer_lock() }
-
-   BH_Req      = 8;
-   { Il est défini si le bloc correspondant a été demandé. La valeur de ce
-     drapeau est renvoyée par la fonction buffer_req() }
 
 {$ENDIF}

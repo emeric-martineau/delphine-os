@@ -82,8 +82,8 @@
     ; We register a lot of data at 0x10000 (SETUP_SEG:0000). This data is
     ; read later by mm/init_mem.pp
 
-    times 1280 db 90h   ; To store the bios memory map (512 bytes = 32 entries) and
-                        ; VESA information (768 bytes)
+    times 6656 db 90h   ; To store the bios memory map (512 bytes = 32 entries) and
+                        ; VESA information (6144 bytes)
 
     mov   dword [20], 00h
 
@@ -119,7 +119,7 @@
     jne   @usecxdx
     mov   cx , ax
     mov   dx , bx
-    
+
     @usecxdx:
     and   edx, 0FFFFh
     shl   edx, 6
@@ -144,16 +144,6 @@
     @ram_ok:
     mov dword [0], ecx
 
-    mov   di , 512
-    mov   ax , 4F00h
-    int   10h   ; Get VESA information
-
-    mov   di , 768
-    mov   eax, 32454256h
-    mov   dword [di], eax
-    mov   ax , 4F00h
-    int   10h   ; Get VBE information
-
     ; Check ELF header so that we can launch the kernel
 
     jmp   @check_header
@@ -169,7 +159,7 @@
     mov   esi, end_setup          ; ESI points at the ELF header
     mov   eax, [esi]
     cmp   eax, 464C457Fh          ; EAX = ELF magic number ?
-    jne   @bad_header             ; Non => invalid header
+    jne   @bad_header             ; No => invalid header
 
     mov   eax, dword [esi + 28]   ; Program header table offset in file
     xor   ebx, ebx
@@ -263,12 +253,14 @@
 
     ; Here, DS = SETUP_SEG and ES = 0x0000
 
-    ; Ask the BIOS cursor position and save it.
+    ; Ask the BIOS the cursor position and save it.
 
     mov   ah , 03h
     xor   bx , bx
     int   10h
     push  dx
+
+	 call P_vesa
 
     ; Move the GDT
 
@@ -447,6 +439,8 @@ P_msg_out :
        db 00h
 
     gdt_end:
+
+%include "./src/boot/vesa.S"
 
 ALIGN 8192
 

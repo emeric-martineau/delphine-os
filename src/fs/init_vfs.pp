@@ -3,7 +3,7 @@
  * 
  *  Virtual File System initialization
  *
- *  CopyLeft 2002 GaLi
+ *  CopyLeft 2003 GaLi
  *
  *  version 0.0 - ??/??/2001 - GaLi
  *
@@ -32,11 +32,13 @@ INTERFACE
 {$I blk.inc}
 {$I buffer.inc}
 {$I fs.inc}
+{$I lock.inc}
 {$I major.inc}
 {$I process.inc}
 
 
 procedure init_ext2_fs; external;
+procedure init_lock (rw : P_rwlock_t); external;
 procedure init_pipe; external;
 procedure memset (adr : pointer ; c : byte ; size : dword); external;
 procedure printk(format : string ; args : array of const); external;
@@ -61,13 +63,17 @@ var
    def_chr_fops : file_operations;
    wait_for_request : P_wait_queue;
 
-   tty_fops : file_operations; external name 'U_TTY__TTY_FOPS';
-   buffer_head_list : array [1..1024] of P_buffer_head; external name 'U_BUFFER_BUFFER_HEAD_LIST';
-   nr_buffer_head   : dword; external name 'U_BUFFER_NR_BUFFER_HEAD';
-   blk_dev : array [0..MAX_NR_BLOCK_DEV] of blk_dev_struct; external name 'U_RW_BLOCK_BLK_DEV';
-   blksize : array [0..MAX_NR_BLOCK_DEV, 0..128] of dword; external name 'U_RW_BLOCK_BLKSIZE';
-   lookup_cache : array[1..1024] of lookup_cache_entry; external name 'U__NAMEI_LOOKUP_CACHE';
-   lookup_cache_entries : dword; external name 'U__NAMEI_LOOKUP_CACHE_ENTRIES';
+   tty_fops 					: file_operations; external name 'U_TTY__TTY_FOPS';
+   buffer_head_list      	: array [1..1024] of P_buffer_head; external name 'U_BUFFER_BUFFER_HEAD_LIST';
+   buffer_head_list_lock	: rwlock_t; external name 'U_BUFFER_BUFFER_HEAD_LIST_LOCK';
+   nr_buffer_head        	: dword; external name 'U_BUFFER_NR_BUFFER_HEAD';
+   nr_buffer_head_dirty  	: dword; external name 'U_BUFFER_NR_BUFFER_HEAD_DIRTY';
+   blk_dev  					: array [0..MAX_NR_BLOCK_DEV] of blk_dev_struct; external name 'U_RW_BLOCK_BLK_DEV';
+   blksize  					: array [0..MAX_NR_BLOCK_DEV, 0..128] of dword; external name 'U_RW_BLOCK_BLKSIZE';
+   lookup_cache 				: array[1..1024] of lookup_cache_entry; external name 'U__NAMEI_LOOKUP_CACHE';
+	lookup_cache_lock 		: rwlock_t; external name 'U__NAMEI_LOOKUP_CACHE_LOCK';
+   lookup_cache_entries  	: dword; external name 'U__NAMEI_LOOKUP_CACHE_ENTRIES';
+   kflushd_wq            	: P_wait_queue; external name 'U_BUFFER_KFLUSHD_WQ';
 
 
 
@@ -269,12 +275,17 @@ begin
    memset(@blksize, 0, sizeof(blksize));
    memset(@lookup_cache, 0, sizeof(lookup_cache));
 
+	init_lock(@lookup_cache_lock);
+
 {printk('VFS: %d bytes reserved for lookup_cache\n', [sizeof(lookup_cache)]);}
 
-   nr_buffer_head       := 0;
-   lookup_cache_entries := 0;
-   file_systems         := NIL;
-   wait_for_request     := NIL;
+   nr_buffer_head             := 0;
+   nr_buffer_head_dirty       := 0;
+   lookup_cache_entries       := 0;
+   file_systems               := NIL;
+   wait_for_request           := NIL;
+   buffer_head_list_lock.lock := 0;
+   kflushd_wq        	      := NIL;
 
    { Initialisation des opérations sur les périphériques en mode bloc }
    memset(@def_blk_fops, 0, sizeof(file_operations));

@@ -4,11 +4,11 @@
 
 const
 
-   NSYS_SOCKET = 1;
-   NSYS_BIND   = 2;
-   NSYS_CONNECT = 3;
-   NSYS_LISTEN  = 4;
-   NSYS_ACCEPT = 5;
+   NSYS_SOCKET      = 1;
+   NSYS_BIND        = 2;
+   NSYS_CONNECT     = 3;
+   NSYS_LISTEN      = 4;
+   NSYS_ACCEPT      = 5;
    NSYS_GETSOCKNAME = 6;
    NSYS_GETPEERNAME = 7;
    NSYS_SOCKETPAIR  = 8;

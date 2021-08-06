@@ -31,8 +31,9 @@ INTERFACE
 
 {DEFINE DEBUG}
 {DEFINE DEBUG_SYS_WAITPID}
+{DEFINE DEBUG_DO_EXIT}
 {DEFINE DEBUG_SYS_EXIT}
-{$DEFINE MMAP_LIST_BUG}
+{DEFINE DEBUG_FREE_MEMORY}
 
 {$I errno.inc}
 {$I process.inc}
@@ -45,21 +46,23 @@ INTERFACE
 {* External procedure and functions *}
 
 procedure del_from_runqueue (task : P_task_struct); external;
+procedure del_mmap_req (req : P_mmap_req); external;
 procedure del_task (task : P_task_struct); external;
 procedure dump_task; external;
 procedure free_gdt_entry (index : dword); external;
 procedure free_inode (inode : P_inode_t); external;
 procedure interruptible_sleep_on (p : PP_wait_queue); external;
-procedure interruptible_wake_up (p : PP_wait_queue); external;
+procedure interruptible_wake_up (p : PP_wait_queue ; schedule : boolean); external;
 procedure kfree_s (addr : pointer ; size : dword); external;
 procedure panic (reason : string); external;
+procedure print_bochs (format : string ; args : array of const); external;
 procedure printk (format : string ; args : array of const); external;
 procedure push_page (page_addr : pointer); external;
 procedure schedule; external;
 procedure send_sig (sig : dword ; p : P_task_struct); external;
 procedure sleep_on (p : PP_wait_queue); external;
 function  sys_close (fd : dword) : dword; external;
-procedure unload_page_table (ts : P_task_struct); external;
+procedure unload_process_cr3 (ts : P_task_struct); external;
 procedure wake_up (p : PP_wait_queue); external;
 
 
@@ -94,6 +97,8 @@ IMPLEMENTATION
 {* Variables only used in THIS file *}
 
 
+{$I inline.inc}
+
 
 {******************************************************************************
  * release
@@ -101,10 +106,6 @@ IMPLEMENTATION
  * NOTE: this procedure is only called by sys_waitpid().
  *****************************************************************************}
 procedure release (p : P_task_struct);
-
-var
-   cur_table : P_pid_table_struct;
-
 begin
 
    {$IFDEF DEBUG_SYS_WAITPID}
@@ -125,18 +126,16 @@ begin
    else
        p^.p_pptr^.p_cptr := p^.p_osptr;
 
-   asm
-      pushfd
-      cli
-   end;
+   pushfd();
+	cli();
+
    if (p^.pid > 1022) then
        printk('WARNING release: PID > 1022 (%d)\n', [p^.pid]);
 
    pid_table^.pid_nb[p^.pid] := NIL;
    pid_table^.nb_free_pids   += 1;
-   asm
-      popfd
-   end;
+
+	popfd();
 
    schedule();
 
@@ -157,6 +156,11 @@ end;
  *****************************************************************************}
 procedure sys_exit (status : dword); cdecl; [public, alias : 'SYS_EXIT'];
 begin
+
+   {$IFDEF DEBUG_SYS_EXIT}
+      printk('sys_exit (%d): status=%d\n', [current^.pid, status]);
+   {$ENDIF}
+
    { From Linux 0.12 }
    asm
       mov   eax, status
@@ -164,7 +168,9 @@ begin
       shl   eax, 8
       mov   status, eax
    end;
+
    do_exit(status);
+
 end;
 
 
@@ -176,143 +182,122 @@ end;
 procedure do_exit (status : dword); [public, alias : 'DO_EXIT'];
 
 var
-   p        : P_task_struct;
-   i        : dword;
-   req, tmp : P_mmap_req;
+   p : P_task_struct;
+   i : dword;
 
-   {$IFDEF DEBUG_SYS_EXIT}
-   tmp_p : P_task_struct;
+   {$IFDEF DEBUG_DO_EXIT}
+   	tmp_p : P_task_struct;
    {$ENDIF}
 
 begin
 
-   {$IFDEF DEBUG_SYS_EXIT}
-      printk('sys_exit (%d): status=%d (%h)\n', [current^.pid, status, status]);
+   {$IFDEF DEBUG_DO_EXIT}
+      printk('do_exit (%d): status=%d (%h)\n', [current^.pid, status, status]);
    {$ENDIF}
 
-   asm
-      sti
-   end;
+	sti();
 
    for i := 0 to (OPEN_MAX - 1) do
    begin
       if (current^.file_desc[i] <> NIL) then
       begin
-         {$IFDEF DEBUG_SYS_EXIT}
-            printk('sys_exit (%d): calling sys_close(%d)\n', [current^.pid, i]);
-	 {$ENDIF}
+         {$IFDEF DEBUG_DO_EXIT}
+            printk('do_exit (%d): calling sys_close(%d)\n', [current^.pid, i]);
+	 		{$ENDIF}
          sys_close(i);
       end;
    end;
 
-   {$IFDEF DEBUG_SYS_EXIT}
-      printk('sys_exit (%d): pwd: %h %d %d  root: %h %d %d\n', [current^.pid,
-      								current^.pwd,
-								current^.pwd^.ino,
-      								current^.pwd^.count,
-								current^.root,
-								current^.root^.ino,
-								current^.root^.count]);
-   {$ENDIF}
-   free_inode(current^.root);
-   free_inode(current^.pwd);
-
-   {$IFDEF DEBUG_SYS_EXIT}
-      printk('sys_exit (%d): freeing memory...  ', [current^.pid]);
+   {$IFDEF DEBUG_FREE_MEMORY}
+      printk('do_exit (%d): freeing memory...  ', [current^.pid]);
    {$ENDIF}
 
-   unload_page_table(current);   { mmap requests are also cleared by this procedure }
-   push_page(current^.page_table);
+   unload_process_cr3(current);
 
-   {$IFDEF DEBUG_SYS_EXIT}
+   {$IFDEF DEBUG_FREE_MEMORY}
       printk('OK\n', []);
-      printk('sys_exit (%d): freeing mmap list...  ', [current^.pid]);
+      printk('do_exit (%d): freeing mmap list...  ', [current^.pid]);
+      i := 0;
    {$ENDIF}
 
    { Free mmap requests list }
    if (current^.mmap <> NIL) then
    begin
-      req := current^.mmap^.next;
-      while (req <> current^.mmap) do
-      begin
-         tmp := req^.next;
-         kfree_s(req, sizeof(mmap_req));
-         req := tmp;
-      end;
-      kfree_s(current^.mmap, sizeof(mmap_req));
-      current^.mmap := NIL;   { Not needed but cool for debugging }
+      repeat
+			{$IFDEF DEBUG_FREE_MEMORY}
+				i += 1;
+			{$ENDIF}
+			del_mmap_req(current^.mmap^.next);
+      until (current^.mmap^.next = current^.mmap);
+      del_mmap_req(current^.mmap);
    end;
 
-   {$IFDEF DEBUG_SYS_EXIT}
+   {$IFDEF DEBUG_FREE_MEMORY}
       printk('OK (%d mmap requests freed)\n', [i + 1]);
    {$ENDIF}
 
 
    { Following code inspired from Linux 0.12 }
-   asm
-      pushfd
-      cli
-   end;
+	pushfd();
+	cli();
 
    p := current^.p_cptr;
-   if (p <> NIL) then   { Le processus a au moins un fils }
+   if (p <> NIL) then   { Current process has at least one child }
    begin
-      { FIXME: envoyer un signal aux fils pour les terminer (SIGKILL) ??? }
       while (TRUE) do
       begin
-         printk('sys_exit (%d): child left\n', [current^.pid]);
-         p^.p_pptr := pid_table^.pid_nb[1];   { Il devient le fils du processus init }
-	 p^.ppid   := 1;
-	 if (p^.p_osptr <> NIL) then
-	 begin
-	    p := p^.p_osptr;
-	    continue;
-	 end;
-	 p^.p_osptr := pid_table^.pid_nb[1]^.p_cptr;
-	 pid_table^.pid_nb[1]^.p_cptr^.p_ysptr := p;
-	 pid_table^.pid_nb[1]^.p_cptr := current^.p_cptr;
-	 current^.p_cptr := 0;
-	 break;
+{         send_sig(SIGKILL, p);}   { Send a signal to the child... }
+{         printk('do_exit (%d): child left (%d)\n', [current^.pid, p^.pid]);}
+         p^.p_pptr := pid_table^.pid_nb[1];   { ...which becomes 'init' child }
+	 		p^.ppid   := 1;
+	 		if (p^.p_osptr <> NIL) then
+	 		begin
+	    		p := p^.p_osptr;
+	    		continue;
+	 		end;
+	 		p^.p_osptr := pid_table^.pid_nb[1]^.p_cptr;
+	 		pid_table^.pid_nb[1]^.p_cptr^.p_ysptr := p;
+	 		pid_table^.pid_nb[1]^.p_cptr := current^.p_cptr;
+	 		current^.p_cptr := 0;
+	 		break;
       end;
    end;
 
-   asm
-      popfd
-   end;
+	popfd();
 
-   {$IFDEF DEBUG_SYS_EXIT}
-      printk('sys_exit (%d): parent PID is %d (%h)\n', [current^.pid, current^.p_pptr^.pid, current^.p_pptr^.wait_queue]);
+   {$IFDEF DEBUG_DO_EXIT}
+      printk('do_exit (%d): parent PID is %d (%h)\n', [current^.pid, current^.p_pptr^.pid, current^.p_pptr^.wait_queue]);
    {$ENDIF}
 
    if (current^.wait_queue <> NIL) then
    begin
       while (current^.wait_queue <> NIL) do
       begin
-         {$IFDEF DEBUG_SYS_EXIT}
-	    tmp_p := current^.wait_queue^.task;
-            printk('sys_exit (%d): waking up process %d\n', [current^.pid, tmp_p^.pid]);
-	 {$ENDIF}
-         interruptible_wake_up(@current^.wait_queue);
+         {$IFDEF DEBUG_DO_EXIT}
+	    		tmp_p := current^.wait_queue^.task;
+            printk('do_exit (%d): waking up process %d\n', [current^.pid, tmp_p^.pid]);
+	 		{$ENDIF}
+         interruptible_wake_up(@current^.wait_queue, TRUE);
       end;
    end;
 
-   {$IFDEF DEBUG_SYS_EXIT}
-      printk('sys_exit (%d): %d send SIGCHLD to %d\n', [current^.pid, current^.pid, current^.ppid]);
+   {$IFDEF DEBUG_DO_EXIT}
+      printk('do_exit (%d): %d send SIGCHLD to %d\n', [current^.pid, current^.pid, current^.ppid]);
    {$ENDIF}
 
    { Send a signal to the father }
    { FIXME: error if current^.ppid > 1022 }
    send_sig(SIGCHLD, pid_table^.pid_nb[current^.ppid]);
 
-   {$IFDEF DEBUG_SYS_EXIT}
-      printk('sys_exit (%d): END\n', [current^.pid]);
+   {$IFDEF DEBUG_DO_EXIT}
+      printk('do_exit (%d): END\n', [current^.pid]);
    {$ENDIF}
 
    current^.state     := TASK_ZOMBIE;
    current^.brk       := 0;   { NOTE: not necessary but cool for debugging }
    current^.exit_code := status;
 
-   schedule();   { We never get back  :-( }
+   schedule();   { We never get back  :-(  }
 
 end;
 
@@ -341,7 +326,7 @@ begin
       sti
    end;
 
-   if (stat_loc <> NIL) and (stat_loc < pointer($FFC00000)) then
+   if (stat_loc <> NIL) and (stat_loc < pointer($C0000000)) then
    begin
       {$IFDEF DEBUG_SYS_WAITPID}
          printk('sys_waitpid: stat_loc has a bad value (%h)\n', [stat_loc]);
@@ -362,28 +347,27 @@ again:
          printk('sys_waitpid: pid=%d, flag=%d\n', [p^.pid, flag]);
       {$ENDIF}
 
-      if (pid > 0) then   { We are waiting for the specific child whose process ID is equal to pid }
+      if (pid > 0) then   { We are waiting for the specific child whose process ID is equal to 'pid' }
       begin
-         if (p^.pid <> pid) then
-	     goto next;
+         if (p^.pid <> pid) then goto next;
       end
       else if (pid = 0) then   {* We are waiting for any child process whose
                                 * process group ID is equal to that of the calling process *}
       begin
          {$IFDEF DEBUG_SYS_WAITPID}
-            printk('sys_waitpid (%d): called with pid=0 but DelphineOS doesn''t implement process group ID\n', [current^.pid]);
-	 {$ENDIF}
-	 result := -ENOTSUP;
-	 exit;
+            printk('sys_waitpid (%d): called with pid=0 but DelphineOS doesn''t understand process group ID\n', [current^.pid]);
+	 		{$ENDIF}
+	 		result := -ENOSYS;
+	 		exit;
       end
       else if (pid <> -1) then   {* We are waiting for any child process whose
                                   * process group ID is equal to the absolute value of pid *}
       begin
          {$IFDEF DEBUG_SYS_WAITPID}
-            printk('sys_waitpid (%d): called with pid=%d but DelphineOS doesn''t implement process group ID\n', [current^.pid, pid]);
-	 {$ENDIF}
-	 result := -ENOTSUP;
-	 exit;
+            printk('sys_waitpid (%d): called with pid=%d but DelphineOS doesn''t understand process group ID\n', [current^.pid, pid]);
+	 		{$ENDIF}
+	 		result := -ENOSYS;
+	 		exit;
       end;
 
       { We are looking for any child }
@@ -392,28 +376,28 @@ again:
          printk('sys_waitpid: process %d is ok\n', [p^.pid]);
       {$ENDIF}
       case (p^.state) of
-         TASK_ZOMBIE: begin
-  		         if (stat_loc <> NIL) then
-			     longint(stat_loc^) := p^.exit_code;
-		         flag := p^.pid;
-			 {$IFDEF DEBUG_SYS_WAITPID}
-			    printk('sys_waitpid: process %d is a ZOMBIE\n', [p^.pid]);
-			 {$ENDIF}
-		         release(p);
-		         result := flag;
-		         {$IFDEF DEBUG_SYS_WAITPID}
-		            printk('sys_waitpid: EXIT - EXIT result is %d, stat_loc=%d\n', [result, longint(stat_loc^)]);
-		         {$ENDIF}
-		         exit;
-	       	      end;
+         TASK_ZOMBIE:	begin
+  		         				if (stat_loc <> NIL) then
+										 longint(stat_loc^) := p^.exit_code;
+		         				flag := p^.pid;
+			 						{$IFDEF DEBUG_SYS_WAITPID}
+			    						printk('sys_waitpid: process %d is a ZOMBIE\n', [p^.pid]);
+			 						{$ENDIF}
+		         				release(p);
+		         				result := flag;
+		         				{$IFDEF DEBUG_SYS_WAITPID}
+		            				printk('sys_waitpid: EXIT - EXIT result is %d, stat_loc=%d\n', [result, longint(stat_loc^)]);
+		         				{$ENDIF}
+		         				exit;
+	       	      		end;
 	         else
-	              begin
-		         {$IFDEF DEBUG_SYS_WAITPID}
-		            printk('sys_waitpid: process %d is still running, continuing\n', [p^.pid]);
-		         {$ENDIF}
-		         flag := 1;
-		         goto next;
-	              end;
+	               		begin
+		         				{$IFDEF DEBUG_SYS_WAITPID}
+		            				printk('sys_waitpid: process %d is still running, continuing\n', [p^.pid]);
+		         				{$ENDIF}
+		         				flag := 1;
+		         				goto next;
+	               		end;
        end;   { case (p^.state) }
 
    next:
@@ -429,22 +413,22 @@ again:
    begin
       if (options and WNOHANG) = WNOHANG then   {* We don't suspend execution of the calling process because status
                                                  * is not immediately available for any of the child processes *}
-          begin
-	     {$IFDEF DEBUG_SYS_WAITPID}
-	        printk('sys_waitpid: WNOHANG flag, exiting...\n', []);
-	     {$ENDIF}
-	     schedule;
-	     result := 0;
-	     longint(stat_loc^) := 0;
-	  end
+		begin
+			{$IFDEF DEBUG_SYS_WAITPID}
+	         printk('sys_waitpid: WNOHANG flag, exiting...\n', []);
+	      {$ENDIF}
+{	      schedule();}
+	      result := 0;
+	      longint(stat_loc^) := 0;
+		end
       else
-       begin
-          {$IFDEF DEBUG_SYS_WAITPID}
-             printk('sys_waitpid: suspend process %d\n', [current^.pid]);
-	  {$ENDIF}
-	  interruptible_sleep_on(@current^.wait_queue);
-	  goto again;
-       end;
+		begin
+			{$IFDEF DEBUG_SYS_WAITPID}
+				printk('sys_waitpid: suspend process %d\n', [current^.pid]);
+	   	{$ENDIF}
+	   	interruptible_sleep_on(@current^.wait_queue);
+	   	goto again;
+		end;
    end
    else   { We haven't find any child }
    begin

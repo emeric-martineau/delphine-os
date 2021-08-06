@@ -6,7 +6,7 @@
  *  FIXME: for the moment, delphineOS can only mount ONE filesystem. (the root
  *         filesystem which MUST be an ext2 filesystem)
  *
- *  CopyLeft 2002 GaLi
+ *  CopyLeft 2003 GaLi
  *
  *  version 0.0 - ??/??/2001 - GaLi - initial version
  *
@@ -43,6 +43,8 @@ INTERFACE
 function  alloc_inode : P_inode_t; external;
 function  blkdev_open (inode : P_inode_t ; filp : P_file_t) : dword; external;
 function  inode_uptodate (inode : P_inode_t) : boolean; external;
+procedure kernel_thread (addr : pointer); external;
+procedure kflushd; external;
 function  kmalloc (len : dword) : pointer; external;
 procedure memset (adr : pointer ; c : byte ; size : dword); external;
 procedure panic (reason : string); external;
@@ -50,8 +52,8 @@ procedure printk (format : string ; args : array of const); external;
 procedure read_inode (ino : P_inode_t); external;
 
 
-procedure sys_mount_root; cdecl;
 function  access_rights_ok (flags : dword ; inode : P_inode_t) : boolean;
+procedure sys_mount_root; cdecl;
 
 
 var
@@ -63,6 +65,8 @@ var
 IMPLEMENTATION
 
 
+{$I inline.inc}
+
 
 {******************************************************************************
  * sys_mount_root
@@ -70,7 +74,7 @@ IMPLEMENTATION
  * Mount the root filesystem. This procedure is called by init() through a
  * system call. Only init() can call this procedure.
  *
- * Note : - code inspired by fs/super.c from Linux
+ * NOTE : - code inspired by fs/super.c from Linux
  *        - root filesystem MUST be an ext2 filesystem.
  *****************************************************************************}
 procedure sys_mount_root; cdecl; [public, alias : 'SYS_MOUNT_ROOT'];
@@ -93,9 +97,10 @@ var
 
 begin
 
-   asm
-      sti   { Put interrupts on }
-   end;
+	sti();
+
+   if (current^.root <> NIL) or (current^.pwd <> NIL) then
+       panic('Non root process trying to call sys_mount_root()');
 
    inode := alloc_inode();
    if (inode = NIL) then
@@ -112,7 +117,7 @@ begin
    inode^.rdev_maj := ROOT_DEV_MAJ;
    inode^.rdev_min := ROOT_DEV_MIN;
 
-   filp.mode  := 1; { Read only }
+   filp.mode := 1; { Read only }
 
    {$IFDEF DEBUG_MOUNT_ROOT}
       printk('mount_root: calling blkdev_open()...   ', []);
@@ -142,41 +147,43 @@ begin
             printk('mount_root: fs_type=%h\n', [fs_type]);
          {$ENDIF}
          if (fs_type^.name = 'ext2') then
-	 begin
-	    {$IFDEF DEBUG_MOUNT_ROOT}
-	       printk('mount_root: fs_type^.name=''ext2''\n', []);
-	       printk('mount_root: calling read_super()...   ', []);
-	    {$ENDIF}
-	    sb := fs_type^.read_super(sb);
-	    {$IFDEF DEBUG_MOUNT_ROOT}
-	       printk('OK\n', []);
-	    {$ENDIF}
-	    if (sb <> NIL) then
-	    {* We successfully read an ext2 superblock. So, we stop looking
-	     * for a superblock. Then, we try to read the ROOT_INODE
-	     * (inode n°2). *}
-	    begin
-	       inode^.sb    := sb;
-	       inode^.ino   := 2;
-	       read_inode(inode);
-	       if not inode_uptodate(inode) then
-	       begin
-	          printk('VFS: unable to read root inode\n', []);
-		  panic('no root filesystem');
-	       end;
-	       inode^.count    += 1;
-	       current^.root   := inode;
-	       current^.pwd    := inode;
-	       current^.cwd[0] := #1;
-	       current^.cwd[1] := '/';
-	       printk('\nVFS: Mounted root (ext2 filesystem) readonly.\n', []);
-	       {$IFDEF SHOW_BLOCKSIZE}
-	          printk('VFS: Blocksize is %d bytes\n', [sb^.blocksize]);
-	       {$ENDIF}
-	       exit;
-	    end;
-	 end;
-	 fs_type := fs_type^.next;
+	 		begin
+	    		{$IFDEF DEBUG_MOUNT_ROOT}
+	       		printk('mount_root: fs_type^.name=''ext2''\n', []);
+	       		printk('mount_root: calling read_super()...   ', []);
+	    		{$ENDIF}
+	    		sb := fs_type^.read_super(sb);
+	    		{$IFDEF DEBUG_MOUNT_ROOT}
+	       		printk('OK\n', []);
+	    		{$ENDIF}
+	    		if (sb <> NIL) then
+	    		{* We successfully read an ext2 superblock. So, we stop looking
+	      	* for a superblock. Then, we try to read the ROOT_INODE
+	      	* (inode n°2). *}
+	    		begin
+	       		inode^.sb   := sb;
+	       		inode^.ino  := EXT2_ROOT_INO;
+	       		read_inode(inode);
+	       		if not inode_uptodate(inode) then
+	       		begin
+	          		printk('VFS: unable to read root inode\n', []);
+		   			panic('no root filesystem');
+	       		end;
+	       		inode^.count    := 2;
+	       		current^.root   := inode;
+	       		current^.pwd    := inode;
+	       		current^.cwd[0] := #1;
+	       		current^.cwd[1] := '/';
+	       		printk('VFS: Mounted root (ext2 filesystem)\n', []);
+					printk('\nUse ''sync'' to save changes to disk\n\n', []);
+	       
+	       		{ Launch kflushd }
+	       		kernel_thread(@kflushd);
+	       
+	       		exit;
+	    		end;
+	 		end;
+	 		fs_type := fs_type^.next;
          sb := NIL;
       until fs_type = NIL;
    end;
@@ -233,7 +240,7 @@ begin
    else
       begin
          printk('access_rights_ok: %h is not a correct value. Set flags to read only.\n', [flags]);
-	 flags := 4;
+	 		flags := 4;
       end;
    end;
 
@@ -256,7 +263,7 @@ begin
    begin
       tflags := (inode^.mode and $1C0) div 64;
       if (flags and tflags) <> flags then
-	  result := FALSE;
+	   result := FALSE;
    end
    else if (tgid = inode^.gid) then
    { User is a group member }

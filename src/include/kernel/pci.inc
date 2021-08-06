@@ -31,12 +31,20 @@ type
    P_bios32     = ^T_bios32;
 
    T_bios32 = record
-      magic : dword;
-      phys_entry : dword;
-      revision : byte;
-      length : byte;
-      crc : char;
-      reserved : array [1..5] of byte;
+      magic      : dword;   { signature "_32_" }
+
+      phys_entry : dword;   {* physical address of BIOS32 Service Directory
+									  * entry point *}
+
+      revision   : byte;    { header structure version number (currently 00h) }
+
+      length     : byte;    {* header structure length in 16 bytes paragraphs
+		                       * (currently 01h) *}
+
+      crc        : char;    {* checksum (8-bit sum of all bytes in structure,
+                				  * including this one, should equal zero) *}
+
+      reserved   : array [1..5] of byte;
    end;
 
    vendor = record

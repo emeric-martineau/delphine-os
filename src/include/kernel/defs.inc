@@ -25,6 +25,7 @@ procedure init_tss (tss : P_tss_struct); external;
 procedure printk (format : string ; args : array of const); external;
 procedure kernel_thread (adr : pointer); external;
 procedure panic (reason : string); external;
+procedure print_bochs (format : string ; args : array of const); external;
 function  kmalloc (len : dword) : pointer; external;
 function  get_new_pid : dword; external;
 function  get_free_page : pointer; external;

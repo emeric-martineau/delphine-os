@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 
 # This file is used to generate a file named src/kernel.s which contains the
 # entire kernel source code

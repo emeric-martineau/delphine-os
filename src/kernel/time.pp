@@ -35,9 +35,11 @@ INTERFACE
 {$I process.inc}
 {$I time.inc}
 
+{DEFINE DEBUG_SYS_NANOSLEEP}
 
 procedure enable_IRQ (irq : byte); external;
 function  inb (port : word) : byte; external;
+procedure interruptible_sleep_on (p : PP_wait_queue); external;
 procedure memset (adr : pointer ; c : byte ; size : dword); external;
 procedure outb (port : word ; val : byte); external;
 procedure printk (format : string ; args : array of const);external;
@@ -46,71 +48,53 @@ procedure set_intr_gate (n : dword ; addr : pointer); external;
 
 procedure BCD_TO_BIN (var val : dword);
 function  CMOS_READ (port : byte) : byte;
-procedure configurer_frequence_PIT(frequence : word);
+procedure initialize_PIT(frequence : word);
 function  get_value_counter : dword;
-procedure initialise_compteur;
-procedure mdelay (time : dword);
+function  sys_alarm (seconds : dword) : dword; cdecl;
 function  sys_gettimeofday (tv : P_timeval ; tz : P_timezone) : dword; cdecl;
+function  sys_nanosleep (rqtp, rmtp : P_timespec) : dword; cdecl;
 function  sys_time (t : pointer) : dword; cdecl;
 
 
-{ Global variables }
-
 var
-   current : P_task_struct; external name 'U_PROCESS_CURRENT';
-   compteur : dword;
+   current  : P_task_struct; external name 'U_PROCESS_CURRENT';
+
+{ Global variables }
+   jiffies  : dword;
+   nr_nanosleep : dword;   {* Nb of process which are sleeping because of
+      	             	    * sys_nanosleep *}
+   nanosleep_wq : P_wait_queue;
 
 
 IMPLEMENTATION
 
 
+{$I inline.inc}
+
 
 {******************************************************************************
- * configurer_frequence_PIT
+ * initialize_PIT
  *
  * Entrée : fréquence désirée en Hertz (pas les véhicule de location !)
  *
  * Configure PIT. PIT = programmable interval timer (8253, 8254)
  ******************************************************************************} 
-procedure configurer_frequence_PIT(frequence : word); [public, alias : 'CONFIGURER_FREQUENCE_PIT'];
+procedure initialize_PIT (frequence : word); [public, alias : 'INITIALIZE_PIT'];
 begin
     {* Calcule le nombre à mettre dans le compteur en fonction de la fréquence
      * voulue. Le compteur tourne à 1,19318 MHz *}
     frequence := 1193180 div frequence ;
 
-    asm
-       pushfd
-       cli
-    end;
+	pushfd();
+	cli();
 
     outb(PIT_CONTROL_REG, (PIT_COMPTEUR0 or PIT_COMPTEUR_MODE_3 or 
                            PIT_CONTROL_MODE_LH or PIT_COMPTEUR_16BITS)) ;
     outb(PIT_COUNTER0_REG, (frequence and $FF));
     outb(PIT_COUNTER0_REG, (frequence shr 8));
 
-    asm
-       popfd
-    end;
+	popfd();
 
-end ;
-
-
-
-{******************************************************************************
- * mdelay
- *
- * Entrée : temps en miliseconde
- *
- * Attend un certain temps. ATTENTION cette version est une attente active !
- ******************************************************************************}
-procedure mdelay (time : dword); [public, alias : 'MDELAY'];
-var ancien_compteur : dword ;
-begin
-    ancien_compteur := compteur ;
-
-    while ((compteur - ancien_compteur) < time) do ;
-        { on se fait une belotte ?
-          FIXME: à modifier car attente active }
 end ;
 
 
@@ -122,22 +106,8 @@ end ;
  ******************************************************************************}
 function get_value_counter : dword; [public, alias : 'GET_VALUE_COUNTER'];
 begin
-    Result := compteur ;
-end ;
-
-
-
-{******************************************************************************
- * initialise_compteur
- *
- * Retour : valeur du compteur
- ******************************************************************************}
-procedure initialise_compteur; [public, alias : 'INITIALISE_COMPTEUR'];
-
-begin
-  compteur := 0;
-  configurer_frequence_PIT(1000 div INTERVAL);
-end ;
+    result := jiffies div HZ;
+end;
 
 
 
@@ -197,9 +167,7 @@ begin
       year := CMOS_READ(9);
    until (sec = CMOS_READ(0));
 
-   asm
-      sti   { Put interrupts on }
-   end;
+	sti();
 
    BCD_TO_BIN(sec);
    BCD_TO_BIN(min);
@@ -207,6 +175,10 @@ begin
    BCD_TO_BIN(day);
    BCD_TO_BIN(mon);
    BCD_TO_BIN(year);
+
+	year += 1900;
+	if (year < 1970) then
+		 year += 100;
 
 {printk('sec: %d  min: %d  hour: %d  day: %d  mon: %d  year: %d\n',
        [sec, min, hour, day, mon, year]);}
@@ -224,7 +196,7 @@ begin
    ((((year div 4 - year div 100 + year div 400 + 367 * mon div 12 + day) +
    (year * 365) - (719499)) * 24 + hour) * 60 + min) * 60 + sec;
 
-   if (t <> NIL) and (t > pointer($FFC01000)) then
+   if (t <> NIL) and (t > pointer(BASE_ADDR)) then
        longint(t^) := result;
 
 {printk('sys_time (%d): t=%h  result=%d\n', [current^.pid, t, result]);}
@@ -243,6 +215,8 @@ begin
 
 {   printk('sys_gettimeofday (%d): tv=%h  tz=%h\n', [current^.pid, tv, tz]);}
 
+	sti();
+
    if (tv <> NIL) then
    begin
       memset(tv, 0, sizeof(timeval));
@@ -255,7 +229,121 @@ begin
       { FIXME: Fill tz }
    end;
 
-   result := -ENOTSUP;
+   result := -ENOSYS;
+
+end;
+
+
+
+{******************************************************************************
+ * sys_alarm
+ *
+ * INPUT : seconds -> Number of elapsed seconds before signal.
+ *
+ * OUTPUT: Number of seconds left in previous request or zero if no previous
+ *         request.
+ *
+ * Causes the system to send the calling process a SIGALRM signal after a
+ * specified number of seconds elapse.
+ *
+ * There can be only one outstanding alarm request at any given time. A call to
+ * sys_alarm() will reschedule any previous unsignaled request. An argument of
+ * zero causes any previous request to be canceled.
+ *****************************************************************************}
+function sys_alarm (seconds : dword) : dword; cdecl; [public, alias : 'SYS_ALARM'];
+
+var
+   old : dword;
+
+begin
+
+	sti();
+
+   old := current^.alarm;
+
+   if (old <> 0) then
+       old := (old - jiffies) div HZ;
+
+   result := old;
+
+   if (seconds = 0) then
+   begin
+      current^.alarm := 0;
+      exit;
+   end;
+
+   current^.alarm := jiffies + (HZ * seconds);
+
+{   printk('sys_alarm (%d): jiffies=%d seconds=%d -> alarm=%d\n', [current^.pid, jiffies, seconds, current^.alarm]);}
+
+end;
+
+
+
+{******************************************************************************
+ * sys_nanosleep
+ *
+ * nano * 1000 == usecs
+ * usecs * 1000 == msecs
+ * msecs * 1000 = secs
+ *****************************************************************************}
+function sys_nanosleep (rqtp, rmtp : P_timespec) : dword; cdecl; [public, alias : 'SYS_NANOSLEEP'];
+
+var
+   nb_ticks, sec, nsec : dword;
+
+begin
+
+	sti();
+
+   if (rqtp^.tv_nsec >= 1000000000) or
+      (longint(rqtp^.tv_nsec) < 0) or
+      (longint(rqtp^.tv_sec) < 0) then
+   begin
+      result := -EINVAL;
+      exit;
+   end;
+
+{   nb_ticks := ((rqtp^.tv_sec * 1000) + (rqtp^.tv_nsec div 1000000)) div INTERVAL;}
+
+   sec      := rqtp^.tv_sec;
+   nsec     := rqtp^.tv_nsec;
+   nsec     += 1000000000 div HZ - 1;
+   nsec     := nsec div (1000000000 div HZ);
+   nb_ticks := HZ * sec + nsec;
+
+   {$IFDEF DEBUG_SYS_NANOSLEEP}
+      printk('sys_nanosleep (%d): tv_sec=%d tv_nsec=%d -> %d ticks\n', [current^.pid, sec, nsec, nb_ticks]);
+   {$ENDIF}
+
+   current^.timeout := nb_ticks;
+   interruptible_sleep_on(@nanosleep_wq);
+
+   result := 0;
+
+   if (current^.timeout > 0) then
+   begin
+      {$IFDEF DEBUG_SYS_NANOSLEEP}
+      	 printk('sys_nanosleep (%d): current^.timeout=%d  =>  \n', [current^.pid, current^.timeout]);
+      {$ENDIF}
+      if (rmtp <> NIL) then
+      begin
+			rmtp^.tv_sec  := current^.timeout div HZ;
+			rmtp^.tv_nsec := (current^.timeout mod HZ) * (1000000000 div HZ);
+      end;
+      {$IFDEF DEBUG_SYS_NANOSLEEP}
+			printk('%d secs, %d nsecs\n', [rmtp^.tv_sec, rmtp^.tv_nsec]);
+      {$ENDIF}
+      result := -EINTR;
+   end
+   else
+   begin
+      if (rmtp <> NIL) then
+      begin
+			rmtp^.tv_sec  := 0;
+	 		rmtp^.tv_nsec := 0;
+      end;
+   end;
 
 end;
 

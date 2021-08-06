@@ -40,13 +40,15 @@ INTERFACE
 
 {DEFINE DEBUG_DO_SIGNAL}
 {DEFINE DEBUG_SEND_SIG}
+{DEFINE DEBUG_SYS_KILL}
 {DEFINE DEBUG_SYS_SIGPROCMASK}
 {DEFINE DEBUG_SYS_SIGACTION}
-{$DEFINE SHOW_WARNINGS}
+{DEFINE SHOW_WARNINGS}
 
 {* External procedure and functions *}
 
 procedure add_to_runqueue (task : P_task_struct); external;
+procedure dump_task; external;
 procedure memcpy (src, dest : pointer ; size : dword); external;
 procedure panic(reason : string); external;
 procedure printk (format : string ; args : array of const); external;
@@ -67,12 +69,15 @@ var
 function  do_signal (signr : dword) : boolean;
 procedure send_sig (sig : dword ; p : P_task_struct);
 function  signal_pending (p : P_task_struct) : dword;
-function  sys_kill (pid, sig : dword) : dword; cdecl;
+function  sys_kill (pid : longint ; sig : dword) : dword; cdecl;
 function  sys_rt_sigsuspend (sigmask : P_sigset_t ; sigsetsize : dword) : dword; cdecl;
 function  sys_sigaction (sig : longint ; act, oact : P_sigaction ; nr : dword) : dword; cdecl;
 function  sys_sigprocmask (how : dword ; nset, oset : P_sigset_t) : dword; cdecl;
 
 IMPLEMENTATION
+
+
+{$I inline.inc}
 
 
 {* Constants only used in THIS file *}
@@ -87,6 +92,7 @@ IMPLEMENTATION
 {******************************************************************************
  * sys_sigprocmask
  *
+ * Examines and changes blocked signals.
  *****************************************************************************}
 function sys_sigprocmask (how : dword ; nset, oset : P_sigset_t) : dword; cdecl; [public, alias : 'SYS_SIGPROCMASK'];
 
@@ -96,9 +102,7 @@ var
 
 begin
 
-   asm
-      sti
-   end;
+	sti();
 
    old_set := current^.blocked;
    result  := 0;
@@ -109,32 +113,41 @@ begin
 
    if (nset <> NIL) then
    begin
-      if (longint(nset) < $FFC00000) then
+      if (longint(nset) < BASE_ADDR) then
       begin
          result := -EFAULT;   { Bad address }
-	 exit;
+	 		exit;
       end;
       tmp_set := nset^;
       case (how) of
-         SIG_BLOCK:   begin
-	 	         current^.blocked[0] := (current^.blocked[0] or nset^[0]) and ((not (1 shl (SIGKILL - 1))) and
-			 			(not (1 shl (SIGSTOP - 1))));
-	              end;
-	 SIG_UNBLOCK: begin
-	 		 current^.blocked[0] := (current^.blocked[0] and (not nset^[0])) and ((not (1 shl (SIGKILL -1 ))) and
-			 			(not (1 shl (SIGSTOP - 1))));
-	 	      end;
-	 SIG_SETMASK: begin
-	 		 current^.blocked[0] := nset^[0] and ((not (1 shl (SIGKILL - 1))) and (not (1 shl (SIGSTOP - 1))));
-	 	      end;
-	 else
-	 	      result := -EINVAL;
-      end;
+         SIG_BLOCK:		begin
+	 	         				current^.blocked[0] :=
+									(current^.blocked[0] or nset^[0])
+									 and ((not (1 shl (SIGKILL - 1)))
+									 and (not (1 shl (SIGSTOP - 1))));
+	               		end;
+
+	 		SIG_UNBLOCK:	begin
+	 		 						current^.blocked[0] :=
+									(current^.blocked[0] and (not nset^[0]))
+									 and ((not (1 shl (SIGKILL -1 )))
+									 and (not (1 shl (SIGSTOP - 1))));
+	 	      				end;
+
+	 		SIG_SETMASK:	begin
+	 		 						current^.blocked[0] :=
+									nset^[0] and ((not (1 shl (SIGKILL - 1)))
+									and (not (1 shl (SIGSTOP - 1))));
+	 	      				end;
+
+	 	else
+	 	      				result := -EINVAL;
+		end;
    end;
 
    if (oset <> NIL) then
    begin
-      if (longint(oset) < $FFC00000) then
+      if (longint(oset) < BASE_ADDR) then
           result := -EFAULT
       else
           oset^ := old_set;
@@ -151,35 +164,35 @@ end;
 {******************************************************************************
  * sys_sigaction
  *
+ * Examines and changes signal action.
  *****************************************************************************}
 function sys_sigaction (sig : longint ; act, oact : P_sigaction ; nr : dword) : dword; cdecl; [public, alias : 'SYS_SIGACTION'];
 begin
 
-   asm
-      sti
-   end;
+	sti();
 
    {$IFDEF DEBUG_SYS_SIGACTION}
-      printk('sys_sigaction (%d): %d do nothing. handler=%h flags=%h\n               restorer=%h mask=%h\n',
+      printk('sys_sigaction (%d): sig=%d  handler=%h flags=%h\n               restorer=%h mask=%h\n',
              [current^.pid, sig, act^.sa_handler, act^.sa_flags, act^.sa_restorer, act^.sa_mask[0]]);
    {$ENDIF}
 
-   if (sig < 1) or (sig > 32) then
+   if (sig < 1) or (sig > 32) or
+      ((act <> NIL) and (sig = SIGKILL) or (sig = SIGSTOP)) then
    begin
-      printk('sys_sigaction (%d): bad signal number (%d)\n', [current^.pid, sig]);
       result := -EINVAL;
       exit;
    end;
 
    {$IFDEF SHOW_WARNINGS}
-      if (act^.sa_flags <> 0) and (act^.sa_flags <> SA_INTERRUPT) then
+      if (act <> NIL) and (act^.sa_flags <> 0) and (act^.sa_flags <> SA_INTERRUPT) then
           printk('sys_sigaction (%d): process is trying to use flags %h for signal %d\n', [current^.pid, act^.sa_flags, sig]);
    {$ENDIF}
 
-   if ((act <> NIL) and (longint(act) > $FFC00000)) then
+   { FIXME: check if act and oact are in the process memory space }
+   if (act <> NIL) then
         memcpy(act, @current^.signal_struct[sig], sizeof(sigaction));
 
-   if ((oact <> NIL) and (longint(oact) > $FFC00000)) then
+   if (oact <> NIL) then
         memcpy(@current^.signal_struct[sig], oact, sizeof(sigaction));
 
    result := 0;
@@ -211,7 +224,7 @@ begin
    end;
 
    {$IFDEF DEBUG_DO_SIGNAL}
-      printk('Welcome in do_signal %d, %h (PID=%d)\n', [signr, current^.signal_struct[signr].sa_handler, current^.pid]);
+      printk('do_signal (%d): %d, %h (PID=%d)\n', [current^.pid, signr, current^.signal_struct[signr].sa_handler, current^.pid]);
    {$ENDIF}
 
    if (current^.pid = 1) then   { We can't send signals to init }
@@ -229,12 +242,36 @@ begin
    if (longint(sig.sa_handler) = SIG_DFL) then   { On réalise l'action par défaut du signal }
    begin
       case (signr) of
-	 SIGCHLD: begin   { Do nothing }
-	          end;
-	 SIGKILL: begin
-	 	     do_exit(signr);
-	 	  end;
-         else
+			SIGCHLD: begin   { Do nothing }
+	          		end;
+
+			SIGCONT: begin   { Do nothing }
+	          		end;
+
+			SIGKILL:	begin
+	 	      			do_exit(signr);
+	 	   			end;
+
+			SIGSEGV: begin
+	             		do_exit(signr);
+	          		end;
+
+         SIGILL:  begin
+	             		do_exit(signr);
+	          		end;
+
+         SIGHUP:	begin
+	             		do_exit(signr);
+	          		end;
+
+			SIGFPE:  begin
+	             		do_exit(signr);
+	          		end;
+
+			SIGALRM: begin
+	             		do_exit(signr);
+	          		end;
+	 else
 	    printk('do_signal (%d): don''t know what to do with signal %d\n', [current^.pid, signr]);
       end;
    end
@@ -243,14 +280,16 @@ begin
       {printk('do_signal: we have to execute a handler for signal %d (test=%h)\n', [signr, test]);}
       printk('do_signal (%d): calling handler for signal %d\n', [current^.pid, signr]);
       test := longint(sig.sa_handler);
+      if (sig.sa_flags and SA_RESETHAND) = SA_RESETHAND then
+      	  longint(sig.sa_handler) := SIG_DFL;
       asm
          mov   eax, test
-	 mov   ebx, signr
-	 cli
-	 push  ebx
-	 call  eax   { FIXME: this is REALLY awful. (the signal handler is excuted in kernel mode) }
-	 pop   ebx
-	 sti
+	 		mov   ebx, signr
+	 		cli
+	 		push  ebx
+	 		call  eax   { FIXME: this is REALLY awful. (the signal handler is excuted in kernel mode) }
+	 		pop   ebx
+	 		sti
       end;
       printk('do_signal (%d): back from handler\n', [current^.pid]);
    end;
@@ -259,6 +298,7 @@ begin
 
    {$IFDEF DEBUG_DO_SIGNAL}
       printk('do_signal (%d): EXITING\n', [current^.pid]);
+{		dump_task();}
    {$ENDIF}
 
    result := TRUE;
@@ -275,7 +315,7 @@ procedure send_sig (sig : dword ; p : P_task_struct); [public, alias : 'SEND_SIG
 begin
 
    {$IFDEF DEBUG_SEND_SIG}
-      printk('Welcome in send_sig (dest PID=%d (state=%d), SIG=%d)\n', [p^.pid, p^.state, sig]);
+      printk('send_sig (%d): dest PID=%d (state=%d), SIG=%d\n', [current^.pid, p^.pid, p^.state, sig]);
    {$ENDIF}
 
    if (sig > 32) then
@@ -290,23 +330,18 @@ begin
    begin
       if (p^.state = TASK_INTERRUPTIBLE) then
       begin
-         asm
-	    pushfd
-            cli
-         end;
+			pushfd();
+			cli();
          p^.signal[0] := p^.signal[0] or (1 shl (sig - 1));
          add_to_runqueue(p);
          {$IFDEF DEBUG_SEND_SIG}
-            printk('send_sig: waking up process %d (current=%d next_run=%d %d)\n', [p^.pid, current^.pid, current^.next_run^.pid,
-	    current^.next_run^.next_run^.pid]);
+            printk('send_sig (%d): waking up process %d\n', [current^.pid, p^.pid]);
          {$ENDIF}
-         asm
-            popfd
-         end;
+			popfd();
       end
       else if (p^.state = TASK_UNINTERRUPTIBLE) then
       begin
-         printk('send_sig (%d): task %d is uninterruptible\n', [current^.pid]);
+         printk('send_sig (%d): task %d is uninterruptible\n', [current^.pid, p^.pid]);
       end
       else
          p^.signal[0] := p^.signal[0] or (1 shl (sig - 1));
@@ -329,9 +364,11 @@ var
 
 begin
 
+	sti();
+
    printk('sys_rt_sigsuspend (%d): sigmask=%h\n', [current^.pid, sigmask^[0]]);
 
-   if (longint(sigmask) < $FFC00000) then
+   if (longint(sigmask) < BASE_ADDR) then
    begin
       result := -EFAULT;
       exit;
@@ -367,6 +404,7 @@ begin
 
    tmp_sig   := p^.signal[0];
    tmp_block := p^.blocked[0];
+
    asm
       mov   res, 0
       mov   ebx, tmp_sig
@@ -392,18 +430,58 @@ end;
 {******************************************************************************
  * sys_kill
  *
- * FIXME: do this function  :-)
+ * This function sends a signal to a process or a group of process specified by
+ * 'pid'. If the signal is zero, error checking is performed but no signal is
+ * actually sent. This can be used to check for a valid pid.
+ *
+ * If 'pid' is greater than zero, 'sig' is sent to the process whose process ID
+ * is 'pid'. If 'pid' is negative, 'sig' is sent to all processes whose process
+ * group ID is equal to the absolute value of 'pid'.
+ *
+ * NOTE: 'pid' must not be -1.
+ *
+ * FIXME: do this function correctly  :-)
  *****************************************************************************}
-function sys_kill (pid, sig : dword) : dword; cdecl; [public, alias : 'SYS_KILL'];
+function sys_kill (pid : longint ; sig : dword) : dword; cdecl; [public, alias : 'SYS_KILL'];
 begin
 
-{   printk('Welcome in sys_kill(%d, %d)\n', [pid, sig]);}
+	{$IFDEF DEBUG_SYS_KILL}
+		printk('sys_kill (%d): pid=%d sig=%d\n', [current^.pid, pid, sig]);
+	{$ENDIF}
 
-   {FIXME: check if pid has a correct value}
+	sti();
 
-   send_sig(sig, pid_table^.pid_nb[pid]);
+   if (pid > 1022) then
+   begin
+      printk('WARNING sys_kill (%d): PID > 1022 (%d)\n', [current^.pid, pid]);
+      result := -ESRCH;   { No such process }
+      exit;
+   end;
 
-   result := 0;
+   if (sig = 0) then
+   begin
+      if (pid < 0) then
+      	 result := -EINVAL
+      else
+      begin
+			if (pid_table^.pid_nb[pid] <> NIL) then
+      	    result := 0
+			else
+      	    result := -ESRCH;
+      end;
+      exit;
+   end;
+
+   if (pid > 0) then
+   begin
+      send_sig(sig, pid_table^.pid_nb[pid]);
+      result := 0;
+   end
+   else
+   begin
+      printk('sys_kill (%d): got to send signal %d to process group %d\n', [current^.pid, sig, -pid]);
+      result := -ENOSYS;
+   end;
 
 end;
 

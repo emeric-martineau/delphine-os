@@ -1,6 +1,4 @@
 
-   - Synchronisation du noyau (revoir le scheduler)
-
    - Sémaphores
 
    - Meilleure gestion des signaux (j'ai commencé mais c'est un peu nawak
@@ -16,10 +14,6 @@
 
    - Revoir sys_chdir() (pour updater current^.cwd)
 
-   - Revoir sys_exec() pour faire de la pagination à la demande. (on ne charge
-     pas toutes les pages d'un nouveau processus d'un seul coup, on laisse
-     l'exception 14 s'en charger)
-
    - Simplifier sys_exec() (faire plus de fonctions)
 
    - Ouverture/fermeture de lecteurs de CD-ROM avec les touches F9, F10, ...
@@ -31,8 +25,6 @@
    - Leds du clavier
 
    - Vérifier le fonctionnement du flag close_on_exec.
-
-   - Utiliser page_align (mm/mem.pp) le plus possible
 
 *  - Ecrire un programme pour tester les fonctions mmap(), munmap() et mremap()
 
@@ -51,6 +43,6 @@
 
    - Essayer de ne pas définir le symbole USE_MEMSET dans mem.pp
 
-   - Problème avec le return -1 : "tty_ioctl : unknown request (0x5403)"
-
    - Mettre en place des locks sur les objets fichiers.
+
+   - Use DMA in src/drivers/block/ide-hd.pp ???

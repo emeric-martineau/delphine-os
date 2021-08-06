@@ -3,7 +3,7 @@
  * 
  *  Keyboard management
  *
- *  CopyLeft 2002 GaLi & Edo
+ *  CopyLeft 2003 GaLi & Edo
  *
  *  version 0.4 - 04/06/2003 - GaLi - Rewrite keyboard_interrupt
  *
@@ -43,6 +43,7 @@ INTERFACE
 {$I tty.inc}
 
 
+{DEFINE DEBUG_WAIT_FOR_KEYBOARD}
 {DEFINE DEBUG_KEYBOARD_READ}
 {DEFINE DEBUG}
 {$DEFINE BOCHS}
@@ -50,25 +51,29 @@ INTERFACE
 
 { External procedures and functions }
 
-procedure change_tty (ontty : byte);external;
-procedure csi_J (vpar : dword ; ontty : byte); external;
+procedure change_tty (tty : byte);external;
+procedure csi_J (vpar : dword ; tty_index : byte); external;
 procedure dump_dev;external;
 procedure dump_mem;external;
 procedure dump_task;external;
 procedure enable_IRQ (irq : byte); external;
 function  inb(port : word) : byte; external;
 procedure interruptible_sleep_on (p : PP_wait_queue); external;
-procedure interruptible_wake_up (p : PP_wait_queue); external;
+procedure interruptible_wake_up (p : PP_wait_queue ; schedule : boolean); external;
 procedure lock_inode (inode : P_inode_t); external;
 procedure memset (adr : pointer ; c : byte ; size : dword); external;
 procedure outb(port : word; val : byte); external;
+procedure print_bochs (format : string ; args : array of const);external;
 procedure printk (format : string ; args : array of const);external;
-procedure putchar (car : char); external;
+procedure putchar (car : char ; tty_index : byte); external;
+procedure read_lock (rw : P_rwlock_t); external;
+procedure read_unlock (rw : P_rwlock_t); external;
 procedure register_chrdev (nb : byte ; name : string[20] ; fops : pointer); external;
 procedure reset_computer; external;
 procedure set_intr_gate (n : dword ; addr : pointer); external;
 procedure unlock_inode (inode : P_inode_t); external;
-procedure update_cursor (ontty : byte); external;
+procedure write_lock (rw : P_rwlock_t); external;
+procedure write_unlock (rw : P_rwlock_t); external;
 
 
 { Procedures and functions defined in this file }
@@ -76,20 +81,19 @@ procedure update_cursor (ontty : byte); external;
 type
    P_byte = ^byte;
 
+function  get_buffer_keyboard (tty : P_tty_struct ; idx : dword) : char;
 procedure init_keyboard;
-function  keyboard_close (fichier : P_file_t) : dword;
 procedure keyboard_interrupt;
-function  keyboard_ioctl (fichier : P_file_t ; req : dword ; argp : pointer) : dword;
-function  keyboard_open (inode : P_inode_t ; fichier : P_file_t) : dword;
-function  keyboard_read (fichier : P_file_t ; buf : pointer ; count : dword) : dword;
 procedure set_leds (leds : byte);
 function  translate (scancode : byte ; keycode : P_byte) : dword;
+function  wait_for_keyboard (fichier : P_file_t ; tty : P_tty_struct ; idx : dword) : char;
 procedure write_buffer (car : char);
 
 function  do_alt   (keycode : byte ; up : boolean) : char;
 function  do_altgr (keycode : byte ; up : boolean) : char;
 function  do_ctrl  (keycode : byte ; up : boolean) : char;
 function  do_clear (keycode : byte ; up : boolean) : char;
+function  do_cur   (keycode : byte ; up : boolean) : char;
 function  do_debug (keycode : byte ; up : boolean) : char;
 function  do_func  (keycode : byte ; up : boolean) : char;
 function  do_magic (keycode : byte ; up : boolean) : char;
@@ -105,21 +109,21 @@ function  nop      (keycode : byte ; up : boolean) : char;
 { External variables }
 
 var
-   tty         : array[0..7] of tty_struct; external name  'U_TTY__TTY';
+	ttys        : array[1..MAX_TTY] of P_tty_struct; external name 'U_TTY__TTYS';
    current     : P_task_struct; external name 'U_PROCESS_CURRENT';
-   current_tty : byte; external name  'U_TTY__CURRENT_TTY';
+   current_tty : byte; external name 'U_TTY__CURRENT_TTY';
 
 
 IMPLEMENTATION
 
 
 var
-   keyboard_fops : file_operations;
    prev_scancode : dword;
    shift, alt, altgr, ctrl, maj, num : boolean;
    leds : byte;
 
 
+{$I inline.inc}
 {$I keyboard.inc}
 
 
@@ -137,18 +141,8 @@ begin
 
    leds := 0;
    set_leds(leds);
-   set_intr_gate(33, @keyboard_interrupt);   { On installe le gestionnaire }
+   set_intr_gate(33, @keyboard_interrupt);
    enable_IRQ(1);
-
-   for i := 0 to 7 do   { Initialisation des buffers de chaque console }
-       with tty[i] do
-       begin
-          next_c := 0 ;
-          last_c := 0 ;
-          depassement := FALSE;
-          for j := 0 to MAX_BUFF_CLAV do
-              buffer_keyboard[j] := #0;
-       end;
 
    prev_scancode := 0;
    shift         := FALSE;
@@ -157,14 +151,6 @@ begin
    ctrl          := FALSE;
    maj           := FALSE;
    num           := FALSE;
-
-   memset(@keyboard_fops, 0, sizeof(file_operations));
-   keyboard_fops.open  := @keyboard_open;
-   keyboard_fops.read  := @keyboard_read;
-   keyboard_fops.close := @keyboard_close;
-   keyboard_fops.ioctl := @keyboard_ioctl;
-
-   register_chrdev (KEYB_MAJOR, 'keyb', @keyboard_fops);
 
 {	outb_p(inb_p(0x21)&0xfd,0x21);
 	a=inb_p(0x61);
@@ -199,7 +185,45 @@ end;
  *****************************************************************************}
 function nop (keycode : byte ; up : boolean) : char;
 begin
-   if (not up) then printk('%h2', [keycode]);
+   if (not up) then print_bochs('unknown keycode: %h2\n', [keycode]);
+   result := #0;
+end;
+
+
+
+{******************************************************************************
+ * do_cur
+ *
+ *****************************************************************************}
+function do_cur (keycode : byte ; up : boolean) : char;
+begin
+   if (not up) then
+   begin
+      write_buffer(#27);
+      write_buffer('[');
+      case (keycode) of
+      	 $67: begin   { Up }
+			 			write_buffer('A');
+					end;
+			 $68: begin   { Page up }
+			 			write_buffer('5');
+						write_buffer('~');
+			 		end;
+      	 $69: begin   { Left }
+			 			write_buffer('D');
+					end;
+      	 $6a: begin   { Right }
+			 			write_buffer('C');
+					end;
+      	 $6c: begin   { Down }
+			 			write_buffer('B');
+					end;
+			 $6d: begin   { Page down }
+			 			write_buffer('6');
+						write_buffer('~');
+			 		end;
+      end;
+   end;
    result := #0;
 end;
 
@@ -244,9 +268,9 @@ end;
 function do_func (keycode : byte ; up : boolean) : char;
 begin
    {$IFDEF BOCHS}
-      if (not up) then change_tty(keycode - $3b);
+      if (not up) then change_tty(keycode - $3a);
    {$ELSE}
-      if (not up) and (alt) then change_tty(keycode - $3b);
+      if (not up) and (alt) then change_tty(keycode - $3a);
    {$ENDIF}
 
    result := #0;
@@ -316,15 +340,15 @@ begin
    begin
       if (maj = TRUE) then
       begin
-         maj := FALSE;
-	 leds := leds and (not 4);
-	 set_leds(leds);
+         maj  := FALSE;
+	 		leds := leds and (not 4);
+	 		set_leds(leds);
       end
       else
       begin
-         maj := TRUE;
-	 leds := leds or 4;
-	 set_leds(leds);
+         maj  := TRUE;
+	 		leds := leds or 4;
+	 		set_leds(leds);
       end;
    end;
    result := #0;
@@ -342,15 +366,15 @@ begin
    begin
       if (num = TRUE) then
       begin
-         num := FALSE;
-	 leds := leds and (not 2);
-	 set_leds(leds);
+         num  := FALSE;
+	 		leds := leds and (not 2);
+	 		set_leds(leds);
       end
       else
       begin
-         num := TRUE;
-	 leds := leds or 2;
-	 set_leds(leds);
+         num  := TRUE;
+	 		leds := leds or 2;
+	 		set_leds(leds);
       end;
    end;
    result := #0;
@@ -385,7 +409,7 @@ begin
       case (keycode) of
          kbF9 : dump_task;
          kbF10: dump_mem;
-	 kbF11: dump_dev;
+	 		kbF11: dump_dev;
       end;
    end;
    result := #0;
@@ -396,7 +420,6 @@ end;
 {******************************************************************************
  * do_clear
  *
- * FIXME: Only works on the first console
  *****************************************************************************}
 function do_clear (keycode : byte ; up : boolean) : char;
 begin
@@ -406,11 +429,11 @@ begin
    begin
       asm
          pushfd
-	 cli
+	 		cli
       end;
       csi_J(2, current_tty);
-      tty[current_tty].x := 0;
-      tty[current_tty].y := -1;
+      ttys[current_tty]^.x := 0;
+      ttys[current_tty]^.y := -1;
       result := #10;
       asm
          popfd
@@ -453,7 +476,7 @@ end;
  *****************************************************************************}
 procedure set_leds (leds : byte);
 begin
-   wait_keyboard;
+   wait_keyboard();
 
    { On va dire au clavier qu'on veut changer l'etat des leds }
    outb($60, $ED);
@@ -461,9 +484,9 @@ begin
    wait_keyboard;
    outb($60, leds and $7); { Seuls les bits 0, 1 et 2 doivent etre 
                              positionnes si l'on veut que la commande reste
-				valide }
+									  valide }
 
-   wait_keyboard;
+   wait_keyboard();
 end;
 
 
@@ -503,47 +526,47 @@ begin
        * e1 1d 45 e1 9d c5 when pressed, and nothing when released *}
 
       if (prev_scancode <> $E0) then
-          begin
-             if (prev_scancode = $E1) and (scancode = $1D) then
-	     begin
-	        prev_scancode := $100;
-	        result := 0;
-	        exit;
-	     end
-	     else if (prev_scancode = $100) and (scancode = $45) then
-	     begin
-	        keycode^ := E1_PAUSE;
-	        prev_scancode := 0;
-	     end
-	     else
-	     begin
-	        printk('WARNING translate: unknown e1 escape sequence\n', []);
-	        prev_scancode := 0;
-	        result := 0;
-	        exit;
-	     end;
-          end   { (prev_scancode <> $E0) }
+      begin
+         if (prev_scancode = $E1) and (scancode = $1D) then
+	 begin
+	    prev_scancode := $100;
+	    result := 0;
+	    exit;
+	 end
+	 else if (prev_scancode = $100) and (scancode = $45) then
+	 begin
+	    keycode^ := E1_PAUSE;
+	    prev_scancode := 0;
+	 end
+	 else
+	 begin
+	    printk('WARNING translate: unknown e1 escape sequence\n', []);
+	    prev_scancode := 0;
+	    result := 0;
+	    exit;
+	 end;
+      end   { (prev_scancode <> $E0) }
       else
-          begin
+      begin
 
-	     prev_scancode := 0;
+	 prev_scancode := 0;
 
-	     if (scancode = $2A) or (scancode = $36) then
-	     begin
-	        result := 0;
-		exit;
-	     end;
+	 if (scancode = $2A) or (scancode = $36) then
+	 begin
+	    result := 0;
+	    exit;
+	 end;
 
-	     if (e0_keys[scancode] <> 0) then
-	         keycode^ := e0_keys[scancode]
-	     else
-	     begin
-	        printk('WARNING translate: unknown scancode e0 %h2\n', [scancode]);
-		result := 0;
-		exit;
-	     end;
+	 if (e0_keys[scancode] <> 0) then
+	     keycode^ := e0_keys[scancode]
+	 else
+	 begin
+	    printk('WARNING translate: unknown scancode e0 %h2\n', [scancode]);
+	    result := 0;
+	    exit;
+	 end;
 	     
-          end;
+      end;
 
    end   { (prev_scancode <> 0) }
    else if (scancode >= SC_LIM) and (scancode <> $7a) and (scancode <> $7e) then   { FIXME: what are those scancodes ? ($7a and $7e) }
@@ -569,25 +592,28 @@ end;
 procedure write_buffer (car : char);
 begin
 
-   with tty[current_tty] do
+   with ttys[current_tty]^ do
    begin
-      if (depassement) then printk('keyb: buffer overflow for tty%d \n',[current_tty])
+		write_lock(@lock);
+      if (depassement) then printk('keyb: buffer overflow for tty%d \n', [current_tty])
       else
       begin
          buffer_keyboard[next_c] := car;   { on rempli le buffer circulaire }
-	 next_c += 1;
-	 if (next_c > MAX_BUFF_CLAV) then next_c := 0;
-	 if (next_c = last_c) then depassement := TRUE;   { est ce que le buffer est rempli ? }
+	 		next_c += 1;
+	 		if (next_c > MAX_BUFF_CLAV) then next_c := 0;
+	 		if (next_c = last_c) then depassement := TRUE;   { est ce que le buffer est rempli ? }
       end;
 
-      {$IFDEF DEBUG_KEYBOARD_READ}
-         if (keyboard_wq^.task <> NIL) then
-             printk('write_buffer: waking up process %h\n', [keyboard_wq^.task]);
-      {$ENDIF}
-      interruptible_wake_up(@keyboard_wq);   { Réveille les processus qui attendaient des caractères }
+		write_unlock(@lock);
 
+      if (keyboard_wq^.task <> NIL) then
+      begin
+         {$IFDEF DEBUG_KEYBOARD_READ}
+	    		printk('write_buffer: waking up process %h\n', [keyboard_wq^.task]);
+	 		{$ENDIF}
+         interruptible_wake_up(@keyboard_wq, TRUE);   { Réveille un processus qui attendait des caractères }
+      end;
    end;
-
 end;
 
 
@@ -595,6 +621,7 @@ end;
 {******************************************************************************
  * keyboard_interrupt
  *
+ * NOTE: interrupts are OFF.
  *****************************************************************************}
 procedure keyboard_interrupt; interrupt; [ public, alias : 'KEYBOARD_INTERRUPT'];
 
@@ -608,8 +635,6 @@ var
 label out;
 
 begin
-
-   outb($20, $20);   { FIXME: I don't know where to put this exactly }
 
    work   := 10000;
    status := inb($64);
@@ -625,13 +650,13 @@ begin
 
       if (status and ($40 or $80)) = 0 then   { See Linux 2.4.20 drivers/char/pc_keyb.c }
       begin
-	 if (translate(scancode, @keycode) = 0) then goto out;
-{printk('(%h2, %h2)', [scancode, keycode]);}
-	 car := func_map[keycode](keycode, up);
-	 if (car <> #0) then write_buffer(car);
+	 		if (translate(scancode, @keycode) = 0) then goto out;
+			{printk('(%h2, %h2)', [scancode, keycode]);}
+	 		car := func_map[keycode](keycode, up);
+	 		if (car <> #0) then write_buffer(car);
       end;
 
-      work -= 1;
+      work   -= 1;
       status := inb($64);
 
    end;
@@ -641,188 +666,54 @@ begin
 
 out:
 
-end;
-
-
-
-{******************************************************************************
- * keyboard_read
- *
- *****************************************************************************}
-function keyboard_read (fichier : P_file_t ; buf : pointer ; count : dword) : dword; [public, alias : 'KEYBOARD_READ'];
-
-var
-   i   : dword;
-   orig_x, orig_y, ontty : byte;
-   car : char;
-
-begin
-
-   unlock_inode(fichier^.inode);
-
-   {$IFDEF DEBUG_KEYBOARD_READ}
-      printk('Welcome in keyboard_read...(buf=%h, count=%d) PID=%d\n', [buf, count, current^.pid]);
-   {$ENDIF}
-
-   if (count = 0) then
-       begin
-          result := 0;
-	  lock_inode(fichier^.inode);
-          exit;
-       end;
-
-   if (buf < pointer($FFC00000)) then
-       begin
-          result := -EINVAl;
-	  lock_inode(fichier^.inode);
-	  exit;
-       end;
- 
-   ontty := current^.tty;
-   if (ontty = $FF) then
-   begin
-      printk('keyboard_read: process has no tty\n', []);
-      result := -1;   { FIXME: another error code ??? }
-      lock_inode(fichier^.inode);
-      exit;
-   end;
- 
-   i := 0;
-   orig_x := tty[ontty].x;
-   orig_y := tty[ontty].y;
-
-   with tty[ontty] do
-   begin
-      while (count > 0) do
-      begin
-	 {$IFDEF DEBUG_KEYBOARD_READ}
-	    printk(' count=%d, i=%d\n', [count, i]);
-	 {$ENDIF}
-        
-         while (next_c = last_c) do
-	 begin
-	    {$IFDEF DEBUG_KEYBOARD_READ}
-	       printk('keyboard_read: make %d sleep (count=%d)\n', [current^.pid, count]);
-	    {$ENDIF}
-	    interruptible_sleep_on(@keyboard_wq);
-	 end;
-
-         {$IFDEF DEBUG_KEYBOARD_READ}
-	    printk('%c ', [buffer_keyboard[last_c]]);
-	 {$ENDIF}
-
-	 car := buffer_keyboard[last_c];
-	 
-	 if (car = #08) then   { BackSpace ??? }
-	     begin
-	        asm
-		   mov   edi, buf
-		   mov   al , car
-		   mov   byte [edi], al
-		end;
-	        last_c += 1;
-	        if (last_c > MAX_BUFF_CLAV) then last_c := 0;
-
-                {$IFDEF DEBUG_KEYBOARD_READ}
-	           printk('keyboard_read: last_c=%d  next_c=%d ', [last_c, next_c]);
-	        {$ENDIF}
-
-		if ((y > orig_y) or ((x > orig_x) and (y >= orig_y))) then
-		     begin
-	                putchar(#08);
-			{count += 1;}
-			buf   -= 1;
-			i     -= 1;
-		     end;
-
-	     end   { (car = #08) }
-	 else
-	     begin
-	        asm
-	           mov   edi, buf
-	           mov   al , car
-	           mov   byte [edi], al
-	        end;
-	        buf    += 1;
-	        last_c += 1;
-		if (echo) then putchar(car);
-	        if (last_c > MAX_BUFF_CLAV) then last_c := 0;
-
-                {$IFDEF DEBUG_KEYBOARD_READ}
-	           printk('keyboard_read: last_c=%d  next_c=%d ', [last_c, next_c]);
-	        {$ENDIF}
-
-                i      += 1;
-                count  -= 1;
-
-		if (last_c <> 0) then
-		begin
-	           if (buffer_keyboard[last_c - 1] = #10) then   { Carriage return ??? }
-	               break;
-		end
-		else
-		begin
-		   if (buffer_keyboard[last_c] = #10) then   { Carriage return ??? }
-		       break;
-		end;
-
-	     end;   { (car <> #08) }
-	     
-      end;   { while (count > 0) }
-   end;   { with tty[ontty] }
-
-   {$IFDEF DEBUG_KEYBOARD_READ}
-      printk('keyboard_read: result=%d\n', [i]);
-   {$ENDIF}
-
-   lock_inode(fichier^.inode);
-
-   result := i;
+   outb($20, $20);   { FIXME: I don't know where to put this exactly }
+	sti();
 
 end;
 
 
 
 {******************************************************************************
- * keyboard_open
+ * wait_for_keyboard
+ *
+ * NOTE: when calling this function tty^.lock must be held for writing.
  *
  *****************************************************************************}
-function keyboard_open (inode : P_inode_t ; fichier : P_file_t) : dword;
+function wait_for_keyboard (fichier : P_file_t ; tty : P_tty_struct ; idx : dword) : char; [public, alias : 'WAIT_FOR_KEYBOARD'];
 begin
 
-   if (current^.tty = $FF) then
-   begin
-      printk('keyboard_open: process has no tty\n', []);
-      result := -1;
-   end
-   else
-      result := 0;
-end;
+	{$IFDEF DEBUG_WAIT_FOR_KEYBOARD}
+		printk('wait_for_keyboard (%d): next_c=%d  last_c=%d\n',
+				 [current^.pid, tty^.next_c, tty^.last_c]);
+	{$ENDIF}
 
+	unlock_inode(fichier^.inode);
+	write_unlock(@tty^.lock);
+	interruptible_sleep_on(@tty^.keyboard_wq);
+	lock_inode(fichier^.inode);
+	write_lock(@tty^.lock);
 
-
-{******************************************************************************
- * keyboard_close
- *
- * FIXME: this function does nothing
- *****************************************************************************}
-function keyboard_close (fichier : P_file_t) : dword;
-begin
-
-   result := 0;
+	result := tty^.buffer_keyboard[idx];
 
 end;
 
 
 
 {******************************************************************************
- * keyboard_ioctl
+ * get_buffer_keyboard
  *
- * FIXME: keyboard_ioctl ALWAYS failed
  *****************************************************************************}
-function keyboard_ioctl (fichier : P_file_t ; req : dword ; argp : pointer) : dword;
+function get_buffer_keyboard (tty : P_tty_struct ; idx : dword) : char; [public, alias : 'GET_BUFFER_KEYBOARD'];
 begin
-   result := 0;
+	if (tty^.next_c <> idx) then
+	{ There is at least one caracter in tty^.buffer_keyboard }
+		result := tty^.buffer_keyboard[idx]
+	else
+		result := #0;
+
+{printk('get_buffer_keyboard: next_c=%d idx=%d -> %h2\n',
+		[tty^.next_c, idx, result]); }
+
 end;
 
 

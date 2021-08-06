@@ -36,6 +36,8 @@ INTERFACE
 
 
 procedure enable_IRQ (irq : byte);
+procedure disable_IRQ (irq : byte);
+procedure init_idt;
 procedure set_intr_gate (n : dword ; addr : pointer);
 procedure set_system_gate (n : dword ; addr : pointer);
 procedure set_trap_gate (n : dword ; addr : pointer);
@@ -84,6 +86,8 @@ procedure system_call;  external;
 
 IMPLEMENTATION
 
+
+{$I inline.inc}
 
 
 {******************************************************************************
@@ -140,9 +144,7 @@ begin
    set_intr_gate(31, @exception_31);
 
    for i := 32 to 49 do
-      begin
-         set_intr_gate(i, @ignore_int);
-      end;
+		 set_intr_gate(i, @ignore_int);
 
    set_system_gate($30, @system_call);
 
@@ -166,27 +168,23 @@ var
 
 begin
 
-   asm
-      pushfd
-      cli   { Section critique }
-   end;
+	pushfd();
+	cli();
 
    if (irq < 8) then
-      begin
-         tmp := inb($21);
-	 tmp := tmp or pic_mask[irq];
-	 outb($21, tmp);
-      end
+	begin
+		tmp := inb($21);
+		tmp := tmp or pic_mask[irq];
+		outb($21, tmp);
+	end
    else
-      begin
-         tmp := inb($A1);
-	 tmp := tmp or pic_mask[irq - 8];
-	 outb($A1, tmp);
-      end;
+	begin
+		tmp := inb($A1);
+		tmp := tmp or pic_mask[irq - 8];
+		outb($A1, tmp);
+	end;
 
-   asm
-      popfd   { Fin section critique }
-   end;
+	popfd();
 
 end;
 
@@ -206,27 +204,23 @@ var
 
 begin
 
-   asm
-      pushfd
-      cli   { Section critique }
-   end;
+	pushfd();
+	cli();
 
    if (irq < 8) then
-      begin
-         tmp := inb($21);
-	 tmp := tmp and (not pic_mask[irq]);
-	 outb($21, tmp);
-      end
+	begin
+		tmp := inb($21);
+		tmp := tmp and (not pic_mask[irq]);
+		outb($21, tmp);
+	end
    else
-      begin
-         tmp := inb($A1);
-	 tmp := tmp and (not pic_mask[irq-8]);
-	 outb($A1, tmp);
-      end;
+	begin
+		tmp := inb($A1);
+		tmp := tmp and (not pic_mask[irq-8]);
+		outb($A1, tmp);
+	end;
 
-   asm
-      popfd   { Fin section critique }
-   end;
+	popfd();
 
 end;
 
@@ -272,26 +266,22 @@ begin
    end;
 
    if (test <> 0) and (test <> test1) then
-       begin
-          printk('set_intr_gate: gate %d is already initialized. (preserving current value)\n', [n]);
-	  exit;
-       end;
+	begin
+		printk('set_intr_gate: gate %d is already initialized. (preserving current value)\n', [n]);
+		exit;
+	end;
 
    tmp_desc.base1 := lsw;
    tmp_desc.base2 := msw;
    tmp_desc.seg   := $10;   { Sélecteur de segment du code noyau }
    tmp_desc.attr  := $8E00;
 
-   asm
-      pushfd
-      cli   { Section critique }
-   end;
+	pushfd();
+	cli();
 
    memcpy(@tmp_desc, pointer(ofs), sizeof(idt_desc));
 
-   asm
-      popfd   { Fin section critique }
-   end;
+	popfd();
 
 end;
 
@@ -329,16 +319,12 @@ begin
    tmp_desc.seg   := $10;
    tmp_desc.attr  := $EE00;
 
-   asm
-      pushfd
-      cli   { Section critique }
-   end;
+	pushfd();
+	cli();
 
    memcpy(@tmp_desc, pointer(ofs), sizeof(idt_desc));
 
-   asm
-      popfd   { Fin section critique }
-   end;
+	popfd();
 
 end;
 
@@ -375,16 +361,12 @@ begin
    tmp_desc.seg   := $10;
    tmp_desc.attr  := $8F00;
 
-   asm
-      pushfd
-      cli   { Section critique }
-   end;
+	pushfd();
+	cli();
 
    memcpy(@tmp_desc, pointer(ofs), sizeof(idt_desc));
 
-   asm
-      popfd   { Fin section critique }
-   end;
+	popfd();
 
 end;
 

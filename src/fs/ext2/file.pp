@@ -3,9 +3,9 @@
  *
  *  Ext2 filesystem files management.
  *
- *  Copyleft 2002
+ *  Copyleft 2003
  *
- *  version 0.0 - 12/09/2002 - GaLi - Work in progess...
+ *  version 0.0 - 12/09/2002 - GaLi - Initial version
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -30,23 +30,34 @@ INTERFACE
 
 
 {$I buffer.inc}
+{$I config.inc}
+{$I errno.inc}
 {$I ext2.inc}
 {$I fs.inc}
-
-
-{DEFINE DEBUG}
+{$I process.inc}
 
 
 {* External procedure and functions *}
 
+function  alloc_buffer_head (major, minor : byte ; block, size : dword) : P_buffer_head; external;
 function  bread (major, minor : byte ; block, size : dword) : P_buffer_head; external;
+procedure brelse (bh : P_buffer_head); external;
 function  buffer_uptodate (bh : P_buffer_head) : boolean; external;
+function  ext2_new_block (inode : P_inode_t) : dword; external;
+procedure ext2_write_inode (inode : P_inode_t); external;
 function  kmalloc (len : dword) : pointer; external;
+procedure mark_buffer_dirty (bh : P_buffer_head); external;
+procedure mark_inode_dirty (inode : P_inode_t); external;
 procedure memcpy (src, dest : pointer ; size : dword); external;
+procedure memset (adr : pointer ; c : byte ; size : dword); external;
+procedure print_bochs (format : string ; args : array of const); external;
 procedure printk (format : string ; args : array of const); external;
 
 
 {* External variables *}
+
+var
+   current : P_task_struct; external name 'U_PROCESS_CURRENT';
 
 var
    ext2_file_operations : file_operations;
@@ -55,11 +66,25 @@ var
 
 {* Procedures and functions only used in THIS file *}
 
+function  ext2_file_read (fichier : P_file_t ; buffer : pointer ; count : dword) : dword;
+function  ext2_file_write (fichier : P_file_t ; buffer : pointer ; count : dword) : dword;
+function  ext2_get_data (block : dword ; inode : P_inode_t) : P_buffer_head;
 function  ext2_get_real_block (block : dword ; inode : P_inode_t) : dword;
+procedure ext2_set_real_block (block : dword ; inode : P_inode_t ; real_block : dword);
 
 
 
 IMPLEMENTATION
+
+
+
+function MIN (a, b : dword) : dword;
+begin
+   if (a < b) then
+       result := a
+   else
+       result := b;
+end;
 
 
 
@@ -72,126 +97,83 @@ IMPLEMENTATION
  *
  * Read a file on an ext2 filesystem
  *
+ * NOTE: code inspired from Linux 0.12 (fs/file_dev.c)
+ *
  * WARNING : NOT FULLY TESTED, but it should work :-)
- * FIXME: code optimization and cleanup
  *****************************************************************************}
 function ext2_file_read (fichier : P_file_t ; buffer : pointer ; count : dword) : dword; [public, alias : 'EXT2_FILE_READ'];
 
 var
-   block        : dword; { Block to read }
-   orig_count   : dword;
-   real_block   : dword;
-   nb_blocks    : dword; { Number of blocks to read }
-   blocksize    : dword; { Logical filesystem block size in bytes }
-   i, file_ofs  : dword;
-   major, minor : byte;
-   inode        : P_inode_t;
-   bh           : P_buffer_head;
+   blocksize, left : dword;
+   nr, chars, pos  : dword;
+   major, minor    : byte;
+   inode           : P_inode_t;
+   bh              : P_buffer_head;
 
-   test : pointer;
-   test1 : dword;
-   save : pointer;
 begin
 
-   {$IFDEF DEBUG}
-      save := buffer;
-   {$ENDIF}
+   pos   := fichier^.pos;
+   inode := fichier^.inode;
 
-   blocksize   := fichier^.inode^.sb^.blocksize;
+   if (pos + count > inode^.size) then
+       count := inode^.size - pos;
 
-   {$IFDEF DEBUG}
-      printk('ext2_file_read: going to read %d bytes to %h (blocksize=%d)\n', [count, buffer, blocksize]);
-   {$ENDIF}
-
-   if (fichier^.pos + count > fichier^.inode^.size) then
-       begin
-          while (fichier^.pos + count > fichier^.inode^.size) do
-	         count -= 1;
-	  {$IFDEF DEBUG}
-	     printk('ext2_file_read: modify count to %d\n', [count]);
-	  {$ENDIF}
-       end;
-
-   result      := count;   { If everything is ok, this will be the result }
-   orig_count  := count;
-   major       := fichier^.inode^.dev_maj;
-   minor       := fichier^.inode^.dev_min;
-   inode       := fichier^.inode;
-   block       := (fichier^.pos + blocksize) div blocksize;
-   file_ofs    := fichier^.pos;
-   nb_blocks   := count div blocksize;
-   if (count mod blocksize <> 0) then
-       nb_blocks += 1;
-
-   {$IFDEF DEBUG}
-      printk('ext2_file_read: going to read %d blocks from block %d (file_ofs=%d)\n', [nb_blocks, block, file_ofs]);
-   {$ENDIF}
-
-   { while count > 0 ??? }
-   for i := block to (block + nb_blocks - 1) do
+   if (count = 0) then
    begin
-      real_block := ext2_get_real_block(block, inode);
-      if (real_block = 0) then
-      begin
-         printk('ext2_read_file: cannot get real block number for block %d\n', [block]);
-         result := -1;
-	 exit;
-      end;
-
-      {$IFDEF DEBUG}
-         printk('ext2_file_read: reading block %d (%d)\n', [i, real_block]);
-      {$ENDIF}
-      bh := bread(major, minor, real_block, blocksize);
-      if (bh = NIL) then
-          begin
-	     printk('ext2_file_read: unable to read block %d (bread failed)\n', [real_block]);
-	     result := -1;
-	     exit;
-	  end;
-
-      {$IFDEF DEBUG}
-         test := bh^.data;
-         asm
-            mov esi, test
-            mov eax, [esi]
-            mov test1, eax
-         end;
-         printk('ext2 (data): %d %h\n', [block, test1]);
-      {$ENDIF}
-
-      { Copying data to buffer }
-
-      if (count < (block * blocksize) - file_ofs) then
-      begin
-         {$IFDEF DEBUG}
-            printk('ext2_file_read: copying %d bytes from block %d (block_ofs=%d)\n', [count, i, file_ofs-((block-1)*blocksize)]);
-	 {$ENDIF}
-         memcpy(pointer(bh^.data + file_ofs-((block - 1) * blocksize)), buffer, count);
-      end
-      else
-      begin
-         {$IFDEF DEBUG}
-            printk('ext2_file_read: copying %d bytes from block %d (block_ofs=%d)\n', [(block*blocksize)-file_ofs, i, file_ofs-((block-1)*blocksize)]);
-	 {$ENDIF}
-         memcpy(pointer(bh^.data + file_ofs-((block - 1) * blocksize)), buffer, (block * blocksize) - file_ofs);
-	 count -= (block * blocksize) - file_ofs;
-      end;
-
-      buffer   += (block * blocksize) - file_ofs;
-      file_ofs += (block * blocksize) - file_ofs;
-      block    += 1;
-
+      result := 0;
+      exit;
    end;
 
-   { Update file position }
-   fichier^.pos += orig_count;
+   left      := count;
+   major     := inode^.dev_maj;
+   minor     := inode^.dev_min;
+   blocksize := inode^.blksize;
 
-   {$IFDEF DEBUG}
-      for i := block to (block + nb_blocks - 1) do
+   {$IFDEF DEBUG_EXT2_FILE_READ}
+      print_bochs('ext2_file_read: going to read %d bytes to %h (pos=%d)\n', [count, buffer, pos]);
+   {$ENDIF}
+
+   while (left <> 0) do
+   begin
+      nr := ext2_get_real_block(pos div blocksize, inode);
+      if (longint(nr) > 0) then
       begin
-         printk('ext2_file_read: (buffer data): %h @ %h\n', [longint(save^), save]);
-         save += blocksize;
-      end;
+      	 bh := bread(major, minor, nr, blocksize);
+      	 if (bh = NIL) then
+      	 begin
+      	    printk('ext2_file_read: unable to read block %d\n', [nr]);
+	    break;
+      	 end;
+      end
+      else
+      	 bh := NIL;
+
+      {$IFDEF DEBUG_EXT2_FILE_READ}
+      	 print_bochs('ext2_file_read: nr=%d bh^.data=%h => %h\n', [nr, bh^.data, longint(bh^.data^)]);
+      {$ENDIF}
+
+      nr    := pos mod blocksize;
+      chars := MIN(blocksize - nr, left);
+      pos   += chars;
+      left  -= chars;
+      if (bh <> NIL) then
+      	  memcpy(bh^.data + nr, buffer, chars)
+      else
+      	  memset(buffer, 0, chars);
+
+      buffer += chars;
+      brelse(bh);
+   end;
+
+   fichier^.pos := pos;
+
+   if (count - left) = 0 then
+       result := -EIO
+   else
+       result := count - left;
+
+   {$IFDEF DEBUG_EXT2_FILE_READ}
+      print_bochs('ext2_file_read: result=%d\n', [result]);
    {$ENDIF}
 
 end;
@@ -199,11 +181,146 @@ end;
 
 
 {******************************************************************************
- * get_real_block
+ * ext2_file_write
+ *
+ * NOTE: code inspired from Linux 0.12 (fs/file_dev.c)
+ *****************************************************************************}
+function ext2_file_write (fichier : P_file_t ; buffer : pointer ; count : dword) : dword; [public, alias : 'EXT2_FILE_WRITE'];
+
+var
+   i, block, pos   : dword;
+   blocksize, c, p : dword;
+   major, minor    : byte;
+   inode           : P_inode_t;
+   bh 	           : P_buffer_head;
+
+label end_write;
+
+begin
+
+   i         := 0;
+   pos       := fichier^.pos;
+   inode     := fichier^.inode;
+   major     := inode^.dev_maj;
+   minor     := inode^.dev_min;
+   blocksize := inode^.blksize;
+
+   {$IFDEF DEBUG_EXT2_FILE_WRITE}
+      print_bochs('ext2_file_write: going to write %d bytes from %h (blocksize=%d)\n', [count, buffer, blocksize]);
+   {$ENDIF}
+
+   while (i < count) do
+   begin
+      block := ext2_get_real_block(pos div blocksize, inode);
+      if (longint(block) = -1) then goto end_write;
+      if (block = 0) then
+      begin
+			block := ext2_new_block(inode);
+	 		if (block = 0) then goto end_write;
+			{$IFDEF DEBUG_EXT2_FILE_WRITE}
+	    		print_bochs('ext2_file_write: setting logical block %d to fs block %d\n', [pos div blocksize, block]);
+	 		{$ENDIF}
+	 		ext2_set_real_block(pos div blocksize, inode, block);
+
+	 		bh := alloc_buffer_head(major, minor, block, blocksize);   { Get an unused buffer }
+	 		if (bh = NIL) then goto end_write;
+	 		memset(bh^.data, 0, bh^.size);   { Clear it }
+	 		bh^.state := BH_Uptodate;        { And mark it uptodate }
+      end
+      else
+      begin
+			{$IFDEF DEBUG_EXT2_FILE_WRITE}
+	    		print_bochs('ext2_file_write: going to read block %d\n', [block]);
+	 		{$ENDIF}
+			bh := bread(major, minor, block, blocksize);
+	 		if (bh = NIL) then goto end_write;
+      end;
+
+      c := pos mod blocksize;
+      p := longint(bh^.data + c);
+      c := blocksize - c;
+      if (c > count - i) then c := count - i;
+      pos += c;
+      i   += c;
+      {$IFDEF DEBUG_EXT2_FILE_WRITE}
+      	 print_bochs('ext2_file_write: bh^.data=%h p=%h (%h)\n', [bh^.data, p, longint(buffer^)]);
+      {$ENDIF}
+      memcpy(buffer, pointer(p), c);
+      buffer += c;
+      mark_buffer_dirty(bh);
+      brelse(bh);
+   end;
+
+end_write:
+
+   if (pos > inode^.size) then
+   begin
+      inode^.size := pos;
+      mark_inode_dirty(inode);
+   end;
+
+   fichier^.pos := pos;
+
+   if (i = 0) then
+       result := -EIO
+   else
+       result := i;
+
+	{$IFDEF DEBUG_EXT2_FILE_WRITE}
+		print_bochs('ext2_file_write: result=%d\n', [result]);
+	{$ENDIF}
+
+end;
+
+
+
+{******************************************************************************
+ * ext2_get_data
+ *
+ * INPUT : block -> logical block number
+ *         inode -> file inode
+ *
+ * OUTPUT: NIL on error.
+ *
+ * Reads block data from disk.
+ *****************************************************************************}
+function ext2_get_data (block : dword ; inode : P_inode_t) : P_buffer_head; [public, alias : 'EXT2_GET_DATA'];
+
+var
+   real_block : dword;
+   bh 	      : P_buffer_head;
+
+begin
+
+   result := NIL;
+
+   real_block := ext2_get_real_block(block, inode);
+   if (real_block = 0) then
+   begin
+      printk('ext2_get_data (%d): cannot get real block for block %d\n', [current^.pid, block]);
+      exit;
+   end;
+
+   bh := bread(inode^.dev_maj, inode^.dev_min,
+      	       real_block, inode^.blksize);
+   if (bh = NIL) then
+   begin
+      printk('ext2_get_data (%d): cannot read block %d\n', [current^.pid, real_block]);
+      exit;
+   end;
+
+   result := bh;
+
+end;
+
+
+
+{******************************************************************************
+ * ext2_get_real_block
  *
  * Input : logical block number
  *
- * Output : real block number, 0 on error
+ * Output : real block number, -1 on error
  *
  * Convert a logical block number into a real block number by reading inode
  * information
@@ -215,62 +332,183 @@ var
    tmp_block    : dword;
    major, minor : byte;
    buffer       : ^dword;
-   bh           : P_buffer_head;
+   bh, bh2      : P_buffer_head;
 
 begin
 
-   blocksize := inode^.sb^.blocksize;
+   blocksize := inode^.blksize;
    major     := inode^.dev_maj;
    minor     := inode^.dev_min;
 
-   if (block <= 12) then
+	{$IFDEF DEBUG_EXT2_GET_REAL_BLOCK}
+		print_bochs('ext2_get_real_block: block=%d\n', [block]);
+	{$ENDIF}
+
+   if (block < EXT2_NDIR_BLOCKS) then
        result := inode^.ext2_i.data[block]
 
-   else if (block <= (12 + (blocksize div 4))) then   { Indirection simple }
-       begin
-          tmp_block := inode^.ext2_i.data[13];
-          bh := bread(major, minor, tmp_block, blocksize);
-	  if (bh = NIL) then
-	  begin
-	     printk('ext2_get_real_block: unable to read block %d\n', [tmp_block]);
-	     result := 0;
-	  end;
-	  buffer := bh^.data;
-	  result := buffer[(block - 12) - 1];
-       end
-   else if (block <= (12 + (blocksize div 4) * (blocksize div 4))) then   { Indirection double }
-       begin
-          tmp_block := inode^.ext2_i.data[14];
-          bh := bread(major, minor, tmp_block, blocksize);
-	  if (bh = NIL) then
-	  begin
-	     printk('ext2_get_real_block: unable to read block %d\n', [tmp_block]);
-	     result := 0;
-	     exit;
-	  end;
 
-	  buffer := bh^.data;
+   { Indirection simple }
+   else if (block <= (EXT2_NDIR_BLOCKS + (blocksize div 4) - 1)) then
+   begin
+      tmp_block := inode^.ext2_i.data[EXT2_IND_BLOCK];
+      if (tmp_block = 0) then
+      begin
+      	result := 0;
+	 		exit;
+      end;
+      bh := bread(major, minor, tmp_block, blocksize);
+      if (bh = NIL) then
+      begin
+	 		printk('ext2_get_real_block: unable to read block %d\n', [tmp_block]);
+	 		result := -1;
+      end;
+      buffer := bh^.data;
+      result := buffer[block - EXT2_NDIR_BLOCKS];
+      brelse(bh);
+   end
 
-{	  printk('EXT2: going to read block %d  (%d)\n', [((block - 12) - (blocksize div 4) - 1) div blocksize, buffer[0]]);}
 
-	  bh := bread(major, minor, buffer[((block - 12) - (blocksize div 4) - 1) div blocksize], blocksize);
-	  if (bh = NIL) then
-	  begin
-	     printk('ext2_get_real_block: unable to read block %d\n', [tmp_block]);
-	     result := 0;
-	     exit;
-	  end;
-	  buffer := bh^.data;
+   { Indirection double }
+   else if (block <= ((EXT2_NDIR_BLOCKS + (blocksize div 4) + ((blocksize div 4) * (blocksize div 4))) - 1)) then
+   begin
+      tmp_block := inode^.ext2_i.data[EXT2_DIND_BLOCK];
+      if (tmp_block = 0) then
+      begin
+      	result := 0;
+	 		exit;
+      end;
+      bh := bread(major, minor, tmp_block, blocksize);
+      if (bh = NIL) then
+      begin
+         printk('ext2_get_real_block: unable to read block %d\n', [tmp_block]);
+         result := -1;
+         exit;
+      end;
 
-{	  printk('real block is %d\n', [buffer[((block - 12) - (blocksize div 4) - 1) mod blocksize]]);}
+      buffer := bh^.data;
 
-	  result := buffer[((block - 12) - (blocksize div 4) - 1) mod blocksize];
-       end
+      {$IFDEF DEBUG_EXT2_GET_REAL_BLOCK}
+      	 print_bochs('ext2_get_real_block: going to read block %d  (ofs=%d)\n',
+      	       		[buffer[(block - (EXT2_NDIR_BLOCKS + (blocksize div 4))) div (blocksize div 4)],
+      	       		(block - (EXT2_NDIR_BLOCKS + (blocksize div 4))) div (blocksize div 4)]);
+      {$ENDIF}
+
+      if (buffer[(block - (EXT2_NDIR_BLOCKS + (blocksize div 4))) div (blocksize div 4)] = 0) then
+      begin
+      	result := 0;
+	 		brelse(bh);
+	 		exit;
+      end;
+
+      bh2 := bread(major, minor, buffer[(block - (EXT2_NDIR_BLOCKS + (blocksize div 4))) div (blocksize div 4)], blocksize);
+      if (bh2 = NIL) then
+      begin
+	 		printk('ext2_get_real_block: unable to read block %d\n', [tmp_block]);
+	 		result := -1;
+	 		exit;
+      end;
+      buffer := bh2^.data;
+
+      result := buffer[((block - (EXT2_NDIR_BLOCKS + (blocksize div 4))) mod (blocksize div 4))];
+
+      {$IFDEF DEBUG_EXT2_GET_REAL_BLOCK}
+      	 print_bochs('ext2_get_real_block: RESULT=%d (ofs=%d)\n',
+      	       		[result, (block - (EXT2_NDIR_BLOCKS + (blocksize div 4))) mod (blocksize div 4)]);
+      {$ENDIF}
+
+      brelse(bh);
+      brelse(bh2);
+
+   end
    else
-       begin
-          printk('ext2_get_real_block: unable to read block %d (not supported)\n', [block]);
-	  result := 0;
-       end;
+   begin
+      printk('ext2_get_real_block: unable to read block %d (not supported)\n', [block]);
+      result := -1;
+   end;
+
+	{$IFDEF DEBUG_EXT2_GET_REAL_BLOCK}
+		print_bochs('ext2_get_real_block: result=%d\n', [result]);
+	{$ENDIF}
+
+end;
+
+
+
+{******************************************************************************
+ * ext2_set_real_block
+ *
+ *****************************************************************************}
+procedure ext2_set_real_block (block : dword ; inode : P_inode_t ; real_block : dword); [public, alias : 'EXT2_SET_REAL_BLOCK'];
+
+var
+   blocksize, new_block : dword;
+   major, minor         : byte;
+   buffer               : ^dword;
+   bh                   : P_buffer_head;
+
+begin
+
+   bh        := NIL;
+   major     := inode^.dev_maj;
+   minor     := inode^.dev_min;
+   blocksize := inode^.blksize;
+
+   if (block < EXT2_NDIR_BLOCKS) then
+   begin
+      inode^.ext2_i.data[block] := real_block;
+      mark_inode_dirty(inode);
+   end
+
+   { Indirection simple }
+   else if (block <= EXT2_NDIR_BLOCKS + (blocksize div 4)) then
+   begin
+      if (inode^.ext2_i.data[EXT2_IND_BLOCK] = 0) then
+      begin
+      	 new_block := ext2_new_block(inode);
+	 if (new_block = 0) then
+	 begin
+	    printk('ext2_set_real_block: cannot get a new block (step 1)\n', []);
+	    exit;
+	 end;
+	 bh := bread(major, minor, new_block, blocksize);
+	 if (bh = NIL) then
+	 begin
+	    printk('ext2_set_real_block: cannot read block %d (step 1)\n', [new_block]);
+	    exit;
+	 end;
+	 memset(bh^.data, 0, blocksize);
+	 inode^.ext2_i.data[EXT2_IND_BLOCK] := new_block;
+	 mark_inode_dirty(inode);
+      end;
+
+      if (bh = NIL) then
+      begin
+      	 bh := bread(major, minor, inode^.ext2_i.data[12], blocksize);
+	 if (bh = NIL) then
+	 begin
+	    printk('ext2_set_real_block: cannot read block %d (step 2)\n',
+	           [inode^.ext2_i.data[EXT2_IND_BLOCK]]);
+	    exit;
+	 end;
+      end;
+
+      buffer := bh^.data;
+      buffer[block - EXT2_NDIR_BLOCKS] := real_block;
+      mark_buffer_dirty(bh);
+      brelse(bh);
+
+   end
+
+
+   { Indirection double }   
+   else if (block <= (EXT2_NDIR_BLOCKS + (blocksize div 4) + ((blocksize div 4) * (blocksize div 4)))) then
+   begin
+      printk('WARNING ext2_set_real_block: cannot set block %d (not supported)\n', [block]);
+   end
+   
+   else
+      printk('ext2_set_real_block: cannot set block %d (not supported)\n', [block]);
 
 end;
 

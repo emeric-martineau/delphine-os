@@ -23,6 +23,8 @@
 
 const
 
+	MAX_LOOKUP_ENTRIES = 1024;
+
    SEEK_SET = 0;   { Set offset to 'offset' }
    SEEK_CUR = 1;   { Add 'offset' to current position }
    SEEK_END = 2;   { Add 'offset' to current file size }
@@ -37,29 +39,53 @@ const
    MAX_NR_CHAR_DEV  = 10; { Même chose pour les périphériques caractères }
 
    {* Values for the second argument to access.
-     These may be OR'd together. *}
+    * These may be OR'd together. *}
    R_OK = 4; { Test for read permission. }
    W_OK = 2; { Test for write permission. }
    X_OK = 1; { Test for execute permission. }
    F_OK = 0; { Test for existence. }
 
 
-   { Inodes flags }
+   { Inode flags }
    I_RO       = 0;   { Read }
    I_WO       = 1;   { Write }
    I_XO       = 3;   { Execute }
 
+   { Inode state }
    I_Lock     = 1;
    I_Uptodate = 2;
+   I_Dirty    = 4;
 
-   { Files types }
-   S_IFSOCK = $A000;   { Socket }
-   S_IFLNK  = $C000;   { Symbolic link }
-   S_IFREG  = $8000;   { Regular file }
-   S_IFBLK  = $6000;   { Block device }
-   S_IFDIR  = $4000;   { Directory }
-   S_IFCHR  = $2000;   { Character device }
-   S_IFIFO  = $1000;   { FIFO }
+   { File types }
+	IFMT		= $f000; 	{ Format mask }
+   IFSOCK 	= $a000; 	{ Socket }
+   IFLNK  	= $c000; 	{ Symbolic link }
+   IFREG  	= $8000; 	{ Regular file }
+   IFBLK  	= $6000; 	{ Block device }
+   IFDIR  	= $4000; 	{ Directory }
+   IFCHR  	= $2000; 	{ Character device }
+   IFIFO  	= $1000; 	{ FIFO }
+
+	{ Mode flags }
+	ISUID 	= $800;		{ SUID }
+	ISGID 	= $400;		{ SGID }
+	ISVTX 	= $200;		{ Sticky bit }
+
+	IRWXU 	= $1c0;		{ User mask }
+	IRUSR 	= $100;		{ Read }
+	IWUSR 	= $080;		{ Write }
+	IXUSR 	= $040;		{ Execute }
+
+	IRWXG 	= $038;		{ Group mask }
+	IRGRP 	= $020;		{ Read }
+	IWGRP 	= $010;		{ Write }
+	IXGRP 	= $008;		{ Execute }
+
+	IRWXO 	= $007;		{ Other mask }
+	IROTH 	= $004;		{ Read }
+	IWOTH 	= $002;		{ Write }
+	IXOTH 	= $001;		{ Execute }
+
 
 type
 
@@ -89,17 +115,24 @@ type
       close : function (fichier : P_file_t) : dword;
       seek  : function (fichier : P_file_t ; offset, whence : dword) : dword;
       ioctl : function (fichier : P_file_t ; req : dword ; argp : pointer) : dword;
+		mmap  : function (fichier : P_file_t ) : dword;
    end;
 
 
    inode_operations = record
       default_file_ops : P_file_operations;
-      lookup : function (dir : P_inode_t ; name : pchar ; len : dword ; res_inode : PP_inode_t) : boolean;
+      lookup   : function (dir : P_inode_t ; name : pchar ; len : dword ; res_inode : PP_inode_t) : boolean;
+      create   : function (dir : P_inode_t ; name : pchar ; mode : dword) : P_inode_t;
+      truncate : procedure (inode : P_inode_t);
+      unlink   : function (dir : P_inode_t ; name : pchar ; inode : P_inode_t) : dword;
    end;
 
 
    super_operations = record
-      read_inode : procedure(ino : P_inode_t);
+      read_inode   : procedure (ino : P_inode_t);
+      write_inode  : procedure (ino : P_inode_t);
+      write_super  : procedure (sb : P_super_block_t);
+      delete_inode : procedure (ino : P_inode_t);
    end;
 
 
@@ -123,7 +156,7 @@ type
       dev_minor : byte;
       dirty     : byte;
       state     : byte;    { Etat : Lock, Uptodate, ... }
-      blocksize : dword;   { Taille d'un bloc logique en octets }
+      blksize   : dword;   { Taille d'un bloc logique en octets }
       fs_type   : P_file_system_type;
       op        : P_super_operations;
       { Les données suivantes sont liées au type de système de fichiers }
@@ -150,28 +183,28 @@ type
       uid      : dword;   { Identificateur de propriétaire }
       gid      : dword;   { Identificateur de groupe }
       size     : dword;   { Longueur du fichier en octets }
-      blksize  : dword;   { Taille du bloc en octets }
-      blocks   : dword;   { Nb de blocs du fichier }
+      blksize  : dword;   { Taille d'un bloc en octets }
+      blocks   : dword;   { Nb de blocs de 512 octets du fichier }
       wait     : P_wait_queue;   { File d'attente }
       sb       : P_super_block_t;
       op       : P_inode_operations;
       { Les données suivantes sont liées au type de système de fichiers }
       case dword of
          1: (ext2_i : ext2_inode_info);
-	 2: (pipe_i : pipe_inode_info);
+	 		2: (pipe_i : pipe_inode_info);
    end;
 
 {-----------------------------------------------------------------------------}
 
    file_t = record
-      mode   : dword;   { Mode d'acces au processus }
-      flags  : dword;   { Drapeaux spécifiés à l'ouverture du fichier }
-      pos    : dword;   { Deplacement du fichier courant }
-      uid    : dword;   { UID de l'utilisateur }
-      gid    : dword;   { GID de l'utilisateur }
-      count  : dword;   { Compteur d'utilisation }
-      op     : P_file_operations;
-      inode  : P_inode_t;
+      mode   		 : dword;   { Mode d'acces au processus }
+      flags  		 : dword;   { Drapeaux spécifiés à l'ouverture du fichier }
+      pos    		 : dword;   { Deplacement du fichier courant }
+      uid    		 : dword;   { UID de l'utilisateur }
+      gid    		 : dword;   { GID de l'utilisateur }
+      count  		 : dword;   { Compteur d'utilisation }
+      op     		 : P_file_operations;
+      inode  		 : P_inode_t;
    end;
 
 {-----------------------------------------------------------------------------}
@@ -181,10 +214,10 @@ type
    P_lookup_cache_entry = ^lookup_cache_entry;
 
    lookup_cache_entry = record
-      dir  : P_inode_t;
-      name : pchar;
-      len  : dword;
-      res_inode : P_inode_t;
+      dir   		: P_inode_t;
+      name  		: pchar;
+      len   		: dword;
+      res_inode	: P_inode_t;
    end;
 
 {$ENDIF}

@@ -2,7 +2,7 @@
  *
  *  DelphineOS kernel initialization
  *
- *  CopyLeft (C) 2002
+ *  CopyLeft (C) 2003
  *
  *  version 0.0.0a - ??/??/2001 - Bubule, Edo, GaLi - initial version
  *
@@ -17,11 +17,11 @@
 
 {* Todo   :-)
  * - APM Bios
- * - Mouse (COM + PS/2)
+ * - Mouse (COM, PS/2, USB)
  * - PCMCIA
  * - Ethernet cards
  * - Sound cards
- * - Video cards *}
+ * - Video cards (VESA modes) *}
 
 
 {$I defs.inc}
@@ -29,6 +29,7 @@
 {$I process.inc}
 {$I sched.inc }
 {$I signal.inc}
+{$I tty.inc}
 
 
 { External variables }
@@ -39,14 +40,21 @@ var
    current     : P_task_struct; external name 'U_PROCESS_CURRENT';
    nr_tasks    : dword; external name 'U_PROCESS_NR_TASKS';
    nr_running  : dword; external name 'U_PROCESS_NR_RUNNING';
+	first_tty   : tty_struct; external name 'U_TTY__FIRST_TTY';
 
 
 var
-   cr3_init, new_stack3, page_table : P_pte_t;
+   cr3_init, new_stack3, pt, stack_pt : P_pte_t;
    init_desc   : pointer;
    init_struct : P_task_struct;
    tss_init    : P_tss_struct;
-   i           : dword;
+
+
+const
+	user    : ansistring = {$I%USER%};
+	ktime   : ansistring = {$I%TIME%};
+	target  : ansistring = {$I%FPCTARGET%};
+	fpc_ver : ansistring = {$I%FPCVERSION%};
 
 
 begin
@@ -54,6 +62,9 @@ begin
    { Hardware and kernel data initialization }
 
    init_tty();       { Console : OK }
+
+	printk('Compiled by %s at %s with FPC v%s (%s)\n', [user, ktime, fpc_ver, target]);
+
    cpuinfo();        { CPU : OK }
    init_mm();        { Memory : OK }
    init_gdt();       { GDT initialization : OK }
@@ -72,7 +83,15 @@ begin
 
    init_sched();     { Scheduler initialization : OK }
 
-{   printk('\nDelphineOS version 0.0.0e\n\n', []);}
+	print_bochs('\n', []);
+
+	{* Finish first_tty initialization *}
+	first_tty.buffer_keyboard := get_free_page();
+	if (first_tty.buffer_keyboard = NIL) then
+		 panic('cannot initialize tty1');
+
+	memset(first_tty.buffer_keyboard, 0, 4096);
+
 
    {* We're going to launch the first task : init
     * We have to initialize all the structures 'by hand' because we are not
@@ -87,11 +106,12 @@ begin
    nr_running  := 1;
 
    new_stack3  := get_free_page();   { init user stack }
-   page_table  := get_free_page();
+   pt          := get_free_page();
+   stack_pt    := get_free_page();
    init_desc   := get_free_page();   { init we'll be loaded in this page }
    init_struct := kmalloc(sizeof(task_struct));
 
-   if ((new_stack3 = NIL) or (page_table = NIL) or
+   if ((new_stack3 = NIL) or (pt = NIL) or (stack_pt = NIL) or
        (init_desc = NIL) or (init_struct = NIL)) then
    begin
       printk('\nNot enough memory to create init task\n', []);
@@ -105,73 +125,47 @@ begin
       mov   cr3_init, eax   { see src/mm/init_mem.pp }
    end;
 
-   tss_init := pointer($100590);   { see readme.txt }
+   tss_init := pointer($100590);   { see devel.txt }
    init_tss(tss_init);
-   tss_init^.esp0 := $2000;        { see readme.txt }
-   tss_init^.esp  := $FFC01000;    { see readme.txt }
+   tss_init^.esp0 := $2000;        { see devel.txt }
+   tss_init^.esp  := $C0400000;    { see devel.txt }
    tss_init^.cr3  := cr3_init;
 
    { Process descriptor initialization }
    memset(init_struct, 0, sizeof(task_struct));
-   init_struct^.state      := TASK_RUNNING;
-   init_struct^.counter    := 20;   { not used }
-   init_struct^.ticks      := 0;
-   init_struct^.nop        := 0;
-   init_struct^.tty        := 0;    { Console used by init }
-   init_struct^.tss_entry  := $08;
-   init_struct^.tss        := tss_init;
-   init_struct^.errno      := 0;
-   init_struct^.size       := 1;    { Pages used by init }
-   init_struct^.brk        := $FFC02000;
-   init_struct^.uid        := 0;
-   init_struct^.gid        := 0;
-   init_struct^.ppid       := 0;
-   init_struct^.cr3        := cr3_init;
-   init_struct^.page_table := page_table;
-   init_struct^.mmap       := NIL;
-   init_struct^.exit_code  := $FFFFFFFF;
-   init_struct^.close_on_exec := 0;
-   init_struct^.signal[0]  := 0;
-   init_struct^.signal[1]  := 0;
-   init_struct^.blocked[0] := 0;
-   init_struct^.blocked[1] := 0;
-   init_struct^.wait_queue := NIL;
-   init_struct^.p_pptr     := NIL;
-   init_struct^.p_cptr     := NIL;
-   init_struct^.p_ysptr    := NIL;
-   init_struct^.p_osptr    := NIL;
+   init_struct^.state         := TASK_RUNNING;
+   init_struct^.tss_entry     := $08;
+   init_struct^.tss           := tss_init;
+   init_struct^.real_size     := 1;    { Pages used by init }
+   init_struct^.first_size    := 1;
+   init_struct^.brk           := $C0401000;
+   init_struct^.cr3           := cr3_init;
+   init_struct^.exit_code     := $FFFFFFFF;
 
-   for i := 1 to 32 do
-   begin
-      init_struct^.signal_struct[i].sa_handler  := NIL;   { SIG_DFL }
-      init_struct^.signal_struct[i].sa_flags    := 0;
-      init_struct^.signal_struct[i].sa_restorer := NIL;
-      init_struct^.signal_struct[i].sa_mask[0]  := 0;
-      init_struct^.signal_struct[i].sa_mask[1]  := 0;
-   end;
+   { Set all signals to their default action }
+   memset(@init_struct^.signal_struct, 0, 32 * sizeof(sigaction));
 
    current := init_struct;
 
    { Set all file descriptors as 'unused' }
-   for i := 0 to (OPEN_MAX - 1) do
-       init_struct^.file_desc[i] := NIL;
+   memset(@init_struct^.file_desc, 0, OPEN_MAX * sizeof(P_file_t));
 
    {* On va maintenant mettre à jour le répertoire global de page afin de
     * pouvoir utiliser des adresses virtuelles dans init *}
 
    memcpy(@init, init_desc, 4096);
-   cr3_init[1023] := longint(page_table) or USER_PAGE;
-   memset(page_table, 0, 4096);
-   page_table[0]  := longint(new_stack3) or USER_PAGE;
-   page_table[1]  := longint(init_desc) or USER_PAGE;
+   cr3_init[769] := longint(pt) or USER_PAGE;
+   cr3_init[768] := longint(stack_pt) or USER_PAGE;
+   memset(pt, 0, 4096);
+   memset(stack_pt, 0, 4096);
+   stack_pt[1023] := longint(new_stack3) or USER_PAGE;
+   pt[0]          := longint(init_desc) or USER_PAGE;
 
    { On initialise pid_table et on enregistre init 'à la main' dans la liste
      des tâches }
    
    pid_table := get_free_page();
-   for i := 1 to 1022 do
-       pid_table^.pid_nb[i] := NIL;
-
+   memset(pid_table, 0, 1022 * 4);
    pid_table^.nb_free_pids := 1022;
    pid_table^.next         := NIL;
 
@@ -184,25 +178,26 @@ begin
    init_struct^.pid      := get_new_pid();   { Returns 1 }
    pid_table^.pid_nb[1]  := init_struct;
 
+
    { We are going to launch init. We jump to user mode here }
 
    asm
       mov   eax, cr3
-      mov   cr3, eax   { Vide le TLB du processeur }
+      mov   cr3, eax          { Vide le TLB du processeur }
 
       push  dword $00
-      popfd            { Just to be careful }
+      popfd                   { Just to be careful }
 
       push  dword $2B         { SS }
-      push  dword $FFC01000   { ESP }
+      push  dword BASE_ADDR   { ESP }
       push  dword $200        { EFlags }
       push  dword $23         { CS }
+
       sti                     {* Obligatoire sinon le 'iret' na marche pas, à
                                * moins de mettre les flags à 0
-			       *
-			       * C'est quand même bizarre !!! *}
+								       * C'est quand même bizarre !!! *}
 
-      push  dword $FFC01000   { Virtual address at which init begins }
+      push  dword BASE_ADDR   { Virtual address at which init begins }
 
       iret
    end;

@@ -30,6 +30,9 @@ unit assembleur;
 INTERFACE
 
 
+procedure printk (format : string ; args : array of const); external;
+
+
 function  bitscan (nb : dword) : dword;
 function  btod (nb : byte) : dword;
 procedure halt;
@@ -185,7 +188,6 @@ end;
  * set_bit
  *
  * Input  : bit index, pointer to dword
- * Output : dword with bit indexed set to 1
  *
  * WARNING : i=0 sets bit 31 to 1
  *****************************************************************************}
@@ -214,7 +216,6 @@ end;
  * unset_bit
  *
  * Input  : bit index, pointer to dword
- * Output : dword with bit indexed set to 0
  *
  * WARNING : i=0 set bit 31 to 0
  *****************************************************************************}

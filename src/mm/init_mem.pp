@@ -37,17 +37,15 @@ INTERFACE
 
 {$I mm.inc}
 
-procedure init_paging;
-
-
-procedure printk (format : string ; args : array of const); external;
+function  get_free_page : pointer; external;
+procedure init_gdt; external;
 procedure memset (adr : pointer ; c : byte ; size : dword); external;
+function  PageReserved (adr : dword) : boolean; external;
+procedure print_bochs (format : string ; args : array of const); external;
+procedure printk (format : string ; args : array of const); external;
+procedure push_page (page_adr : dword); external;
 procedure set_bit (i : dword ; ptr_nb : pointer); external;
 procedure unset_bit (i : dword ; ptr_nb : pointer); external;
-procedure push_page (page_adr : dword); external;
-procedure init_gdt; external;
-function  PageReserved (adr : dword) : boolean; external;
-function  get_free_page : pointer; external;
 
 
 
@@ -63,9 +61,15 @@ var
    fin_pile_dma   : pointer; external name 'U_MEM_FIN_PILE_DMA';
 
 
+procedure init_mm;
+procedure init_paging;
+
+
 
 IMPLEMENTATION
 
+
+{$I inline.inc}
 
 
 var
@@ -134,14 +138,14 @@ begin
 
    if (bios_map_entries <> 0) then
    begin
+		print_bochs('\nBIOS map entries:\n', []);
+		print_bochs('-----------------\n', []);
       bios_map := $10000 + 24;
       size     := 0;
       for i := 1 to bios_map_entries do
       begin
-         {$IFDEF DEBUG}
-            printk('%h -> %h (%d)\n', [bios_map^.addr_low, bios_map^.addr_low + bios_map^.length_low, bios_map^.mem_type]);
-	 {$ENDIF}
-	 bios_map += 1;
+			print_bochs('%h -> %h (%d)\n', [bios_map^.addr_low, bios_map^.addr_low + bios_map^.length_low, bios_map^.mem_type]);
+	 		bios_map += 1;
       end;
    end;
 
@@ -234,7 +238,7 @@ begin
       if (i >= $1000000) then { The page can't be used for DMA ( >16Mb) }
       begin
          mem_map[i shr 12].flags := 0;
-	 nb_dma_pages -= 1;
+	 		nb_dma_pages -= 1;
       end;
       i += 4096;
    end;
@@ -279,9 +283,9 @@ begin
           reserved_pages := reserved_pages + 1
       else
           {* Note : push_page() updates debut_pile, fin_pile,
-	   * debut_pile_dma and fin_pile_dma pointers as well as
-	   * nb_free_pages and free_memory variables (see mm/mem.pp) *}
-	  push_page(i);
+	   	  * debut_pile_dma and fin_pile_dma pointers as well as
+	   	  * nb_free_pages and free_memory variables (see mm/mem.pp) *}
+	   	 push_page(i);
 
       i += 4096;
 
@@ -320,21 +324,6 @@ begin
    { total_memory has to be the RAM size in bytes }
    total_memory := total_memory * 1024;
 
-end;
-
-
-
-{******************************************************************************
- * flush_tbl
- *
- * Vide le cache du processeur (utilisé pour résoudre les adresses virtuelles)
- *****************************************************************************}
-procedure flush_tlb;
-begin
-   asm
-      mov   eax, cr3
-      mov   cr3, eax
-   end;
 end;
 
 

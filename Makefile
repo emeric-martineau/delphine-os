@@ -1,11 +1,13 @@
 s = ./src
 b = ./src/boot
-flags =-Fi./src/include/kernel -Sh -Sg -Cn -Sc -S2 -OGr -Sm -Un -a -Aas -Rintel -vwnh
-lib_flags =-Fi./src/include -Fi./src/include/sys -OGr -Un -S2 -Sc -Sg -Rintel -CX -vwnh
+i = ./src/include/kernel
+flags =-Fi./src/include/kernel -Si -Sh -Sg -Cn -Sc -S2 -OGr -Sm -Un -a -Aas -Rintel -vwn
+lib_flags =-Fi./src/include -Fi./src/include/sys -OGr -Si -Un -S2 -Sc -Sg -Rintel -CX -vwnh
 
-kernel: ${b}/setup ${b}/mbr ${s}/kernel/main.o ${s}/kernel/start.o ${s}/kernel/dma.o \
-        ${s}/kernel/init.o ${s}/kernel/time.o ${s}/kernel/fork.o ${s}/kernel/process.o ${s}/kernel/signal.o \
-	${s}/kernel/sched.o ${s}/kernel/exit.o ${s}/kernel/sys.o ${s}/debug/debug.o ${s}/asm/asm.o ${s}/asm/entry.o \
+kernel: ${b}/setup ${s}/kernel/main.o ${s}/kernel/start.o ${s}/kernel/dma.o \
+        ${s}/kernel/init.o ${s}/kernel/time.o ${s}/kernel/fork.o ${s}/kernel/process.o \
+	${s}/kernel/signal.o ${s}/kernel/sched.o ${s}/kernel/exit.o ${s}/kernel/sys.o \
+	${s}/kernel/lock.o ${s}/debug/debug.o ${s}/asm/asm.o ${s}/asm/entry.o \
 	${s}/mm/init_mem.o ${s}/mm/mem.o ${s}/mm/mmap.o ${s}/cpu/cpu.o ${s}/gdt/gdt.o \
 	${s}/drivers/char/tty.o ${s}/drivers/char/keyboard.o ${s}/drivers/char/com.o \
 	${s}/drivers/char/lpt.o ${s}/drivers/block/ide.o ${s}/drivers/block/ide-hd.o \
@@ -13,8 +15,9 @@ kernel: ${b}/setup ${b}/mbr ${s}/kernel/main.o ${s}/kernel/start.o ${s}/kernel/d
 	${s}/drivers/net/rtl8139.o ${s}/drivers/net/ne.o ${s}/int/int.o ${s}/int/init_int.o \
 	${s}/fs/init_vfs.o ${s}/fs/devices.o ${s}/fs/super.o ${s}/fs/open.o ${s}/fs/stat.o \
 	${s}/fs/pipe.o ${s}/fs/namei.o ${s}/fs/read_write.o ${s}/fs/exec.o ${s}/fs/inode.o \
-	${s}/fs/buffer.o ${s}/fs/fcntl.o ${s}/fs/ioctl.o ${s}/fs/readdir.o ${s}/fs/ext2/super.o \
-	${s}/fs/ext2/file.o ${s}/fs/ext2/inode.o ${s}/fs/ext2/dir.o ${s}/net/socket.o
+	${s}/fs/select.o ${s}/fs/buffer.o ${s}/fs/fcntl.o ${s}/fs/ioctl.o ${s}/fs/readdir.o \
+	${s}/fs/ext2/super.o ${s}/fs/ext2/file.o ${s}/fs/ext2/inode.o ${s}/fs/ext2/dir.o \
+	${s}/fs/ext2/ialloc.o ${s}/fs/ext2/balloc.o ${s}/fs/ext2/namei.o ${s}/net/socket.o
 
 	@echo Linking kernel ...
 	@ld -o ${s}/kernel/tmpk ${s}/kernel/start.o ${s}/kernel/main.o ${s}/kernel/exit.o \
@@ -27,10 +30,11 @@ kernel: ${b}/setup ${b}/mbr ${s}/kernel/main.o ${s}/kernel/start.o ${s}/kernel/d
 	${s}/fs/ioctl.o ${s}/fs/ext2/super.o ${s}/kernel/sched.o ${s}/fs/devices.o \
 	${s}/fs/super.o ${s}/fs/fcntl.o ${s}/kernel/time.o ${s}/kernel/dma.o \
 	${s}/asm/entry.o ${s}/fs/read_write.o ${s}/kernel/process.o ${s}/fs/namei.o \
-	${s}/drivers/block/ide-hd.o ${s}/fs/open.o ${s}/fs/ext2/file.o \
-	${s}/fs/buffer.o ${s}/fs/stat.o ${s}/drivers/block/ll_rw_block.o \
+	${s}/drivers/block/ide-hd.o ${s}/fs/open.o ${s}/fs/ext2/file.o ${s}/fs/ext2/ialloc.o \
+	${s}/fs/buffer.o ${s}/fs/stat.o ${s}/drivers/block/ll_rw_block.o ${s}/fs/ext2/balloc.o \
 	${s}/fs/inode.o ${s}/fs/ext2/inode.o ${s}/fs/readdir.o ${s}/asm/asm.o ${s}/fs/exec.o \
-	${s}/kernel/init.o ${s}/net/socket.o -T linkfile
+	${s}/kernel/init.o ${s}/net/socket.o ${s}/fs/select.o ${s}/fs/ext2/namei.o \
+	${s}/kernel/lock.o -T linkfile
 
 	@cat ${b}/setup ${s}/kernel/tmpk > ${s}/kernel/kernel
 	@rm ${s}/kernel/tmpk
@@ -44,18 +48,15 @@ ${s}/kernel/main.o: ${s}/kernel/main.pp
 	@fgrep -iv "FPC_INITIALIZEUNITS" ${s}/kernel/main.s > ${s}/kernel/tmp
 	@fgrep -iv "SYSLINUX" ${s}/kernel/tmp > ${s}/kernel/k
 	@fgrep -iv "FPC_DO_EXIT" ${s}/kernel/k > ${s}/kernel/tmp
-	@fgrep -iv "OBJPAS" ${s}/kernel/tmp > ${s}/kernel/main.s
+	@fgrep -iv "OBJPAS" ${s}/kernel/tmp > ${s}/kernel/k
+	@fgrep -iv "SYSBSD" ${s}/kernel/k > ${s}/kernel/main.s
 	@rm ${s}/kernel/tmp
 	@rm ${s}/kernel/k
 	@as -o ${s}/kernel/main.o ${s}/kernel/main.s
 
-${b}/setup: ${b}/setup.S
+${b}/setup: ${b}/setup.S ${b}/vesa.S
 	@echo Compiling boot/setup.S
 	@nasm ${b}/setup.S
-
-${b}/mbr: ${b}/mbr.S
-	@echo Compiling boot/mbr.S
-	@nasm ${b}/mbr.S
 
 ${s}/kernel/start.o: ${s}/kernel/start.S
 	@echo Compiling kernel/start.S
@@ -121,7 +122,7 @@ ${s}/int/int.o: ${s}/int/int.pp
 	@ppc386 $(flags) -s ${s}/int/int.pp
 	@as -o ${s}/int/int.o ${s}/int/int.s
 
-${s}/mm/mem.o: ${s}/mm/mem.pp
+${s}/mm/mem.o: ${s}/mm/mem.pp ${i}/config.inc
 	@echo Compiling mm/mem.pp
 	@ppc386 $(flags) -s ${s}/mm/mem.pp
 	@as -o ${s}/mm/mem.o ${s}/mm/mem.s
@@ -166,6 +167,11 @@ ${s}/fs/stat.o: ${s}/fs/stat.pp
 	@ppc386 $(flags) -s ${s}/fs/stat.pp
 	@as -o ${s}/fs/stat.o ${s}/fs/stat.s
 
+${s}/fs/select.o: ${s}/fs/select.pp
+	@echo Compiling fs/select.pp
+	@ppc386 $(flags) -s ${s}/fs/select.pp
+	@as -o ${s}/fs/select.o ${s}/fs/select.s
+
 ${s}/fs/namei.o: ${s}/fs/namei.pp
 	@echo Compiling fs/namei.pp
 	@ppc386 $(flags) -s ${s}/fs/namei.pp
@@ -186,15 +192,30 @@ ${s}/fs/pipe.o: ${s}/fs/pipe.pp
 	@ppc386 $(flags) -s ${s}/fs/pipe.pp
 	@as -o ${s}/fs/pipe.o ${s}/fs/pipe.s
 
-${s}/fs/ext2/super.o: ${s}/fs/ext2/super.pp
+${s}/fs/ext2/super.o: ${s}/fs/ext2/super.pp ${i}/config.inc
 	@echo Compiling fs/ext2/super.pp
 	@ppc386 $(flags) -s ${s}/fs/ext2/super.pp
 	@as -o ${s}/fs/ext2/super.o ${s}/fs/ext2/super.s
 
-${s}/fs/ext2/dir.o: ${s}/fs/ext2/dir.pp
+${s}/fs/ext2/dir.o: ${s}/fs/ext2/dir.pp ${i}/config.inc
 	@echo Compiling fs/ext2/dir.pp
 	@ppc386 $(flags) -s ${s}/fs/ext2/dir.pp
 	@as -o ${s}/fs/ext2/dir.o ${s}/fs/ext2/dir.s
+
+${s}/fs/ext2/namei.o: ${s}/fs/ext2/namei.pp ${i}/config.inc
+	@echo Compiling fs/ext2/namei.pp
+	@ppc386 $(flags) -s ${s}/fs/ext2/namei.pp
+	@as -o ${s}/fs/ext2/namei.o ${s}/fs/ext2/namei.s
+
+${s}/fs/ext2/ialloc.o: ${s}/fs/ext2/ialloc.pp ${i}/config.inc
+	@echo Compiling fs/ext2/ialloc.pp
+	@ppc386 $(flags) -s ${s}/fs/ext2/ialloc.pp
+	@as -o ${s}/fs/ext2/ialloc.o ${s}/fs/ext2/ialloc.s
+
+${s}/fs/ext2/balloc.o: ${s}/fs/ext2/balloc.pp ${i}/config.inc
+	@echo Compiling fs/ext2/balloc.pp
+	@ppc386 $(flags) -s ${s}/fs/ext2/balloc.pp
+	@as -o ${s}/fs/ext2/balloc.o ${s}/fs/ext2/balloc.s
 
 ${s}/kernel/sched.o: ${s}/kernel/sched.pp
 	@echo Compiling kernel/sched.pp
@@ -216,6 +237,11 @@ ${s}/kernel/fork.o: ${s}/kernel/fork.pp
 	@ppc386 $(flags) -s ${s}/kernel/fork.pp
 	@as -o ${s}/kernel/fork.o ${s}/kernel/fork.s
 
+${s}/kernel/lock.o: ${s}/kernel/lock.pp
+	@echo Compiling kernel/lock.pp
+	@ppc386 $(flags) -s ${s}/kernel/lock.pp
+	@as -o ${s}/kernel/lock.o ${s}/kernel/lock.s
+
 ${s}/fs/devices.o: ${s}/fs/devices.pp
 	@echo Compiling fs/devices.pp
 	@ppc386 $(flags) -s ${s}/fs/devices.pp
@@ -236,7 +262,7 @@ ${s}/kernel/time.o: ${s}/kernel/time.pp
 	@ppc386 $(flags) -s ${s}/kernel/time.pp
 	@as -o ${s}/kernel/time.o ${s}/kernel/time.s
 
-${s}/asm/entry.o: ${s}/asm/entry.pp
+${s}/asm/entry.o: ${s}/asm/entry.pp ${i}/config.inc
 	@echo Compiling asm/entry.pp
 	@ppc386 $(flags) -s ${s}/asm/entry.pp
 	@as -o ${s}/asm/entry.o ${s}/asm/entry.s
@@ -281,7 +307,7 @@ ${s}/fs/inode.o: ${s}/fs/inode.pp
 	@ppc386 $(flags) -s ${s}/fs/inode.pp
 	@as -o ${s}/fs/inode.o ${s}/fs/inode.s
 
-${s}/fs/ext2/inode.o: ${s}/fs/ext2/inode.pp
+${s}/fs/ext2/inode.o: ${s}/fs/ext2/inode.pp ${i}/config.inc
 	@echo Compiling fs/ext2/inode.pp
 	@ppc386 $(flags) -s ${s}/fs/ext2/inode.pp
 	@as -o ${s}/fs/ext2/inode.o ${s}/fs/ext2/inode.s
@@ -291,7 +317,7 @@ ${s}/fs/open.o: ${s}/fs/open.pp
 	@ppc386 $(flags) -s ${s}/fs/open.pp
 	@as -o ${s}/fs/open.o ${s}/fs/open.s
 
-${s}/fs/ext2/file.o: ${s}/fs/ext2/file.pp
+${s}/fs/ext2/file.o: ${s}/fs/ext2/file.pp ${i}/config.inc
 	@echo Compiling fs/ext2/file.pp
 	@ppc386 $(flags) -s ${s}/fs/ext2/file.pp
 	@as -o ${s}/fs/ext2/file.o ${s}/fs/ext2/file.s
@@ -311,7 +337,7 @@ ${s}/lib/libpfpclib.a: ${s}/lib/fpclib.pp
 	@ppc386 $(lib_flags) ${s}/lib/fpclib.pp
 
 clean:
-	@rm -f *~ bochs/delphineOS.img bochs/bochout.txt mkboot kernel.log flagger
+	@rm -f *~ bochs/delphineOS.img bochs/delphineOS_ext2.img bochs/bochout.txt mkboot kernel.log flagger
 	@rm -f src/*~ src/*.s
 	@rm -f src/boot/*~ src/boot/boot src/boot/setup src/boot/boot.dat src/boot/mbr
 	@rm -f src/cpu/*.o src/cpu/*~ src/cpu/*.ppu src/cpu/*.s
@@ -336,3 +362,4 @@ clean:
 	@rm -f src/include/kernel/*~
 	@rm -f src/include/sys/*~
 	@rm -f src/lib/*~ src/lib/*.o src/lib/*.a src/lib/*.ppu
+	@rm -f base/dev/*

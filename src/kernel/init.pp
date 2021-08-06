@@ -6,6 +6,8 @@ INTERFACE
 
 
 {$I fs.inc}
+{$I process.inc }
+{$I sched.inc }
 
 
 function  close (fildes : dword) : dword;
@@ -15,19 +17,14 @@ function  fork : dword;
 procedure mount_root;
 function  open (path : string ; flags, mode : dword) : dword;
 function  pause : dword;
+function  read (fd : dword ; buf : pointer ; count : dword) : dword;
 function  waitpid (pid : dword ; status : pointer ; options : dword) : dword;
 function  write (fd : dword ; buf : string ; count : dword) : dword;
 
 
-function  read (fd : dword ; buf : pointer ; count : dword) : dword;
-
 
 IMPLEMENTATION
 
-
-const
-
-   WNOHANG = 1;
 
 
 {******************************************************************************
@@ -52,32 +49,33 @@ begin
       mov   gs , ax
    end;
 
-   if (fork > 0) then
+   mount_root();
+
+   if (fork() > 0) then
    { This is the idle process }
+   begin
+      while (true) do
       begin
-	 while (true) do
-	    begin
-	       res := waitpid(-1, NIL, WNOHANG);
-	       if (res > 0) then
-	       begin
-	          {write(fd, 'INIT: a zombie was killed.'#10, 27);}
-	       end;
-	       pause();
-	    end;
-      end
+			pause();
+	 		res := waitpid(-1, NIL, WNOHANG);
+	 		if (res > 0) then
+	 		begin
+	    		{write(fd, 'INIT: a zombie was killed.'#10, 27);}
+	 		end;
+      end;
+   end
    else
+   begin
+      fd := open('/dev/tty1', O_RDWR, 0);
+      dup(fd);
+      dup(fd);
+      {read(0, @str, 2000);}   { For keyboard debugging }
+      exec('/sbin/init', [NIL]);
+      write(fd, #10'Can''t find /sbin/init. System halted.', 38);
+      while (true) do
       begin
-         mount_root();
-         open('/dev/keyb', O_RDONLY, 0);
-         fd := open('/dev/tty0', O_WRONLY, 0);
-         dup(fd);
-	 {read(0, @str, 2000);}   { For keyboard debugging }
-         exec('/sbin/init', [NIL]);
-	 write(fd, #10'Can''t find /sbin/init. System halted.', 38);
-         while (true) do
-            begin
-            end;
-       end;
+      end;
+   end;
 end;
 
 

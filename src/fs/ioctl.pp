@@ -25,7 +25,7 @@
 unit ioctl;
 
 
-{DEFINE DEBUG}
+{DEFINE DEBUG_SYS_IOCTL}
 
 
 INTERFACE
@@ -58,6 +58,8 @@ function sys_ioctl(fd, req : dword ; argp : pointer) : dword; cdecl;
 IMPLEMENTATION
 
 
+{$I inline.inc}
+
 
 {******************************************************************************
  * sys_ioctl
@@ -70,47 +72,40 @@ var
 
 begin
 
-   asm
-      sti   { Put interrupts on }
-   end;
-
-   {$IFDEF DEBUG}
-      printk('Welcome in ioctl... (%d, %h4, %h)\n', [fd, req, argp]);
-   {$ENDIF}
-
-   if (fd >= OPEN_MAX) then
-       begin
-	     printk('VFS (ioctl): fd number is too big (%d)\n', [fd]);
-	     result := -EBADF;
-	     exit;
-       end;
+	sti();
 
    fichier := current^.file_desc[fd];
 
-   if (fichier = NIL) then
-       begin
-	     printk('VFS (ioctl): file isn''t opened (%d)\n', [fd]);
-	     result := -EBADF;
-	     exit;
-       end;
+   {$IFDEF DEBUG_SYS_IOCTL}
+      printk('sys_ioctl (%d): fd=%d, req=%h4, argp=%h (%h)\n', [current^.pid, fd, req, argp, fichier]);
+   {$ENDIF}
+
+   if (fd >= OPEN_MAX) or (fichier = NIL) then
+   begin
+      result := -EBADF;
+      exit;
+   end;
+
    if (fichier^.inode = NIL) then
-       begin
-          printk('VFS (ioctl): inode not defined for fd %d\n', [fd]);
-	  result := -EBADF;
-	  exit;
-       end;
+	begin
+		printk('VFS (ioctl) PID=%d: inode not defined for fd %d\n', [current^.pid, fd]);
+	   result := -EBADF;
+		exit;
+	end;
+
    if (fichier^.op = NIL) then
-       begin
-          printk('VFS (ioctl): file operations not defined for fd %d\n', [fd]);
-	  result := -1;
-	  exit;
-       end;
+	begin
+		printk('VFS (ioctl) PID=%d: file operations not defined for fd %d\n', [current^.pid, fd]);
+		result := -1;
+		exit;
+	end;
+
    if (fichier^.op^.ioctl = NIL) then
-       begin
-          printk('VFS (ioctl): ioctl operation not defined for fd %d\n', [fd]);
-	  result := -1;
-	  exit;
-       end;
+	begin
+		printk('VFS (ioctl) PID=%d: ioctl operation (req=%h) not defined for fd %d\n', [current^.pid, req, fd]);
+		result := -1;
+		exit;
+	end;
 
    result := fichier^.op^.ioctl(fichier, req, argp);
 

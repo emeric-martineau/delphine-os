@@ -66,7 +66,7 @@ begin
 
    io_base := dev^.io[0];
 
-   printk('RTL8139: %h4', [io_base]);
+   printk('RTL8139: %h4\n', [io_base]);
 
 end;
 
