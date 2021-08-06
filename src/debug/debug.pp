@@ -483,7 +483,7 @@ begin
    for i := 0 to MAX_NR_CHAR_DEV do
       if chrdevs[i].name<>'' then
          begin
-            printk('   %d : %s (',[i,chrdevs[i].name]);
+            printk('   %d : %s ( ',[i,chrdevs[i].name]);
             if chrdevs[i].fops^.open <> NIL then
                printk('Open ',[]);
             if chrdevs[i].fops^.read <> NIL then
@@ -492,6 +492,8 @@ begin
                printk('Write ',[]);
             if chrdevs[i].fops^.seek <> NIL then
                printk('Seek ',[]);
+            if chrdevs[i].fops^.ioctl <> NIL then
+               printk('Ioctl ',[]);
             printk(')\n',[]);
          end;
 
@@ -499,7 +501,7 @@ begin
    for i := 0 to MAX_NR_BLOCK_DEV do
       if blkdevs[i].name<>'' then
          begin
-            printk('   %d : %s (',[i,blkdevs[i].name]);
+            printk('   %d : %s ( ',[i,blkdevs[i].name]);
             if blkdevs[i].fops^.open <> NIL then
                printk('Open ',[]);
             if blkdevs[i].fops^.read <> NIL then
@@ -508,6 +510,8 @@ begin
                printk('Write ',[]);
             if blkdevs[i].fops^.seek <> NIL then
                printk('Seek ',[]);
+            if blkdevs[i].fops^.ioctl <> NIL then
+               printk('Ioctl ',[]);
             printk(')\n',[]);
          end;
 

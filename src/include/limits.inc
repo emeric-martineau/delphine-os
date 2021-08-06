@@ -1,0 +1,9 @@
+{$IFNDEF __LIMITS__}
+{$DEFINE __LIMITS__}
+
+
+const
+   ULONG_MAX = 4294967295;
+
+
+{$ENDIF}

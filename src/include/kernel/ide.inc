@@ -32,12 +32,11 @@ type
       IO_base     : word;
       irq         : byte;     { IDE controller IRQ }
       ide_sem     : byte;     { Semaphore (not used) }
-      cyls        : word;     { Nb de cylindres }
-      heads       : word;     { Nb de têtes }
-      sectors     : word;     { Nb de secteurs par piste }
-      lba_sectors : dword;    { Nb de secteurs adressables avec le LBA }
-      part        : array[1..MAX_NR_PART] of partition; 
-      { Infos sur les partitions }
+      cyls        : word;     { Nb of cylinders }
+      heads       : word;     { Nb of heads }
+      sectors     : word;     { Nb of sectors per track }
+      lba_sectors : dword;    { Total number of sectors }
+      part        : array[1..MAX_NR_PART] of partition;   { Partitions information }
    end;
 
    { ide_struct details :
@@ -76,26 +75,23 @@ type
      (ATA-2 standard) }
 
    drive_id = record
-      config         : word;    { obselete }
-      cyls           : word;    { cylindres "physique" }
-      reserved2      : word;    { reseve (word 2) }
-      heads          : word;    { tetes "physique" }
-      track_bytes    : word;    { octets non-formates par piste }
-      sector_bytes   : word;    { octets non-formates par secteur }
-      sectors        : word;    { nb de secteurs "pysique" par piste }
+      config         : word;    { General configuration (obselete) }
+      cyls           : word;    { Number of cylinders }
+      reserved2      : word;    { Specific configuration }
+      heads          : word;    { Number of logical heads }
+      track_bytes    : word;    { Obsolete }
+      sector_bytes   : word;    { Obsolete }
+      sectors        : word;    { Number of logical sectors per logical track }
       vendor0        : word;    { vendor unique }
       vendor1        : word;    { vendor unique }
       vendor2        : word;    { vendor unique }
-      serial_no      : array[1..20] of char;   { numero de serie. 0 = non
-                                                 specifie }
-      buf_type       : word;    { type du buffer }
+      serial_no      : array[1..20] of char;   { Serail number }
+      buf_type       : word;    { Obsolete }
       buf_size       : word;    { 512 byte increments; 0 = not_specified }
-      ecc_bytes      : word;    { pour les commandes de lecture/ecriture
-                                  longues ; 0 = non specifie }
-      fw_rev         : array[1..8] of char;      { version de la firmware 
-                                                   0 = non specifie }
-      model          : array[1..40] of char;     { 0 = non specifie }
-      max_mulsect    : byte;    { 0 = not_implemented }
+      ecc_bytes      : word;    { Obsolete }
+      fw_rev         : array[1..8] of char;      { Firmware revision }
+      model          : array[1..40] of char;     { Model number }
+      max_mulsect    : byte;    { read/write multiple support }
       vendor3        : byte;    { vendor unique }
       dword_io       : word;    { 0 = not_implemented; 1 = implemented }
       vendor4        : byte;    { vendor unique }

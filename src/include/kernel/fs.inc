@@ -37,9 +37,12 @@ const
    { L'argument 'flags' utilisé lors de l'appel système open() peut prendre
      UNE SEULE des valeurs suivantes }
 
-   O_RDONLY   = 4;   { Ouverture en lecture }
    O_WRONLY   = 2;   { Ouverture en écriture }
+   O_RDONLY   = 4;   { Ouverture en lecture }
    O_RDWR     = 6;   { Ouverture en lecture/écriture }
+
+   O_CREAT    = 8;
+   O_EXCL     = 16;
 
    { Inodes flags }
    I_RO       = 4;   { Read }
@@ -73,12 +76,13 @@ type
       read  : function (fichier : P_file_t ; buf : pointer ; count : dword) : dword;
       write : function (fichier : P_file_t ; buf : pointer ; count : dword) : dword;
       seek  : function (fichier : P_file_t ; offset, whence : dword) : dword;
+      ioctl : function (fichier : P_file_t ; req : dword ; argp : pointer) : dword;
    end;
 
 
    inode_operations = record
       default_file_ops : P_file_operations;
-      lookup : function (dir : P_inode_t ; name : string ; len : dword ; res_inode : P_inode_t) : boolean;
+      lookup : function (dir : P_inode_t ; name : pchar ; len : dword ; res_inode : P_inode_t) : boolean;
    end;
 
 

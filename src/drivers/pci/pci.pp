@@ -111,7 +111,7 @@ begin
 
       end; { -> while }
 
-   printk('PCI: not on this machine !!!\n', []);
+{   printk('PCI: not on this machine !!!\n', []);}
 
 end; { -> procedure }
 

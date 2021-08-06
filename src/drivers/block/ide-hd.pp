@@ -139,12 +139,15 @@ var
 
 begin
 
-   major := inode^.dev_maj;
-   minor := inode^.dev_min;
+   major := inode^.rdev_maj;
+   minor := inode^.rdev_min;
    drv   := minor div 64;
 
    if (drive_info[major, drv].ide_type <> $FF) and (drive_info[major, drv].part[minor].p_type <> $00) then
-       result := 0
+       begin
+          fichier^.pos := 0;
+	  result := 0;
+       end
    else
        result := -1;
 end;
@@ -216,6 +219,10 @@ begin
    base   := drive_info[major, 0].IO_base;
    status := inb(base + STATUS_REG);
 
+   {$IFDEF DEBUG}
+      printk('hd_read_intr: status = %h2\n', [status]);
+   {$ENDIF}
+
    if ((status and (BUSY_STAT or READY_STAT or DRQ_STAT or ECC_STAT or
                    ERR_STAT)) = (READY_STAT or DRQ_STAT)) then
       begin
@@ -224,6 +231,8 @@ begin
 	 reg := base + DATA_REG;
 	 buf := cur_hd_req^.buffer;
 	 asm
+	    pushfd
+	    cli
 	    mov   ecx, 256
 	    mov   edi, buf
 	    xor   edx, edx
@@ -232,6 +241,7 @@ begin
 	       in    ax , dx
 	       stosw
 	    loop @read_loop
+	    popfd
 	 end;
 	 cur_hd_req^.errors := 0;
 	 cur_hd_req^.buffer += 512;
@@ -241,11 +251,12 @@ begin
 	 { Il n'y a plus de secteurs à lire. La requête est terminée }
 	     begin
 	        asm
+		   pushfd
 		   cli
 		end;
 		do_hd := @unexpected_hd_intr;
 		asm
-		   sti
+		   popfd
 		end;
 	        end_request(major, TRUE);
 	     end
@@ -339,7 +350,11 @@ begin
 	 end;
 
       { Send command }
+      {$IFDEF DEBUG}
+         printk('hd_out: sending command\n', []);
+      {$ENDIF}
       outb(base + CMD_REG, cmd);
+      {schedule;}
 
    end
    else
@@ -425,6 +440,10 @@ begin
 	        printk('unknown hd_command !!!\n', []);
 	     end;
    end;
+
+   {$IFDEF DEBUG}
+      printk('do_hd_request: exiting\n', []);
+   {$ENDIF}
 
 end;
 

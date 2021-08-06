@@ -1,23 +1,21 @@
 {******************************************************************************
  * fork.pp
  *
- * Permet de créer des processus
+ * Create user processes and kernel thread
  *
  * Copyleft 2002 GaLi
  *
- * version 0.2a - 20/07/2002 - GaLi - Correction d'un bug (pile utilisateur mal
- *                                    copiée)
+ * version 0.2a - 20/07/2002 - GaLi - Correct a bug (user stack wasn't
+ *                                    correctly copied)
  *
- * version 0.2  - 15/07/2002 - GaLi - Correction d'un bug (mauvaises valeurs
- *                                    de retour pour le père et le fils)
+ * version 0.2  - 15/07/2002 - GaLi - Correct a bug (Bad return values)
  *
- * version 0.1a - 23/06/2002 - GaLi - Correction d'un bug (mauvaise valeurs
- *                                    des registres ESP et EBP)
+ * version 0.1a - 23/06/2002 - GaLi - Correct a bug (ESP and EBP had bad values)
  *
- * version 0.1  - 20/06/2002 - GaLi - Tous les processus ont désormais le même
- *                                    espace d'adresses virtuelles.
+ * version 0.1  - 20/06/2002 - GaLi - All processes have the same virtual
+ *                                    address
  *
- * version 0.0  - ??/05/2002 - GaLi - Version initiale
+ * version 0.0  - ??/05/2002 - GaLi - Initial version
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -44,6 +42,7 @@ unit fork;
 INTERFACE
 
 
+{$I errno.inc}
 {$I fs.inc}
 {$I mm.inc}
 {$I process.inc }
@@ -55,16 +54,20 @@ var
    mem_map : P_page; external name 'U_MEM_MEM_MAP';
 
 
-procedure memcpy (src, dest : pointer ; size : dword); external;
-procedure printk (format : string ; args : array of const); external;
-procedure init_tss (tss : P_tss_struct); external;
 procedure add_task (task : P_task_struct); external;
-procedure schedule; external;
-procedure panic (reason : string); external;
-function  kmalloc (len : dword) : pointer; external;
-function  set_tss_desc (addr : pointer) : dword; external;
+function  get_free_page : pointer; external;
 function  get_new_pid : dword; external;
+procedure init_tss (tss : P_tss_struct); external;
+procedure kfree_s (addr : pointer ; size : dword); external;
+function  kmalloc (len : dword) : pointer; external;
 function  MAP_NR (adr : pointer) : dword; external;
+procedure memcpy (src, dest : pointer ; size : dword); external;
+procedure panic (reason : string); external;
+procedure printk (format : string ; args : array of const); external;
+procedure push_page (page_adr : pointer); external;
+procedure schedule; external;
+function  set_tss_desc (addr : pointer) : dword; external;
+
 
 
 
@@ -75,12 +78,9 @@ IMPLEMENTATION
 {******************************************************************************
  * sys_fork
  *
- * Entrée : Aucune
- * Retour : PID du fils pour le processus père et 0 pour le processus fils si
- *          tout c'est bien passé (-1 en cas d'erreur)
- *
- * Cette fonction est éxécutée lors d'un appel système 'fork'. On est donc en
- * mode noyau.
+ * INPUT  : None
+ * OUTPUT : -1 on error. On success, the PID of the child is returned to the
+ *          parent and zero is returned to the child.
  *
  *****************************************************************************}
 function sys_fork : dword; cdecl; [public, alias : 'SYS_FORK'];
@@ -97,9 +97,8 @@ var
 
 begin
 
-{* Tout d'abord on va récupérer l'adresse à laquelle le nouveau processus
- * devra commencer son éxécution ainsi que quelques registres du processus qui
- * a appelé sys_fork *}
+   {* First, we have to get the new process start address and some registers
+    * saved on the stack by the calling process *}
 
   asm
      mov   eax, [ebp + 44]
@@ -111,7 +110,7 @@ begin
      mov   eax, [ebp + 60]   { Debug }
      mov   r_ss, eax         { ... }
      mov   eax, [ebp + 48]   { ... }
-     mov   r_cs, eax         { Fin debug }
+     mov   r_cs, eax         { End debug }
      mov   eax, [ebp + 52]
      mov   eflags, eax
      mov   eax, cr3
@@ -121,37 +120,38 @@ begin
      mov   eax, [esi]
      and   eax, $FFFFF000
      mov   page_table_original, eax
-     sti   { On réactive les interruptions }
+     sti   { Set interrupts on }
   end;
 
 {$IFDEF DEBUG}
-   printk('current(%h) ss: %h4 esp: %h cs: %h4 eip: %h\neflags: %h ebp: %h\n', [current^.tss_entry, r_ss, r_esp, r_cs, ret_adr, eflags, r_ebp]);
-   printk('\nWelcome in sys_fork !!!\nNew task values:\n', []);
+   printk('fork: current(%h) ss: %h4 esp: %h cs: %h4 eip: %h\nfork: eflags: %h ebp: %h', [current^.tss_entry, r_ss, r_esp, r_cs, ret_adr, eflags, r_ebp]);
+   printk('\nfork: New task values:\n', []);
 {$ENDIF}
 
-   cr3_task    := kmalloc(4096);   { Adresse du répertoire global de pages pour
-                                     le nouveau processus }
-   page_table  := kmalloc(4096);
-   new_stack0  := kmalloc(4096);   { Nouvelle pile (mode noyau) }
-   new_stack3  := kmalloc(4096);   { Nouvelle pile (mode utilisateur) }
+   cr3_task    := get_free_page;   {* New global page directory address for 
+                                    * the new process *}
+   page_table  := get_free_page;
+   new_stack0  := get_free_page;   { New stack (kernel mode) }
+   new_stack3  := get_free_page;   { New stack (user mode) }
    new_task_struct := kmalloc(sizeof(task_struct));
    new_tss         := kmalloc(sizeof(tss_struct));
    new_pid         := get_new_pid;
 
-   {* cr3_task    : pointeur sur le répertoire global de pages du nouveau 
-    *               processus
-    * page_table  : pointeur vers la table de pages allouée au processus
-    * stack_entry : pointeur vers la table de pages pour les piles *}
+   {* cr3_task    : pointer to the new global page directory
+    * page_table  : pointer to the new page table
+    * stack_entry : pointer to the page table (for stacks) *}
 
+   { FIXME: If a call to get_free_page() failed, we have to exit fork() with an error code. But, if we
+            exit and a call to get_free_page() suceed, we first have to free memory with push_page() }
    if ((new_stack0 = NIL) or (new_stack3 = NIL) or (cr3_task = NIL)
    or (new_task_struct = NIL) or (new_tss = NIL)) then
       begin
          printk('sys_fork: Cannot create a new task (not enough memory)\n', []);
-	 result := -1;
+	 result := -ENOMEM;
 	 exit;
       end;
 
-   { On va remplir new_task_struct et new_tss avec les bonnes valeurs }
+   { We are going to fill new_task_struct and new_tss with the correct values }
 
    memcpy(current, new_task_struct, sizeof(task_struct));
    new_task_struct^.cr3   := cr3_task;
@@ -166,32 +166,37 @@ begin
    if (new_task_struct^.tss_entry = -1) then
       begin
          printk('sys_fork: Cannot set tss_entry !!!\n', []);
-	 result := -1;
+	 push_page(cr3_task);
+	 push_page(page_table);
+	 push_page(new_stack0);
+	 push_page(new_stack3);
+	 kfree_s(new_task_struct, sizeof(task_struct));
+	 kfree_s(new_tss, sizeof(tss_struct));
+	 result := -ENOMEM;   { FIXME: may be you could use another error code }
 	 exit;
       end;
 
 {$IFDEF DEBUG}
-   printk('tss_entry: %h   stack0: %h  stack3: %h\n', [new_task_struct^.tss_entry, new_stack0, new_stack3]);
-   printk('CR3: %h  page_table: %h\n', [cr3_task, page_table]);
+   printk('fork: tss_entry: %h   stack0: %h  stack3: %h\n', [new_task_struct^.tss_entry, new_stack0, new_stack3]);
+   printk('fork: CR3: %h  page_table: %h\n', [cr3_task, page_table]);
 {$ENDIF}
 
 
-   { On va remplir le TSS du nouveau processus }
+   { We are going to fill the new process TSS }
 
-   memcpy(current^.tss, new_tss, sizeof(tss_struct));
+   init_tss(new_tss);
    new_tss^.esp0   := new_stack0 + 4096;
    new_tss^.esp    := pointer(r_esp);
    new_tss^.ebp    := pointer(r_ebp);
    new_tss^.cr3    := cr3_task;
    new_tss^.eflags := $202;
-   new_tss^.eax    := 0;   { Valeur de retour du processus fils }
+   new_tss^.eax    := 0;   { Return value for the child }
    new_tss^.eip    := ret_adr;
 
    { Copy user mode stack }
    memcpy(pointer($FFC00000), new_stack3, 4096);
 
-   {* On remplit le répertoire global de pages (on recopie celui du processus
-    * père) *}
+   { Fill global page directory (We copy the parent's one }
    memcpy(cr3_original, cr3_task, 4096);
 
    cr3_task[1023] := longint(page_table) or USER_PAGE;
@@ -203,26 +208,11 @@ begin
     * 'page_fault' (exception 14) qui lui allouera une nouvelle page afin
     * qu'il puisse écrire dessus (voir int.pp) 
     *
-    * REMARQUE: seul la pile utilisateur n'est pas partagée *}
+    * NOTE: only the user stack is not shared *}
    for i := 1 to current^.size do
    {* We begin with '1' because we don't care about user mode stack (already
     * initialized) which is entry #0 *}
       begin
-{*         asm
- *	    mov   esi, page_table_original
- *	    add   esi, 4   { On ne s'occupe pas de la pile utilisateur }
- *	    mov   edi, page_table
- *	    add   edi, 4   { On ne s'occupe pas de la pile utilisateur }
- *	    mov   eax, [esi]
- *	    and   eax, 11111111111111111111111111111101b
- *	    mov   index, eax
- *	    mov   [esi], eax
- *	    mov   [edi], eax
- *	    add   esi, 4
- *	    add   edi, 4
- *	    mov   page_table, edi
- *	    mov   page_table_original, esi
- *	 end; *}
          page_table[i] := page_table_original[i] and (not WRITE_PAGE);
 	 page_table_original[i] := page_table_original[i] and (not WRITE_PAGE);
 	 asm
@@ -234,15 +224,23 @@ begin
 	 end;
       end;
 
+   result := new_pid;   { Return value for the parent }
+
+   {$IFDEF DEBUG}
+      printk('EXITING FROM FORK (ret_adr = %h) !!!!!!!!!!\n', [ret_adr]);
+   {$ENDIF}
+
    asm
-      cli   { Section critique }
+      cli   { Critical section }
    end;
 
    add_task(new_task_struct);
 
    schedule;
 
-   result := new_pid;   { Valeur de retour du processus père }
+   asm
+      sti
+   end;
 
 end;
 
@@ -251,9 +249,9 @@ end;
 {******************************************************************************
  * kernel_thread
  *
- * Entrée : point d'entrée du thread
+ * INPUT : Thread entry point
  *
- * Cette procédure créé un processus noyau
+ * This procedure creates a kernel thread
  *****************************************************************************}
 procedure kernel_thread (addr : pointer); [public, alias : 'KERNEL_THREAD'];
 
@@ -268,8 +266,8 @@ var
 begin
 
    tss        := kmalloc(sizeof(tss_struct));
-   new_stack0 := kmalloc(4096);
-   new_stack3 := kmalloc(4096);
+   new_stack0 := get_free_page;   { Instead of kmalloc }
+   new_stack3 := get_free_page;   { Instead of kmalloc }
    new_task   := kmalloc(sizeof(task_struct));
 
    if ((tss = NIL) or (new_stack0 = NIL) or (new_stack3 = NIL) or (new_task = NIL)) then
@@ -306,7 +304,7 @@ begin
    new_task^.pid       := get_new_pid;
    new_task^.uid       := 0;
    new_task^.gid       := 0;
-   new_task^.ppid      := 0;   { Les processus noyau n'ont pas de père }
+   new_task^.ppid      := 0;   { Kernel thread have no parent }
    new_task^.next_run  := NIL;
    new_task^.prev_run  := NIL;
 

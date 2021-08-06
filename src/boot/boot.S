@@ -70,7 +70,7 @@
     mov   ds , ax
     mov   es , ax
     mov   ss , ax
-    mov   sp , 1000h              ; 64 Kb stack ( why not ? )
+    mov   sp , 1000h              ; 4 Kb stack ( why not ? )
 
     nop
 
@@ -483,7 +483,7 @@
         dw 0
 
     MSG:
-        db 'Loading DelphineOS ...  ', FINCHAINE
+        db 'Loading DelphineOS...  ', FINCHAINE
 
     OK:
         db 'OK', 0Ah, 0Dh, 0Ah, 0Dh, FINCHAINE

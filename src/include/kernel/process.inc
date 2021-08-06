@@ -1,4 +1,3 @@
-
 {$IFNDEF __PROCESS__}
 {$DEFINE __PROCESS__}
 
@@ -36,6 +35,7 @@ type
    end;
 
    task_struct = record
+      pid          : dword;
       state        : byte;
       counter      : byte;      { Nb de ticks qu'il reste }
       tty          : byte;      { Console associée au processus }
@@ -44,7 +44,6 @@ type
       tss_entry    : dword;     { Numero du descripteur de TSS }
       tss          : ^tss_struct;
       errno        : dword;
-      pid          : dword;
       ppid         : dword;     { PID du processus père }
       uid          : dword;
       gid          : dword;
@@ -53,6 +52,7 @@ type
       page_table   : P_pte_t;   { Table de pages (4Mo) }
       file_desc    : array[0..31] of P_file_t;
       root, pwd    : P_inode_t;
+      wait_queue   : P_wait_queue;
       next_task    : P_task_struct;
       prev_task    : P_task_struct;
       next_run     : P_task_struct;

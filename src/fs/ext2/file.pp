@@ -68,7 +68,9 @@ IMPLEMENTATION
  *
  * Output : bytes read or -1
  *
- * Read on file on an ext2 filesystem
+ * Read a file on an ext2 filesystem
+ *
+ * WARNING : NOT FULLY TESTED, but it should work :-)
  *****************************************************************************}
 function ext2_file_read (fichier : P_file_t ; buffer : pointer ; count : dword) : dword; [public, alias : 'EXT2_FILE_READ'];
 
@@ -77,37 +79,47 @@ var
    real_block   : dword;
    nb_blocks    : dword; { Number of blocks to read }
    blocksize    : dword; { Logical filesystem block size in bytes }
-   i, ofs       : dword;
-   tmp_count    : dword;
+   i, file_ofs  : dword;
    major, minor : byte;
    inode        : P_inode_t;
    bh           : P_buffer_head;
-test : pointer;
-test1 : dword;
 
+   test : pointer;
+   test1 : dword;
+   save : pointer;
 begin
+
+   {$IFDEF DEBUG}
+      save := buffer;
+   {$ENDIF}
+
+   blocksize   := fichier^.inode^.sb^.blocksize;
+
+   {$IFDEF DEBUG}
+      printk('ext2_file_read: going to read %d bytes to %h (blocksize=%d)\n', [count, buffer, blocksize]);
+   {$ENDIF}
 
    if (fichier^.pos + count > fichier^.inode^.size) then
        begin
           while (fichier^.pos + count > fichier^.inode^.size) do
 	         count -= 1;
+	  {$IFDEF DEBUG}
+	     printk('ext2_file_read: modify count to %d\n', [count]);
+	  {$ENDIF}
        end;
 
    result      := count;   { If everything is ok, this will be the result }
-   blocksize   := fichier^.inode^.sb^.blocksize;
    major       := fichier^.inode^.dev_maj;
    minor       := fichier^.inode^.dev_min;
    inode       := fichier^.inode;
    block       := (fichier^.pos + blocksize) div blocksize;
-   ofs         := fichier^.pos mod blocksize;
+   file_ofs    := fichier^.pos;
    nb_blocks   := count div blocksize;
    if (count mod blocksize <> 0) then
        nb_blocks += 1;
-   tmp_count   := count;
 
    {$IFDEF DEBUG}
-      printk('ext2_read_file: going to %d blocks from file block %d\n', [nb_blocks, block]);
-      printk('ext2_read_file: file pos : %d\n', [fichier^.pos]);
+      printk('ext2_file_read: going to read %d blocks from block %d (file_ofs=%d)\n', [nb_blocks, block, file_ofs]);
    {$ENDIF}
 
    { while count > 0 ??? }
@@ -115,12 +127,12 @@ begin
    begin
       real_block := get_real_block(block, inode);
       {$IFDEF DEBUG}
-         printk('real block: %d  ofs: %d  count: %d  tmp_count: %d\n', [real_block, ofs, count, tmp_count]);
+         printk('ext2_file_read: reading block %d (%d)\n', [i, real_block]);
       {$ENDIF}
       bh := bread(major, minor, real_block, blocksize);
       if (bh = NIL) then
           begin
-	     printk('EXT2-fs (read file): unable to read block %d\n', [real_block]);
+	     printk('ext2_file_read: unable to read block %d\n', [real_block]);
 	     result := -1;
 	     exit;
 	  end;
@@ -132,27 +144,31 @@ begin
             mov eax, [esi]
             mov test1, eax
          end;
-         printk('ext2_read_file (test): %h\n', [test1]);
+         printk('ext2 (data): %d %h ', [block, test1]);
       {$ENDIF}
 
-      if (tmp_count < blocksize) then
-      { This is the last block }
-          begin
-             memcpy(pointer(bh^.data + ofs), buffer, tmp_count);
-	  end
-      else
-          begin
-             memcpy(pointer(bh^.data + ofs), buffer, blocksize - ofs);
-	     buffer += blocksize - ofs;
-	     tmp_count  -= blocksize - ofs;
-	  end;
+      { Copying data to buffer }
+      {$IFDEF DEBUG}
+         printk('ext2_file_read: copying %d bytes from block %d (block_ofs=%d)\n', [(block*blocksize)-file_ofs, i, file_ofs-((block-1)*blocksize)]);
+      {$ENDIF}
+      memcpy(pointer(bh^.data + file_ofs-((block-1)*blocksize)), buffer, (block*blocksize)-file_ofs);
 
-      ofs := 0;
+      buffer   += (block*blocksize)-file_ofs;
+      file_ofs += (block*blocksize)-file_ofs;
+      block += 1;
 
    end;
 
    { Update file position }
    fichier^.pos += count;
+
+   {$IFDEF DEBUG}
+      for i := block to (block + nb_blocks - 1) do
+      begin
+         printk('ext2_file_read: (buffer data): %h @ %h\n', [longint(save^), save]);
+         save += blocksize;
+      end;
+   {$ENDIF}
 
 end;
 
@@ -196,11 +212,9 @@ begin
 		 result := 0;
 	      end;
 	  buffer := bh^.data;
-	  result := buffer[block - 12];
+	  result := buffer[(block - 12) - 1];
        end
-
    else
-
        begin
           printk('EXT2-fs (read file): unable to read block %d (not supported)\n', [block]);
 	  result := 0;

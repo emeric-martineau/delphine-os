@@ -30,7 +30,7 @@
 {$I sched.inc }
 
 
-{$DEFINE UTS_RELEASE:='0.0.0c'}
+{$DEFINE UTS_RELEASE:='0.0.0d'}
 
 
 { External variables }
@@ -83,9 +83,9 @@ begin
    nr_tasks    := 1;
    nr_running  := 1;
 
-   new_stack3  := kmalloc(4096);   { init user stack }
-   page_table  := kmalloc(4096);
-   init_desc   := kmalloc(4096);   { init we'll be loaded in this page }
+   new_stack3  := get_free_page;   { init user stack }
+   page_table  := get_free_page;
+   init_desc   := get_free_page;   { init we'll be loaded in this page }
    init_struct := kmalloc(sizeof(task_struct));
 
    if ((new_stack3 = NIL) or (page_table = NIL) or (init_desc = NIL) or (init_struct = NIL)) then
@@ -97,7 +97,7 @@ begin
    { Fill init TSS }
 
    asm
-      mov   eax, cr3        { CR3 has been initialized by 'init_paging' }
+      mov   eax, cr3        { CR3 has been initialized by init_paging() }
       mov   cr3_init, eax   { see src/mm/init_mem.pp }
    end;
 
@@ -133,7 +133,7 @@ begin
    {* On va maintenant mettre à jour le répertoire global de page afin de
     * pouvoir utiliser des adresses virtuelles dans init *}
 
-   memcpy(@init, init_desc, 1024);
+   memcpy(@init, init_desc, 4096);
    cr3_init[1023] := longint(page_table) or USER_PAGE;
    page_table[0]  := longint(new_stack3) or USER_PAGE;
    page_table[1]  := longint(init_desc) or USER_PAGE;
@@ -141,7 +141,7 @@ begin
    { On initialise pid_table et on enregistre init 'à la main' dans la liste
      des tâches }
    
-   pid_table := kmalloc(4096);
+   pid_table := get_free_page;
    for i := 1 to 1022 do
        pid_table^.pid_nb[i] := NIL;
 

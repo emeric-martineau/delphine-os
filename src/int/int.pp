@@ -31,7 +31,7 @@ unit int;
 
 INTERFACE
 
-{$DEFINE DEBUG}
+{DEFINE DEBUG}
 
 {$I fs.inc}
 {$I mm.inc}
@@ -43,7 +43,10 @@ procedure memcpy (src, dest : pointer ; size : dword); external;
 procedure outb (port : word ; val : byte); external;
 procedure panic (reason : string); external;
 procedure print_registers; external;
-function  get_phys_adr (adr : pointer) : pointer; external;
+procedure set_page_rights (adr : pointer ; r :dword); external;
+function  get_free_page : pointer; external;
+function  get_page_rights (adr : pointer) : dword; external;
+function  get_phys_addr (adr : pointer) : pointer; external;
 function  kmalloc (size : dword) : pointer; external;
 function  btod (val : byte) : dword; external;
 function  inb (port : word) : byte; external;
@@ -370,6 +373,17 @@ end;
  *
  * Se déclenche lorsqu'une page est demandée et n'est pas présente en mémoire.
  * Il faudra donc gerer la memoire virtuelle ici.
+ *
+ * Error code bits definition :
+ *
+ *   bit 0: 0 -> page not present
+ *          1 -> protection violation
+ *
+ *   bit 1: 0 -> read fault
+ *          1 -> write fault
+ *
+ *   bit 2: 0 -> error in kernel mode
+ *          1 -> error in user mode
  *****************************************************************************}
 procedure exception_14; [public, alias : 'EXCEPTION_14'];
 
@@ -380,6 +394,7 @@ var
    glob_index : dword;
    fault_adr  : pointer;
    new_page   : pointer;
+   r_eip      : dword;
 
 begin
 
@@ -388,35 +403,42 @@ begin
       sti   { Set interrupts on }
       mov   eax, cr2
       mov   r_cr2, eax
+      mov   eax, [ebp + 8]
+      mov   r_eip, eax
       mov   eax, [ebp + 4]   { Get error code }
       and   eax, 111b
       mov   error_code, eax
    end;
 
    {$IFDEF DEBUG}
-      printk('\n14: %d@%h\n', [error_code, r_cr2]);
+      printk('14: %d@%h  rights=%d  EIP=%h\n', [error_code, r_cr2, get_page_rights(get_phys_addr(r_cr2)), r_eip]);
    {$ENDIF}
 
    if (error_code and $4) <> $4 then
        begin
-           printk('\nPage fault in kernel (fuckin'' bad news !!!)\n', []);
-	   printk('CR2: %h   error_code: %h\n', [r_cr2, error_code]);
+           printk('\nPage fault in kernel mode (fuckin'' bad news !!!) PID=%d\n', [current^.pid]);
+	   printk('CR2: %h   error_code: %d EIP=%h\n', [r_cr2, error_code, r_eip]);
 	   panic('kernel panic');
        end
-   else
+   else    { The page fault appeared in user mode }
        begin
            if (error_code and $1) = $1 then
 	       begin
+
 	           {* printk('\nCurrent process is trying to access a protected page => killing it...\n', []);
 		    * printk('CR2: %h   error_code: %h\n', [r_cr2, error_code]); *}
-		   fault_adr := get_phys_adr(r_cr2);
+
+		   fault_adr := get_phys_addr(r_cr2);
 
 		   {* Ci fault_page appartient aux pages adressables par le
 		    * processus, on lui en alloue une autre. Sinon, on le tue
 		    * (il a tenté un accès illégal quand même !!!) *}
-		   if ((error_code and $FFFFF000) > $FFC01000) then
+
+		   if ((longint(fault_adr) and $FFFFF000) > $FFC01000) then
 		   begin
-		      {* printk('fault_adr: %h\n', [fault_adr]); *}
+		      {$IFDEF DEBUG}
+		         printk('14: mem_map count for this page=%d\n', [mem_map[MAP_NR(fault_adr)].count]);
+		      {$ENDIF}
 		      if (mem_map[MAP_NR(fault_adr)].count > 1) then
 		      begin
 		         asm
@@ -426,7 +448,9 @@ begin
 			 asm
 			    sti
 			 end;
-		         new_page := kmalloc(4096);
+		         new_page := get_free_page;
+			 if (new_page = NIL) then
+			     panic('exception 14: not enough memory');
 
 		         { On recopie les données qui sont dans la page
 			   partagée }
@@ -454,7 +478,7 @@ begin
 		            shl   eax, 2
 		            add   ebx, eax
 		            mov   eax, new_page
-		            or    eax, 7
+		            or    eax, 7   { Access rights }
 		            mov   [ebx], eax
 		            mov   eax, cr3  {* On vide le cache pour que la
 			                     * nouvelle entrée soit prise en
@@ -493,22 +517,22 @@ begin
 		   asm
 		      popad
 		      leave
-		      pop   eax   {* On enlève le code d'erreur de la pile
-		                   * (voir docs Intel) *}
+		      add   esp, 4   {* On enlève le code d'erreur de la pile
+		                      * (voir docs Intel) *}
 		      iret
 		   end;
 		   end
 		   else
 		   begin
 		      printk('Process %d is trying to accces a protected page !!!\n', [current^.pid]);
-		      printk('%h2@%h\n', [error_code, r_cr2]);
+		      printk('%d@%h  EIP=%h\n', [error_code, r_cr2, r_eip]);
 		      printk('Killing it !!!\n', []);
 		      panic('');
 		      asm
 		         popad
 			 leave
-			 pop   eax{* On enlève le code d'erreur de la pile
-			           * (voir docs Intel) *}
+			 pop   eax   {* On enlève le code d'erreur de la pile
+			              * (voir docs Intel) *}
 		         {iret}
 			 cli
 		         hlt
@@ -521,8 +545,8 @@ begin
 	        * en mode utilisateur qui veut accéder à une de ces pages
 		* alors que celle-ci n'est pas pésente en RAM. C'est donc ici
 		* que l'on gère une partie du swapping *}
-	           printk('\nSwapping not implemented yet !!!\n', []);
-		   printk('CR2: %h   error_code: %h\n', [r_cr2, error_code]);
+	           printk('\nSwapping not implemented yet (PID=%d) !!!\n', [current^.pid]);
+		   printk('CR2: %h  error_code: %d  EIP=%h\n', [r_cr2, error_code, r_eip]);
 		   panic('');
 	       end;
        end;

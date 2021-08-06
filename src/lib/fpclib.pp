@@ -71,7 +71,7 @@ end;
  *
  * This procedure is ONLY used by the FreePascal Compiler
  *****************************************************************************}
-procedure init; [public, alias : 'FPC_INITIALIZEUNITS'];
+procedure initialize_units; [public, alias : 'FPC_INITIALIZEUNITS'];
 begin
 end;
 

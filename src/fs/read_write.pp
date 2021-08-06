@@ -32,6 +32,7 @@ INTERFACE
 {DEFINE DEBUG}
 
 
+{$I errno.inc}
 {$I fs.inc}
 {$I process.inc}
 {$I sched.inc }
@@ -67,8 +68,8 @@ begin
 
    if (fd >= OPEN_MAX) then
        begin
-          printk('lseek: fd is > %d\n', [OPEN_MAX - 1]);
-	  result := -1;
+          printk('VFS (lseek): fd number is too big (%d)\n', [fd]);
+	  result := -EBADF;
 	  exit;
        end;
 
@@ -76,8 +77,15 @@ begin
 
    if (fichier = NIL) then
        begin
-          printk('lseek fd %d is not a valid file desciptor\n', [fd]);
-	  result := -1;
+          printk('VFS (lseek): fd %d is not a valid file desciptor\n', [fd]);
+	  result := -EBADF;
+	  exit;
+       end;
+
+   if (fichier^.inode = NIL) then
+       begin
+          printk('VFS (lseek): inode not defined fo fd %d (kernel bug ???)\n', [fd]);
+	  result := -EBADF;
 	  exit;
        end;
 
@@ -87,8 +95,8 @@ begin
              SEEK_SET: begin
                           if (offset > fichier^.inode^.size) then
 		              begin
-		                 printk('lseek: offset > file size\n', []);
-			         result := -1;
+		                 printk('VFS (lseek): offset > file size\n', []);
+			         result := -EINVAL;
 			         exit;
 		              end
 		          else
@@ -97,22 +105,22 @@ begin
              SEEK_CUR: begin
                           if (fichier^.pos + offset > fichier^.inode^.size) then
 		              begin
-		                 printk('lseek: current ofs + ofs > file size\n', []);
-			         result := -1;
+		                 printk('VFS (lseek): current ofs + ofs > file size\n', []);
+			         result := -EINVAL;
 			         exit;
 		              end
 		          else
 		              fichier^.pos += offset;
                         end;
              SEEK_END: begin
-                          printk('lseek: cannot add offset to current file size (not supported)\n', []);
-		          result := -1;
+                          printk('VFS (lseek): cannot add offset to current file size (not supported)\n', []);
+		          result := -ENOSYS;   { May we could return another value ??? }
 		          exit;
                        end;
              else
                 begin
-		   printk('lseek: whence parameter has a bad value (%d)\n', [whence]);
-		   result := -1;
+		   printk('VFS (lseek): whence parameter has a bad value (%d)\n', [whence]);
+		   result := -EINVAL;
 		   exit;
 		end;
           end;
@@ -122,8 +130,8 @@ begin
       begin
          if (fichier^.op = NIL) or (fichier^.op^.seek = NIL) then
 	     begin
-	        printk('seek: no seek operation defined for this file\n', []);
-		result := -1;
+	        printk('VFS (lseek): no seek operation defined for this file\n', []);
+		result := -ENOSYS;   { May we could return another value ??? }
 	     end
 	 else
 	     begin
@@ -151,27 +159,15 @@ var
 
 begin
 
-{ NOTE : It may be great to check if we have read right !!! }
+{ FIXME: It may be great to check if we have read right !!! }
 
    asm
       sti   { Put interrupts on }
    end;
 
-   fichier := current^.file_desc[fd];
-
    { Check parameters }
    
-   {$IFNDEF DEBUG}
-   if ((fd >= OPEN_MAX) or (count < 0) or (fichier = NIL)
-    or (fichier^.inode = NIL) or (fichier^.op = NIL)
-    or (fichier^.op^.read = NIL)) then
-      begin
-         printk('VFS (read): cannot read file\n', []);
-         result := -1;
-	 exit;
-      end;
-   {$ELSE}
-   if (fd >= NR_OPEN) then
+   if (fd >= OPEN_MAX) then
        begin
           printk('VFS (read): fd is too big (%d)\n', [fd]);
 	  result := -1;
@@ -179,35 +175,37 @@ begin
        end;
    if (count < 0) then
        begin
-          printk('VFS (read): count < 0\n', []);
+          printk('VFS (read): count < 0 (%d)\n', [count]);
 	  result := -1;
 	  exit;
        end;
+
+   fichier := current^.file_desc[fd];
+
    if (fichier = NIL) then
        begin
-          printk('VFS (read): fd not defined\n', []);
+          printk('VFS (read): fd %d not defined\n', [fd]);
 	  result := -1;
 	  exit;
        end;
    if (fichier^.inode = NIL) then
        begin
-          printk('VFS (read): file inode not defined\n', []);
+          printk('VFS (read): inode not defined for fd %d\n', [fd]);
 	  result := -1;
 	  exit;
        end;
    if (fichier^.op = NIL) then
        begin
-          printk('VFS (read): file operations not defined\n', []);
+          printk('VFS (read): file operations not defined for fd %d\n', [fd]);
 	  result := -1;
 	  exit;
        end;
    if (fichier^.op^.read = NIL) then
        begin
-          printk('VFS (read): read operation not defined\n', []);
+          printk('VFS (read): read operation not defined for fd %d\n', [fd]);
 	  result := -1;
 	  exit;
        end;
-   {$ENDIF}
 
    if (count = 0) then
       begin
@@ -215,13 +213,7 @@ begin
          exit;
       end;
 
-   if (fichier^.op <> NIL) and (fichier^.op^.read <> NIL) then
-       result := fichier^.op^.read(fichier, buf, count)
-   else
-       begin
-          printk('VFS: read operation is not defined for file %d\n', [fd]);
-	  result := -1;
-       end;
+   result := fichier^.op^.read(fichier, buf, count);
 
 end;
 
@@ -243,18 +235,60 @@ var
 
 begin
 
-{ NOTE : Il faudrait verifier si on a le droit d'écrire !!! }
+{ FIXME: Il faudrait verifier si on a le droit d'écrire !!! }
+
+   {$IFDEF DEBUG}
+      printk('sys_write: going to write %d bytes from %h to file %d\n', [count, buf, fd]);
+   {$ENDIF}
 
    asm
-      sti   { Put interruptions on }
+      sti   { Put interrupts on }
    end;
 
-   fichier := current^.file_desc[fd];
 
-   { Verification des paramètres }
-   if ((fd >= OPEN_MAX) or (count < 0) or (fichier = NIL)) then
+   { Check parameters }
+
+   if (fd >= OPEN_MAX) then
+       begin
+          printk('VFS (write): fd is too big (%d)\n', [fd]);
+	  result := -1;
+	  exit;
+       end;
+   
+   
+   if (count < 0) then
+       begin
+          printk('VFS (write): count < 0 (%d)\n', [count]);
+	  result := -1;
+	  exit;
+       end;
+   
+   fichier := current^.file_desc[fd];   
+   
+   if (fichier = NIL) then
       begin
-         printk('VFS (write): wrong parameters !!!\n', []);
+         printk('VFS (write): fd %d not defined\n', [fd]);
+         result := -1;
+	 exit;
+      end;
+
+   if (fichier^.inode = NIL) then
+      begin
+         printk('VFS (write): inode not defined for fd %d\n', [fd]);
+         result := -1;
+	 exit;
+      end;
+
+   if (fichier^.op = NIL) then
+      begin
+         printk('VFS (write): file operations not defined for fd %d\n', [fd]);
+         result := -1;
+	 exit;
+      end;
+
+   if (fichier^.op^.write = NIL) then
+      begin
+         printk('VFS (write): write operation not defined for fd %d\n', [fd]);
          result := -1;
 	 exit;
       end;
@@ -265,13 +299,7 @@ begin
          exit;
       end;
 
-   if (fichier^.op <> NIL) and (fichier^.op^.write <> NIL) then
-       result := fichier^.op^.write(fichier, buf, count)
-   else
-       begin
-          printk('VFS: write operation is not defined for file %d\n', [fd]);
-	  result := -1;
-       end;
+   result := fichier^.op^.write(fichier, buf, count);
 
 end;
 

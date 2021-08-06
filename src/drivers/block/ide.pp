@@ -111,7 +111,7 @@ IMPLEMENTATION
 
 const
    drive   : array[MASTER..SLAVE] of byte = ($A0, $B0);
-   hd_str  : array[3..6, 0..1] of string[4] = (('hda' + #0, 'hdb' + #0),
+   hd_str  : array[IDE0_MAJ..IDE3_MAJ, MASTER..SLAVE] of string[4] = (('hda' + #0, 'hdb' + #0),
                                                ('hdc' + #0, 'hdd' + #0),
                                                ('hde' + #0, 'hdf' + #0),
 					       ('hdg' + #0, 'hdh' + #0));
@@ -144,7 +144,7 @@ begin
    drive_nb := drive[minor div 64];
 
    asm
-       mov   ebx, 40000            { Number of tests }
+       mov   ebx, 70000            { Number of tests }
 
        mov   dx , base
        add   dx , DRIVE_HEAD_REG   { Drive register }
@@ -168,7 +168,7 @@ begin
      @time_out:
        mov   ret , 1
 
-      @end_func:
+     @end_func:
    end; { -> asm }
 
    if (ret = 1) then
@@ -654,6 +654,7 @@ begin
 
         printk('\n', []);
     end;
+
 end; { -> procedure }
 
 
@@ -952,6 +953,7 @@ begin
    hd_fops.read  := NIL;
    hd_fops.write := NIL;
    hd_fops.seek  := NIL;
+   hd_fops.ioctl := NIL;
 
    for i := IDE0_MAJ to IDE3_MAJ do
        begin

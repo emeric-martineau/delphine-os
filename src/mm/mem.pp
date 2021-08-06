@@ -57,8 +57,8 @@ INTERFACE
 
 
 var
-   total_memory   : dword; { en octets }
-   free_memory    : dword; { en octets }
+   total_memory   : dword; { in bytes }
+   free_memory    : dword; { in bytes }
    nb_free_pages  : dword;
    mem_map        : P_page;
    debut_pile     : pointer;
@@ -78,6 +78,7 @@ procedure full_free_to_full (i : dword ; src : P_page_desc);
 procedure full_to_full_free (i : dword ; src : P_page_desc);
 procedure full_free_to_free (i : dword ; src : P_page_desc);
 procedure kfree_s (addr : pointer ; size : dword);
+procedure unload_page_table (pt : P_pte_t);
 
 
 procedure printk (format : string ; args : array of const); external;
@@ -139,7 +140,6 @@ begin
    if (debut_pile = fin_pile) then
       begin
          result := get_free_dma_page;
-	 exit;
       end
    else
       begin
@@ -185,9 +185,8 @@ var
 begin
    if (debut_pile_dma = fin_pile_dma) then
       begin
-         printk('\nget_free_dma_pages: no more free pages !!!\n', []);
+         printk('get_free_dma_pages: no more free pages !!!\n', []);
          result := NIL;
-	 exit;
       end
    else
       begin
@@ -225,14 +224,14 @@ end;
  * Cette procédure remet dans la pile des pages libres la page pointée par
  * page_adr
  *****************************************************************************}
-procedure push_page (page_adr : pointer); [public, alias : 'PUSH_PAGE'];
+procedure push_page (page_addr : pointer); [public, alias : 'PUSH_PAGE'];
 
 var
     index : dword;
 
 begin
 
-   index := longint(page_adr) shr 12;
+   index := longint(page_addr) shr 12;
 
    asm
       pushfd
@@ -241,7 +240,10 @@ begin
 
    if (mem_map[index].count = 0) then
        begin
-           printk('push_page: Trying to push page a free page !!!\n', []);
+           printk('push_page: Trying to push page a free page (%h) !!!\n', [page_addr]);
+	   asm
+	      popfd
+	   end;
 	   exit;
        end
    else
@@ -250,11 +252,11 @@ begin
 	   if (mem_map[index].count = 0) then
 	   { On libère vraiment la page car plus aucun processus ne l'utilise }
 	       begin
-                   if (page_adr < pointer($1000000)) then
+                   if (page_addr < pointer($1000000)) then   { This a "DMA page" }
                        begin
                            asm
                                mov   edi, debut_pile_dma
-                               mov   eax, page_adr
+                               mov   eax, page_addr
                                mov   [edi], eax
                                add   edi, 4
                                mov   debut_pile_dma, edi
@@ -264,7 +266,7 @@ begin
                         begin
                            asm
                                mov   edi, debut_pile
-                               mov   eax, page_adr
+                               mov   eax, page_addr
                                mov   [edi], eax
                                add   edi, 4
                                mov   debut_pile, edi
@@ -274,7 +276,7 @@ begin
 		    nb_free_pages += 1;
 		    free_memory   += 4096;
 		    {$IFDEF DEBUG}
-		    {    printk('push_page: %h\n', [page_adr]); }
+		        printk('push_page: %h\n', [page_addr]);
 		    {$ENDIF}
 
                end;
@@ -311,10 +313,17 @@ begin
 
    if (len > 4096) then
       begin
-         printk('\nkmalloc: try to allocate %d bytes (>4096) !!!\n', [len]);
+         printk('kmalloc: try to allocate %d bytes (>4096) !!!\n', [len]);
          result := NIL;
 	 exit;
       end;
+
+   if (len = 4096) then
+   {* We put a warning here because it's better to call get_free_page() than kmalloc(4096)
+    * although it still works *}
+       begin
+           printk('\nkernel warning: kmalloc() called with len=4096\n\n', []);
+       end;
 
    { On va rechercher quelle entrée de size_dir utiliser }
 
@@ -482,7 +491,7 @@ begin
 	       { Le bloc n'a pas été trouvé dans la full_free_list => erreur }
 
 		  begin
-		     printk('\nkfree_s: Bad address passed to kernel (%h) !!!\n', [addr]);
+		     printk('kfree_s: Bad address passed to kernel (%h) !!!\n', [addr]);
 		     exit;
 		  end;
 	    end;
@@ -511,7 +520,7 @@ begin
 	       
 	       if (desc = NIL) then
 	          begin
-		     printk('\nkfree_s: Bad address passed to kernel (%h) !!!\n', [addr]);
+		     printk('kfree_s: Bad address passed to kernel (%h) !!!\n', [addr]);
 		     exit;
 		  end;
 	    end;
@@ -529,7 +538,7 @@ begin
 
    if ((block mod size_dir[i].size) <> 0) then
       begin
-         printk('\nkfree_s: Bad address passed to kernel (%h) !!!\n', [addr]);
+         printk('kfree_s: Bad address passed to kernel (%h) !!!\n', [addr]);
 	 exit;
       end;
 
@@ -881,7 +890,7 @@ begin
    
    if (desc = NIL) then
       begin
-         printk('\nkmalloc: No more free pages to init a free list\n', []);
+         printk('kmalloc: No more free pages to init a free list\n', []);
 	 result := 0;
 	 exit;
       end;
@@ -993,16 +1002,17 @@ end;
 
 
 {******************************************************************************
- * get_phys_page
+ * get_phys_addr
  *
- * Entrée : adresse virtuelle
- * Sortie : adresse physique
+ * Input  : virtual address
+ * Ouput : physical address
  *
- * Convertit une adresse virtuelle en adresse physique
+ * Converts a virtual address into a physical address
  *
- * REMARQUE : cette fonction ne peut etre appelée qu'en mode noyau
+ * NOTE : I don't think we have to put interrupts off because each process has
+ *        his own CR3 value (hope I'm right)
  *****************************************************************************}
-function get_phys_adr (adr : pointer) : pointer; [public, alias : 'GET_PHYS_ADR'];
+function get_phys_adr (adr : pointer) : pointer; [public, alias : 'GET_PHYS_ADDR'];
 
 var
    glob_index, page_index, ofs : dword;
@@ -1052,6 +1062,9 @@ end;
  *
  * Input  : physical address
  * Output : page rights
+ *
+ * NOTE : I don't think we have to put interrupts off because each process has
+ *        his own CR3 value (hope I'm right)
  *****************************************************************************}
 function get_page_rights (adr : pointer) : dword; [public, alias : 'GET_PAGE_RIGHTS'];
 
@@ -1061,8 +1074,8 @@ var
 
 begin
    asm
-      pushfd
-      cli   { Section critique }
+      {pushfd
+      cli}   { Section critique }
       mov   eax, adr
       push  eax
       shr   eax, 22   { On récupère les 10 bits de poids fort }
@@ -1080,11 +1093,56 @@ begin
       mov   ebx, page_index
       shl   ebx, 2
       mov   eax, [esi+ebx]
+      and   eax, $FFF
       mov   res, eax
-      popfd   { Fin section critique }
+      {popfd}   { Fin section critique }
    end;
 
    result := res;
+
+end;
+
+
+
+{******************************************************************************
+ * set_page_rights
+ *
+ * Input  : physical address, access rights
+ * Output : NONE
+ *
+ * NOTE : I don't think we have to put interrupts off because each process has
+ *        his own CR3 value (hope I'm right)
+ *
+ * THIS PROCEDURE ISN'T USED FOR THE MOMENT !!!	 (so, it hasn't been tested)
+ *****************************************************************************}
+procedure set_page_rights (adr : pointer ; r :dword); assembler; [public, alias : 'SET_PAGE_RIGHTS'];
+
+var
+   glob_index, page_index, ofs : dword;
+
+asm
+   {pushfd
+   cli}   { Section critique }
+   mov   eax, adr
+   push  eax
+   shr   eax, 22   { On récupère les 10 bits de poids fort }
+   mov   glob_index, eax
+   pop   eax
+   shr   eax, 12
+   and   eax, 1111111111b
+   mov   page_index, eax
+      
+   mov   esi, cr3
+   mov   ebx, glob_index
+   shl   ebx, 2
+   mov   esi, [esi+ebx]
+   and   esi, 11111111111111111111000000000000b
+   mov   ebx, page_index
+   shl   ebx, 2
+   mov   eax, r
+   and   eax, $FFF   { FIXME: Just to avoid kernel bug (we could remove that later) }
+   or   [esi+ebx], eax
+   {popfd}   { Fin section critique }
 end;
 
 
@@ -1128,6 +1186,36 @@ begin
    asm
       popfd   { Fin section critique }
    end;
+
+end;
+
+
+
+{******************************************************************************
+ * unload_page_table
+ *
+ *****************************************************************************}
+procedure unload_page_table (pt : P_pte_t); [public, alias : 'UNLOAD_PAGE_TABLE'];
+
+var
+   i : dword;
+
+begin
+
+   i := 0;
+   while (pt[i] <> 0) and (i <= 1023) do
+   begin
+      push_page(pointer(pt[i] and $FFFFF000));   { Instead of kfree_s }
+      pt[i] := $0;
+      i += 1;
+      current^.size -= 1;
+   end;
+
+   current^.size += 1;
+
+   {$IFDEF DEBUG}
+      printk('unload_page_table: %d pages freed\n', [i]);
+   {$ENDIF}
 
 end;
 

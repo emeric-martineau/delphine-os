@@ -32,21 +32,30 @@ INTERFACE
 
 {DEFINE DEBUG}
 
-{$I fs.inc}
-{$I process.inc }
-{$I sched.inc }
+{$I process.inc}
+{I fs.inc}
+{$I wait.inc}
+{$I sched.inc}
 
 
 { External procedures and functions }
 
+procedure panic (reason : string); external;
 procedure printk (format : string ; args : array of const); external;
 procedure kfree_s (addr : pointer ; size : dword); external;
 procedure schedule; external;
-function  kmalloc (size : dword) : pointer; external;
+function  get_free_page : pointer; external;
 
 
+procedure add_task (task : P_task_struct);
 procedure add_to_runqueue (task : P_task_struct);
 procedure del_from_runqueue (task : P_task_struct);
+procedure del_task (task : P_task_struct);
+function  get_new_pid : dword;
+procedure sleep_on (p : PP_wait_queue);
+function  sys_getpid : dword; cdecl;
+function  sys_getuid : dword; cdecl;
+procedure wake_up (p : PP_wait_queue);
 
 
 
@@ -72,16 +81,19 @@ IMPLEMENTATION
  *
  * Insère un descripteur de processus au début de la liste
  *
- * REMARQUE : les interruptions doivent être coupées AVANT l'appel de cette
- *            procédure.
  *****************************************************************************}
 procedure add_task (task : P_task_struct); [public, alias : 'ADD_TASK'];
 
 begin
 
    {$IFDEF DEBUG}
-      printk('add_task: \n', []);
+      printk(' add_task: PID=%d ', [task^.pid]);
    {$ENDIF}
+
+   asm
+      pushfd
+      cli
+   end;
 
    nr_tasks += 1;
 
@@ -91,6 +103,10 @@ begin
    first_task^.prev_task := task;
 
    add_to_runqueue(task);
+
+   asm
+      popfd
+   end;
 
 end;
 
@@ -103,16 +119,19 @@ end;
  *
  * Efface un descripteur liste des processus
  *
- * REMARQUE : les interruptions doivent être coupées AVANT l'appel de cette
- *            procédure.
  *****************************************************************************}
 procedure del_task (task : P_task_struct); [public, alias : 'DEL_TASK'];
 
 begin
 
    {$IFDEF DEBUG}
-      printk('del_task: \n', []);
+      printk(' del_task: PID=%d ', [task^.pid]);
    {$ENDIF}
+
+   asm
+      pushfd
+      cli
+   end;
 
    nr_tasks -= 1;
 
@@ -120,6 +139,10 @@ begin
 
    task^.prev_task^.next_task := task^.next_task;
    task^.next_task^.prev_task := task^.prev_task;
+
+   asm
+      popfd
+   end;
 
 end;
 
@@ -132,15 +155,18 @@ end;
  *
  * Ajoute la tache dans la liste des taches à éxécuter
  *
- * REMARQUE : les interruptions doivent être coupées AVANT l'appel de cette
- *            procédure
  *****************************************************************************}
 procedure add_to_runqueue (task : P_task_struct);
 begin
 
    {$IFDEF DEBUG}
-      printk('add_to_runqueue: \n', []);
+      printk(' add_to_runqueue: PID=%d ', [task^.pid]);
    {$ENDIF}
+
+   asm
+      pushfd
+      cli
+   end;
 
    nr_running += 1;
 
@@ -150,6 +176,10 @@ begin
    first_task^.prev_run := task;
 
    task^.state := TASK_RUNNING;
+
+   asm
+      popfd
+   end;
 
 end;
 
@@ -162,13 +192,18 @@ end;
  *
  * Supprime un descripteur de processus de la liste
  *****************************************************************************}
-procedure del_from_runqueue (task : P_task_struct);
+procedure del_from_runqueue (task : P_task_struct); [public, alias : 'DEL_FROM_RUNQUEUE'];
 
 begin
 
    {$IFDEF DEBUG}
-      printk('del_from_runqueue: \n', []);
+      printk(' del_from_runqueue: PID=%d ', [task^.pid]);
    {$ENDIF}
+
+   asm
+      pushfd
+      cli
+   end;
 
    task^.prev_run^.next_run := task^.next_run;
    task^.next_run^.prev_run := task^.prev_run;
@@ -176,6 +211,10 @@ begin
    task^.state := TASK_INTERRUPTIBLE;
 
    nr_running -= 1;
+
+   asm
+      popfd
+   end;
 
 end;
 
@@ -222,17 +261,22 @@ begin
    if (cur_table^.nb_free_pids = 0) then
    { Il faut allouer une nouvelle pid_table_struct }
       begin
-         cur_table^.next := kmalloc(4096);
+         cur_table^.next := get_free_page;   { Instead of kmalloc }
+	 if (cur_table^.next = NIL) then
+	     begin
+	        panic('get_new_pid: not enough memory');
+	     end;
 	 cur_table := cur_table^.next;
 	 cur_table^.nb_free_pids := 1022;
 	 cur_table^.next := NIL;
 	 for j := 1 to 1022 do
-	    begin
-	       cur_table^.pid_nb[i] := NIL;
-	    end;
+	     cur_table^.pid_nb[i] := NIL;
+
       end;
 
-{printk('\nnew pid: %d\n\n', [i+add]);}
+   {$IFDEF DEBUG}
+      printk('get_new_pid: %d\n', [i + add]);
+   {$ENDIF}
 
    result := i + add;
 
@@ -241,16 +285,29 @@ end;
 
 
 {******************************************************************************
- * sys_get_pid
+ * sys_getpid
  *
- * Entrée : aucune
- * Sortie : numéro du processus courant
+ * INPUT  : none
+ * OUTPUT : current process PID
  *
- * Cette fonction est un appel système
  *****************************************************************************}
-function sys_get_pid : dword; [public, alias : 'SYS_GET_PID'];
+function sys_getpid : dword; cdecl; [public, alias : 'SYS_GETPID'];
 begin
    result := current^.pid;
+end;
+
+
+
+{******************************************************************************
+ * sys_getuid
+ *
+ * INPUT  : none
+ * OUTPUT : real user UID
+ *
+ *****************************************************************************}
+function sys_getuid : dword; cdecl; [public, alias : 'SYS_GETUID'];
+begin
+   result := current^.uid;
 end;
 
 
@@ -317,7 +374,7 @@ begin
    end;
 
    {$IFDEF DEBUG}
-      printk('sleep_on: task %h2\n', [current^.pid]);
+      printk(' sleep_on: PID=%d (%h) ', [current^.pid, @wait]);
    {$ENDIF}
 
    del_from_runqueue(current);
@@ -340,7 +397,7 @@ end;
 {******************************************************************************
  * wake_up
  *
- * Réveille TOUS les processus de le file d'attente p
+ * Wake up ALL processes in the wait queue
  *****************************************************************************}
 procedure wake_up (p : PP_wait_queue); [public, alias : 'WAKE_UP'];
 
@@ -354,16 +411,15 @@ begin
       cli   { Section critique }
    end;
 
-   {$IFDEF DEBUG}
-      printk('wake_up: task %h2\n', [current^.pid]);
-   {$ENDIF}
-
    tmp := p^;
 
    if (tmp <> NIL) then
       begin
          while (tmp <> NIL) do
          begin
+            {$IFDEF DEBUG}
+               printk(' wake_up: PID=%d ', [longint(tmp^.task^)]);
+            {$ENDIF}
 	    add_to_runqueue(tmp^.task);
 	    tmp := tmp^.next;
          end;
@@ -373,6 +429,22 @@ begin
       popfd   { Fin section critique }
    end;
 
+end;
+
+
+
+{******************************************************************************
+ * sys_waitpid
+ *
+ * FIXME: nothing is done (waitpid)
+ *****************************************************************************}
+function sys_waitpid (pid : dword ; stat_loc : pointer ; options : dword) : dword; cdecl; [public, alias : 'SYS_WAITPID'];
+begin
+
+   printk('\nWelcome in waitpid(%d, %h, %d)\n', [pid, stat_loc, options]);
+   sleep_on(@current^.wait_queue);
+   
+   result := -1;
 end;
 
 

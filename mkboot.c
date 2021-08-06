@@ -50,7 +50,7 @@ int main (int argc, char *argv[])
       drive = 1;
       partition_ofs = 0;
    }
-   
+
    if (major == 3) {
       drive = 0x80;
       if ( minor == 1 ) {
@@ -65,6 +65,11 @@ int main (int argc, char *argv[])
       if ( minor == 4 ) {
 	 partition_ofs = 0x1EE;
       }
+   }
+
+   if (major == 7) {
+      drive = 0x80;
+      partition_ofs = 0x1BE;
    }
    
    if ((major == 3) && (minor > 64)) {

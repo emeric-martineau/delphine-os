@@ -29,19 +29,31 @@ unit com_initialisation;
 INTERFACE
 
 
+{$I fs.inc}
+
+
 procedure print_word (nb : word); external;
 procedure memcpy (src, dest : pointer; size : dword); external;
 procedure printk (format : string; args : array of const); external;
 procedure outb (port : word ; val : byte); external;
+procedure register_chrdev (nb : byte ; name : string[20] ; fops : pointer); external;
 function  inb (port : word) : byte; external;
+
+function com_open (inode : P_inode_t ; fichier : P_file_t) : dword;
+function com_read (fichier : P_file_t ; buf : pointer ; count : dword) : dword;
+function com_write (fichier : P_file_t ; buf : pointer ; count : dword) : dword;
 
 
 IMPLEMENTATION
 
 
+const
+   COM_DEV = 3;
+
 var
-   com_IO : array[1..4] of word; {* Tableau contenant les adresses I/O des
-                                  * ports COM *}
+   com_IO   : array[1..4] of word; {* Tableau contenant les adresses I/O des
+                                    * ports COM *}
+   com_fops : file_operations;
 
 
 
@@ -54,47 +66,131 @@ var
 procedure init_com; [public, alias : 'INIT_COM'];
 
 var
-   i, tmp : byte;
+   i, tmp   : byte;
+   register : boolean;
 
 begin
 
+    register := FALSE;
     memcpy($400,@com_IO,8); { On met les données du BIOS dans le tableau }
 
-    for i:=1 to 4 do
+    for i := 1 to 4 do
     begin
-        if (com_IO[i] <> 0)
-        then begin
-            printk('com%d at %h4', [i, com_IO[i]]);
+        if (com_IO[i] <> 0) then
+	    begin
+	       register := TRUE;
+               printk('com%d at %h4', [i, com_IO[i]]);
 
-	    { On regarde si l'UART est de type 16550A }
+	       { On regarde si l'UART est de type 16550A }
 
-            outb(com_IO[i] + 2, $CF);
+               outb(com_IO[i] + 2, $CF);
 
-	    asm
-	       nop
-	       nop
-	       nop
-	       nop
-	       nop
-	       nop
-	    end;
-
-	    tmp := inb(com_IO[i] + 2);
-	    outb(com_IO[i] + 2, $00);
-
-	    if (tmp and $C0 = $C0) then
-	       begin
-	          printk(' is a 16550A', []);
+	       asm
+	          nop
+	          nop
+	          nop
+	          nop
+	          nop
+	          nop
 	       end;
 
-	    printk('\n', []);
+	       tmp := inb(com_IO[i] + 2);
+	       outb(com_IO[i] + 2, $00);
 
-            {* Il faudrait tester si il y a un modem branché et mettre la 
-	     * vitesse du port au maximum. *}
-            { Prkoi fèr simple kan on peu fèr compliker ! }
-        end;
+	       if (tmp and $C0 = $C0) then
+	           printk(' is a 16550A', []);
+
+	       printk('\n', []);
+
+               {* Il faudrait tester si il y a un modem branché et mettre la 
+	        * vitesse du port au maximum. *}
+               { Prkoi fèr simple kan on peu fèr compliker ! }
+            end;
     end;
+
+    if (register) then
+        begin
+	   com_fops.open  := @com_open;
+	   com_fops.read  := @com_read;
+	   com_fops.write := @com_write;
+	   com_fops.seek  := NIL;   { We cannot call seek() for a character device }
+	   com_fops.ioctl := NIL;
+           register_chrdev(COM_DEV, 'com', @com_fops);
+	end;
+
 end;
+
+
+
+{******************************************************************************
+ * com_open
+ *
+ *****************************************************************************}
+function com_open (inode : P_inode_t ; fichier : P_file_t) : dword;
+
+var
+   minor : byte;
+
+begin
+
+   minor := inode^.rdev_min;
+   if (com_IO[minor] <> 0) then
+       result := 0
+   else
+       result := -1;
+
+end;
+
+
+
+{******************************************************************************
+ * com_read
+ *
+ *****************************************************************************}
+function com_read (fichier : P_file_t ; buf : pointer ; count : dword) : dword;
+
+var
+   port : word;
+   i    : dword;
+
+begin
+
+   result := count;
+   port   := fichier^.inode^.rdev_min;
+
+   for i := 1 to count do
+   begin
+      byte(buf^) := inb(port);
+      buf += 1;
+   end;
+
+end;
+
+
+
+{******************************************************************************
+ * com_write
+ *
+ *****************************************************************************}
+function com_write (fichier : P_file_t ; buf : pointer ; count : dword) : dword;
+
+var
+   port : word;
+   i    : dword;
+
+begin
+
+   result := count;
+   port   := fichier^.inode^.rdev_min;
+
+   for i := 1 to count do
+   begin
+      outb(port, byte(buf^));
+      buf += 1;
+   end;
+
+end;
+
 
 
 {* Je profite de la petitesse de ce code source pour faire une remarque. Fran-

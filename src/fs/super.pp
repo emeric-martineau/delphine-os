@@ -3,6 +3,9 @@
  * 
  *  mount/unmount filesystems
  *
+ *  FIXME: for the moment, delphineOS can only mount ONE filesystem. (the root
+ *         filesystem which MUST be an ext2 filesystem)
+ *
  *  CopyLeft 2002 GaLi
  *
  *  version 0.0 - ??/??/2001 - GaLi - initial version
@@ -33,15 +36,13 @@ INTERFACE
 {$I process.inc }
 
 
-procedure printk (format : string ; args : array of const); external;
-procedure memset (adr : pointer ; c : byte ; size : dword); external;
-procedure kfree_s (adr : pointer ; size : dword); external;
-procedure read_inode (ino : P_inode_t); external;
-procedure panic (reason : string); external;
-function  sys_open (path : string ; flags, mode : dword) : dword; external;
+function  blkdev_open (inode : P_inode_t ; filp : P_file_t) : dword; external;
 function  inode_uptodate (inode : P_inode_t) : boolean; external;
 function  kmalloc (len : dword) : pointer; external;
-function  blkdev_open (inode : P_inode_t ; filp : P_file_t) : dword; external;
+procedure memset (adr : pointer ; c : byte ; size : dword); external;
+procedure panic (reason : string); external;
+procedure printk (format : string ; args : array of const); external;
+procedure read_inode (ino : P_inode_t); external;
 
 
 var
@@ -66,7 +67,7 @@ IMPLEMENTATION
 procedure sys_mount_root; cdecl; [public, alias : 'SYS_MOUNT_ROOT'];
 
 
-{* NOTE : It would be better if we checked if the device could be opened with
+{* FIXME: It would be better if we checked if the device could be opened with
  * asked mode (read only or read/write). We could check that with retval *}
 
 

@@ -408,6 +408,8 @@ begin
     fd_fops.read  := NIL;
     fd_fops.write := NIL;
     fd_fops.seek  := NIL;
+    fd_fops.ioctl := NIL;
+
     register_blkdev(2, 'fd', @fd_fops);
 
     { Regarde s'il y a au moins un lecteur present }

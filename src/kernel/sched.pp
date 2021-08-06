@@ -97,7 +97,7 @@ begin
 
    { Si le prochain est 'init', alors on lance encore le prochain }
    if (current^.pid = 1) then
-       current := current^.next_run; 
+       current := current^.next_run;
 
    if (current <> old_current) then
        begin
@@ -108,6 +108,8 @@ begin
    printk('next TR=%h4  CR3: %h  PID: %h4  ticks: %d\n', [current^.tss_entry, current^.tss^.cr3, current^.pid, current^.ticks]);
    printk('ESP0: %h  ESP3: %h  EBP: %h\n', [current^.tss^.esp0, current^.tss^.esp, current^.tss^.ebp]);
 {$ENDIF}
+
+{printk('S(%d(%h)->%d(%h)) ', [old_current^.pid, old_current^.tss^.esp, current^.pid, current^.tss^.esp]);}
 
           farjump(current^.tss_entry, NIL);
        end;

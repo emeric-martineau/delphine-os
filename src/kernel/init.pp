@@ -11,12 +11,8 @@ INTERFACE
 function  dup (fildes : dword) : dword;
 function  exec (path : string ; arg : array of const) : dword;
 function  fork : dword;
-function  lseek (fd, ofs, whence : dword) : dword;
 procedure mount_root;
 function  open (path : string ; flags, mode : dword) : dword;
-procedure printf (format : string ; args : array of const);
-function  read (fd : dword ; buffer : pointer ; count : dword) : dword;
-function  write(fd : dword ; buffer : pointer ; count : dword) : dword;
 
 
 
@@ -32,8 +28,8 @@ IMPLEMENTATION
 procedure init; [public, alias : 'INIT'];
 
 var
-   fd, res : dword;
-   str     : dword;
+   fd  : dword;
+   str : dword;
 
 begin
 
@@ -55,19 +51,10 @@ begin
    else
       begin
          mount_root;
-	 fd := open('/dev/tty0', O_RDWR, 0);
-	 if (fd = -1) then
-             begin
-                printf('Cannot open main console\n', []);
-             end;
+	 open('/dev/keyb', O_RDONLY, 0);
+	 fd := open('/dev/tty0', O_WRONLY, 0);
 	 dup(fd);
-	 dup(fd);
-         exec('/test/test', []);
-{	 str := $4748494A;
-	 res := write(fd, @str, 4);
-	 printf('write res: %d\n', [res]);
-	 res := lseek(fd, 2, SEEK_CUR);
-	 printf('seek res: %d\n', [res]); }
+         exec('/sash', [NIL]);
          while (true) do
             begin
             end;
@@ -79,18 +66,7 @@ end;
 function  dup (fildes : dword) : dword; assembler;
 asm
    mov   ebx, fildes
-   mov   eax, 9
-   int   $30
-end;
-
-
-
-function lseek (fd, ofs, whence : dword) : dword; assembler;
-asm
-   mov   edx, whence
-   mov   ecx, ofs
-   mov   ebx, fd
-   mov   eax, 8
+   mov   eax, 41
    int   $30
 end;
 
@@ -98,32 +74,11 @@ end;
 
 function exec (path : string ; arg : array of const) : dword; assembler;
 asm
-   mov   edx, [ebp + 16]
-   mov   ecx, arg
+   lea   edx, [ebp + 16]   { No environment varibales }
+   lea   ecx, [ebp + 16]   { No arguments }
    mov   ebx, path
-   mov   eax, 7
-   int   $30
-end;
-
-
-
-function read (fd : dword ; buffer : pointer ; count : dword) : dword; assembler;
-asm
-   mov   edx, count
-   mov   ecx, buffer
-   mov   ebx, fd
-   mov   eax, 3
-   int   $30
-end;
-
-
-
-function write (fd : dword ; buffer : pointer ; count : dword) : dword; assembler;
-asm
-   mov   edx, count
-   mov   ecx, buffer
-   mov   ebx, fd
-   mov   eax, 4
+   inc   ebx
+   mov   eax, 11
    int   $30
 end;
 
@@ -131,7 +86,7 @@ end;
 
 procedure mount_root; assembler;
 asm
-   mov   eax, 1
+   mov   eax, 0
    int   $30
 end;
 
@@ -150,18 +105,8 @@ asm
    mov   edx, mode
    mov   ecx, flags
    mov   ebx, path
-   mov   eax, 6
-   int   $30
-end;
-
-
-
-procedure printf (format : string ; args : array of const); assembler;
-asm
-   mov   edx, [ebp + 16]
-   mov   ecx, args
-   mov   ebx, format
-   mov   eax, 10
+   inc   ebx
+   mov   eax, 5
    int   $30
 end;
 

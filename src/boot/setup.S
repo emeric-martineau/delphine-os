@@ -1,6 +1,6 @@
 ;******************************************************************************
 ;
-;--[ File]------------------------------------------------------------------
+;--[ File ]--------------------------------------------------------------------
 ;
 ; ./src/boot/setup.S
 ;
@@ -9,7 +9,7 @@
 ; This file is at the beginning of './src/kernel/kernel'. It's a full binary
 ; file contrary to the kernel which is an ELF binary. It does this :
 ;
-;  - RAM detection : OK (buggy ???)
+;  - RAM detection : OK
 ;  - 32 bits protected mode : OK
 ;  - Kernel launching : OK
 ;
@@ -75,9 +75,6 @@
     mov   al , 0DFh               ; A20 on
     out   60h, al
     call  EMPTY_8042
-
-;mov ax, 0E41h
-;int 10h
 
     ; OK, A20 line activated (End of code from Linux)
 
@@ -147,15 +144,15 @@
     @ram_ok:
     mov dword [0], ecx
 
-mov   di , 512
-mov   ax , 4F00h
-int   10h
+    mov   di , 512
+    mov   ax , 4F00h
+    int   10h   ; Get VESA information
 
-mov   di , 768
-mov   eax, 32454256h
-mov   dword [di], eax
-mov   ax , 4F00h
-int   10h
+    mov   di , 768
+    mov   eax, 32454256h
+    mov   dword [di], eax
+    mov   ax , 4F00h
+    int   10h   ; Get VBE information
 
     ; Check ELF header so that we can launch the kernel
 
@@ -173,16 +170,13 @@ int   10h
     mov   eax, [esi]
     cmp   eax, 464C457Fh          ; EAX = ELF magic number ?
     jne   @bad_header             ; Non => invalid header
-;    mov   ax , word [esi + 44]    ; AX = Nb of entries in the ELF header
-;    cmp   ax , 3
-;    jne   @bad_header             ; invalid header : nb of entries <> 3
 
     mov   eax, dword [esi + 28]   ; Program header table offset in file
     xor   ebx, ebx
     mov   bx , word [esi + 42]    ; Size of 1 entry in the program header table
     add   esi, eax
     
-    ; We can now read 'Program header tbale' entries
+    ; We can now read 'Program header table' entries
     ; ESI points at the beginning of the table and EBX = bytes in one entry
 
     mov   eax, dword [esi + 8]        ; EAX = address where the kernel begins
@@ -310,6 +304,7 @@ int   10h
 kernel_ofs:
     dd 0                          ; Physical address where we want to jump to
     dw 10h
+
 
 [BITS 16]
 

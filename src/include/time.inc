@@ -9,7 +9,8 @@ type
    P_time_t = ^time_t;
 
 
-function time(timer : P_time_t) : time_t;
+function  time_ (timer : pointer) : dword; cdecl; external;
+function  ctime (timer : pointer) : pchar; cdecl; external;
 
 
 {$ENDIF}

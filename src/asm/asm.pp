@@ -32,21 +32,20 @@ INTERFACE
 
 function  bitscan (nb : dword) : dword;
 function  btod (nb : byte) : dword;
-procedure halt;
 function  inb (port : word) : byte;
 function  ind (port : word) : dword;
-procedure int_strcmp (dstr, sstr : pointer);
-{procedure int_strcopy (len : dword ; sstr, dstr : pointer);}
 function  inw (port : word) : word;
-procedure IO_delay;
 function  memd (adr : pointer) : dword;
+function  wtod (nb : word) : dword;
+procedure halt;
+procedure int_strcmp (dstr, sstr : pointer);
+procedure IO_delay;
 procedure outb (port : word ; val : byte);
 procedure outd (port : word ; val : dword);
 procedure outw (port : word ; val : word);
 procedure reset_computer;
 procedure set_bit (i : dword ; ptr_nb : pointer);
 procedure unset_bit (i : dword ; ptr_nb : pointer);
-function  wtod (nb : word) : dword;
 
 
 
@@ -145,7 +144,7 @@ end;
  * Output : index of the first 'zero bit'
  *
  * This function is used in bitmap scanning. It scans a dword and returns the
- * ndex of the first 'zero bit'.
+ * index of the first 'zero bit'.
  * Scan is done from left to right, so, if nb=$80000000, result is 1.
  *
  * WARNING : This function MUST NOT be called with nb=$FFFFFFFF

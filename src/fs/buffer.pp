@@ -1,7 +1,7 @@
 {******************************************************************************
  *  buffer.pp
  * 
- *  Fonctions de gestion des buffers du VFS
+ *  VFS buffers management
  *
  *  CopyLeft 2002 GaLi
  *
@@ -60,7 +60,10 @@ IMPLEMENTATION
 {******************************************************************************
  * buffer_uptodate
  *
- * Renvoie 'true' si le tampon contient des données valides
+ * Input  : pointer to buffer_head
+ *
+ * Output : TRUE if the buffer's data are uptodate else, FALSE
+ *
  *****************************************************************************}
 function buffer_uptodate (bh : P_buffer_head) : boolean; [public, alias : 'BUFFER_UPTODATE'];
 begin
@@ -75,7 +78,10 @@ end;
 {******************************************************************************
  * buffer_dirty
  *
- * Renvoie 'true' si le tampon a été modifié
+ * Input  : pointer to buffer_head
+ *
+ * Output : TRUE if the buffer has been modified else, FALSE
+ *
  *****************************************************************************}
 function buffer_dirty (bh : P_buffer_head) : boolean; [public, alias : 'BUFFER_DIRTY'];
 begin
@@ -90,7 +96,10 @@ end;
 {******************************************************************************
  * buffer_lock
  *
- * Renvoie 'true' si le tampon est vérouillé
+ * Input  : pointer to buffer_head
+ *
+ * Output : TRUE if the buffer is locked else, FALSE
+ *
  *****************************************************************************}
 function buffer_lock (bh : P_buffer_head) : boolean; [public, alias : 'BUFFER_LOCK'];
 begin
@@ -105,7 +114,12 @@ end;
 {******************************************************************************
  * buffer_req
  *
- * Renvoie 'true' si le tampon a été démandé
+ * Input  : pointer to buffer_head
+ *
+ * Output : TRUE if the buffer has bee requested else, FALSE
+ *
+ * NOTE: This function is not used for the moment
+ *
  *****************************************************************************}
 function buffer_req (bh : P_buffer_head) : boolean; [public, alias : 'BUFFER_REQ'];
 begin
@@ -120,7 +134,14 @@ end;
 {******************************************************************************
  * insert_buffer_head
  *
- * Insère bh dans buffer_head_list
+ * Input  : pointer to buffer_head
+ *
+ * Output : none
+ *
+ * Insert bh in buffer_head_list
+ *
+ * FIXME: For the moment, we can only insert 1024 buffer. It could be great if
+ *        we used a hash table
  *****************************************************************************}
 procedure insert_buffer_head (bh : P_buffer_head);
 
@@ -164,13 +185,18 @@ end;
 {******************************************************************************
  * find_buffer
  *
- * Renvoie NIL si le tampon n'est pas dans le cache ou son adresse si il s'y
- * trouve.
+ * Input  : major -> device major number
+ *          minor -> device minor number
+ *          block -> block number
+ *          size  -> block size (in bytes)
+ *
+ * Ouput : NIL if the buffer isn't in buffer_head_list or, if it has been
+ *         found, his address.
  *
  * Cette fonction parcours la liste buffer_head_list afin de trouver un tampon
  * correspondant à celui demandé.
  *
- * NOTE : TABLE DE HACHAGE ?????????????????????????????????
+ * FIXME: HASH TABLE ?????????????????????????????????
  *****************************************************************************}
 function find_buffer (major, minor : byte ; block, size : dword) : P_buffer_head;
 
@@ -268,8 +294,19 @@ end;
  *****************************************************************************}
 procedure wait_on_buffer (bh : P_buffer_head);
 begin
+
+   {$IFDEF DEBUG}
+      printk('wait_on_buffer: buffer state=%d (BH_Lock=%d)\n', [bh^.state, BH_Lock]);
+   {$ENDIF}
+   asm
+      pushfd
+      cli
+   end;
    while (bh^.state and BH_Lock) = BH_Lock do
           sleep_on(@bh^.wait);
+   asm
+      popfd
+   end;
 end;
 
 
@@ -308,6 +345,10 @@ var
 
 begin
 
+   asm
+      sti
+   end;
+
    {$IFDEF DEBUG}
       printk('bread: dev %d:%d block %d size %d\n', [major, minor, block, size]);
    {$ENDIF}
@@ -322,19 +363,29 @@ begin
       end;
 
    if buffer_uptodate(bh) then
-      result := bh
+      begin
+         {$IFDEF DEBUG}
+	    printk('bread: Buffer is uptodate\n', []);
+	 {$ENDIF}
+         result := bh;
+      end
    else
       begin
          {$IFDEF DEBUG}
-	    printk('bread: going to read block (%h)\n', [bh]);
+	    printk('bread: going to read block (%d) -> %h\n', [bh^.blocknr, bh^.data]);
 	 {$ENDIF}
          ll_rw_block(READ, bh);
          wait_on_buffer(bh);
+
 	 if (buffer_uptodate(bh)) then
-	     result := bh
+             result := bh
 	 else
-	     result := NIL;
+             result := NIL;
       end;
+
+   {$IFDEF DEBUG}
+      printk('bread: exiting\n', []);
+   {$ENDIF}
 
 end;
 

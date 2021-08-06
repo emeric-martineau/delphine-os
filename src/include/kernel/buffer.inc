@@ -1,4 +1,3 @@
-
 {$IFNDEF __BUFFER__}
 {$DEFINE __BUFFER__}
 

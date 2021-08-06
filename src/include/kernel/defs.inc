@@ -24,6 +24,7 @@ procedure kernel_thread (adr : pointer); external;
 procedure panic (reason : string); external;
 function  kmalloc (len : dword) : pointer; external;
 function  get_new_pid : dword; external;
+function  get_free_page : pointer; external;
 procedure memcpy (src, dest : pointer ; size : dword); external;
 
 

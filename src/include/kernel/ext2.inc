@@ -106,7 +106,7 @@ type
       rec_len   : word;
       name_len  : byte;
       file_type : byte;   { Not used }
-      name      : array [1..255] of char;
+      name      : array [0..254] of char;
    end;
 
 {$ENDIF}

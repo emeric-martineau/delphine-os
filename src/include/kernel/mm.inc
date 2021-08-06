@@ -1,5 +1,4 @@
 {$IFNDEF __MM__}
-
 {$DEFINE __MM__}
 
 type

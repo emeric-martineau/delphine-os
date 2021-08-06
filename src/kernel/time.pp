@@ -1,7 +1,7 @@
 {******************************************************************************
  *  time.pp
  * 
- *  Gestion du timer en mode protégé
+ *  Time/timer management
  *
  *  CopyLeft 2002 Bubule
  *
@@ -35,15 +35,26 @@ INTERFACE
 {$I time.inc}
 
 
-procedure outb (port : word ; val : byte); external;
-procedure inb (port : word); external;
 procedure enable_IRQ (irq : byte); external;
+function  inb (port : word) : byte; external;
+procedure outb (port : word ; val : byte); external;
+procedure printk (format : string ; args : array of const);external;
 procedure set_intr_gate (n : dword ; addr : pointer); external;
 
 
+procedure BCD_TO_BIN (var val : dword);
+function  CMOS_READ (port : byte) : byte;
+procedure configurer_frequence_PIT(frequence : word);
+function  get_value_counter : dword;
+procedure initialise_compteur;
+procedure mdelay (time : dword);
+function  sys_time (t : pointer) : dword; cdecl;
+
+
+{ Global variables }
+
 var
    compteur : dword;
-
 
 
 IMPLEMENTATION
@@ -55,7 +66,7 @@ IMPLEMENTATION
  *
  * Entrée : fréquence désirée en Hertz (pas les véhicule de location !)
  *
- * Configure le PIT. PIT = programmable interval timer (8253, 8254)
+ * Configure PIT. PIT = programmable interval timer (8253, 8254)
  ******************************************************************************} 
 procedure configurer_frequence_PIT(frequence : word); [public, alias : 'CONFIGURER_FREQUENCE_PIT'];
 begin
@@ -68,7 +79,8 @@ begin
        cli
     end;
 
-    outb(PIT_CONTROL_REG, (PIT_COMPTEUR0 or PIT_COMPTEUR_MODE_3 or PIT_CONTROL_MODE_LH or PIT_COMPTEUR_16BITS)) ;
+    outb(PIT_CONTROL_REG, (PIT_COMPTEUR0 or PIT_COMPTEUR_MODE_3 or 
+                           PIT_CONTROL_MODE_LH or PIT_COMPTEUR_16BITS)) ;
     outb(PIT_COUNTER0_REG, (frequence and $FF));
     outb(PIT_COUNTER0_REG, (frequence shr 8));
 
@@ -87,14 +99,14 @@ end ;
  *
  * Attend un certain temps. ATTENTION cette version est une attente active !
  ******************************************************************************}
-procedure mdelay(time : dword); [public, alias : 'MDELAY'];
+procedure mdelay (time : dword); [public, alias : 'MDELAY'];
 var ancien_compteur : dword ;
 begin
     ancien_compteur := compteur ;
 
     while ((compteur - ancien_compteur) < time) do ;
         { on se fait une belotte ?
-          à modifier car attente active }
+          FIXME: à modifier car attente active }
 end ;
 
 
@@ -122,6 +134,98 @@ begin
   compteur := 0;
   configurer_frequence_PIT(1000 div INTERVAL);
 end ;
+
+
+
+{******************************************************************************
+ * CMOS_READ
+ *
+ ******************************************************************************}
+function CMOS_READ (port : byte) : byte;
+begin
+
+   outb($70, $80 or port);
+
+   asm
+      nop
+      nop
+      nop
+      nop
+      nop
+   end;
+
+   result := inb($71);
+
+end;
+
+
+
+{******************************************************************************
+ * BCD_TO_BIN
+ *
+ ******************************************************************************}
+procedure BCD_TO_BIN (var val : dword);
+begin
+
+   val := (val and 15) + ((val shr 4) * 10);
+
+end;
+
+
+
+{******************************************************************************
+ * sys_time
+ *
+ ******************************************************************************}
+function sys_time (t : pointer) : dword; cdecl; [public, alias : 'SYS_TIME'];
+
+var
+   sec, min, hour, day, mon, year : dword;
+
+begin
+
+   repeat
+      sec  := CMOS_READ(0);
+      min  := CMOS_READ(2);
+      hour := CMOS_READ(4);
+      day  := CMOS_READ(7);
+      mon  := CMOS_READ(8);
+      year := CMOS_READ(9);
+   until (sec = CMOS_READ(0));
+
+   asm
+      sti   { Put interrupts on }
+   end;
+
+   BCD_TO_BIN(sec);
+   BCD_TO_BIN(min);
+   BCD_TO_BIN(hour);
+   BCD_TO_BIN(day);
+   BCD_TO_BIN(mon);
+   BCD_TO_BIN(year);
+
+{printk('sec: %d  min: %d  hour: %d  day: %d  mon: %d  year: %d\n',
+       [sec, min, hour, day, mon, year]);}
+
+   { 1..12 -> 11,12,1..10 
+     Puts Feb last since it has leap day }
+   mon  -=  2;
+   if (0 >= mon) then
+   begin
+      mon  += 12;
+      year -=  1;
+   end;
+
+   result :=
+   (( ((year div 4 - year div 100 + year div 400 + 367*mon div 12 + day)  +(year * 365)  -(719499))
+   *24 +hour ) 
+   *60 +min  )
+   *60 +sec;
+
+   if (t <> NIL) and (t > pointer($FFC01000)) then
+       longint(t^) := result;
+
+end;
 
 
 

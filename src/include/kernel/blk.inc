@@ -1,8 +1,7 @@
-
-{$I buffer.inc}
-
 {$IFNDEF __BLK__}
 {$DEFINE __BLK__}
+
+{$I buffer.inc}
 
 type
 

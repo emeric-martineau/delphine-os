@@ -48,6 +48,7 @@ INTERFACE
 
 {DEFINE DEBUG}
 
+{$I errno.inc}
 {$I fs.inc}
 {$I process.inc}
 {$I tty.inc}
@@ -57,15 +58,16 @@ procedure update_cursor (ontty : byte);
 procedure change_tty (ontty : byte);
 procedure get_vesa_info;
 procedure printk (format : string ; args : array of const);
+function  tty_ioctl (fichier : P_file_t ; req : dword ; argp : pointer) : dword;
 function  tty_open (inode : P_inode_t ; filp : P_file_t) : dword;
-function  tty_write (fichier : P_file_t ; buf : pointer ; count : dword) : dword;
 function  tty_seek (fichier : P_file_t ; offset, whence : dword) : dword;
+function  tty_write (fichier : P_file_t ; buf : pointer ; count : dword) : dword;
 
 procedure print_dec_dword (nb : dword); external;
 procedure print_word (nb : word); external;
 procedure print_byte (nb : byte); external;
 procedure print_dword (nb : dword); external;
-procedure register_chrdev (nb : byte ; name : string[20] ; fops : pointer); external;{ src/fs/init_vfs.pp }
+procedure register_chrdev (nb : byte ; name : string[20] ; fops : pointer); external;
 
 
 const
@@ -97,7 +99,7 @@ var
 
 begin
 
-   vesa_info := $10200;
+   vesa_info := $10200;   { See boot/setup.S }
 
    if (vesa_info^.signature = $41534556) then
        begin
@@ -137,6 +139,7 @@ begin
    tty_fops.read  := NIL;
    tty_fops.write := @tty_write;
    tty_fops.seek  := @tty_seek;
+   tty_fops.ioctl := @tty_ioctl;
 
    {* REMARQUE: On ne peut pas appeler register_chrdev() ici car la table
     * chrdevs n'est pas encore initialisée. L'enregistrement du périphérique
@@ -180,7 +183,7 @@ end;
  * Entrée : caractère à écrire, numéro de la console
  *
  * Ecris un caractère sur la console spécifiée
- * NOTE : le caractère $0D (ou #13) est considéré comme un retour charriot
+ * NOTE : le caractère $0A (ou #10) est considéré comme un retour charriot
  *****************************************************************************}
 procedure putc (car : char ; ontty : byte); [public,alias : 'PUTC'];
 
@@ -200,10 +203,14 @@ begin
    ofs     :=  (ligne * 160 + colonne * 2);
    dep     :=  (ontty * screen_size);
 
-   if (car = #13) then   { Caractère = retour charriot ? }
+   if (car = #10) then   { Caractère = retour charriot ? }
       begin
          ligne += 1;
          ofs   := (ligne * 160);
+      end
+   else if (car = #08) then
+      begin
+         
       end
    else
       begin
@@ -305,6 +312,11 @@ var
 
 begin
 
+   asm
+      pushfd
+      cli
+   end;
+
    pos      := 1;
    num_args := 0;
 
@@ -362,7 +374,7 @@ begin
                     pos += 1;
                     if (format[pos] = 'n') then
                        begin
-                          putchar(#13);
+                          putchar(#10);
                           pos += 1;
                        end;
                  end;
@@ -374,6 +386,11 @@ begin
                end;
             end;
       end;
+
+   asm
+      popfd
+   end;
+
 end;
 
 
@@ -452,7 +469,7 @@ end;
  * Met à jour le curseur sur la console specifiée.
  *
  *****************************************************************************}
-procedure update_cursor (ontty : byte);
+procedure update_cursor (ontty : byte); [public, alias : 'UPDATE_CURSOR'];
 
 var
    ofs : word;
@@ -521,7 +538,6 @@ function tty_write (fichier : P_file_t ; buf : pointer ; count : dword) : dword;
 var
    i     : dword;
    ontty : byte;
-   car   : ^char;
 
 begin
 
@@ -529,11 +545,10 @@ begin
 
    if tty[ontty].echo then
    begin
-      car := buf;
       for i := 1 to count do
          begin
-            putc(car^, ontty);
-	    inc(car); 
+            putc(chr(byte(buf^)), ontty);
+	    buf += 1; 
          end;
 
       asm
@@ -541,7 +556,7 @@ begin
          cli
       end;
 
-      fichier^.pos:=(tty[ontty].y * 160) + (tty[ontty].x * 2);
+      fichier^.pos := (tty[ontty].y * 160) + (tty[ontty].x * 2);
 
       i := fichier^.pos div 2;
       tty[ontty].y := i div 80;
@@ -600,7 +615,7 @@ begin
       else
          begin
 	    printk('tty_seek: whence parameter has a bad value (%d)\n', [whence]);
-	    result := -1;
+	    result := -EINVAL;
 	    exit;
 	 end;
    end;
@@ -627,6 +642,59 @@ begin
    result := fichier^.pos;
 
 end;
+
+
+
+{******************************************************************************
+ * tty_ioctl
+ * 
+ *
+ *****************************************************************************}
+function tty_ioctl (fichier : P_file_t ; req : dword ; argp : pointer) : dword;
+
+var
+   i        : dword;
+   tmp_term : P_termios;
+
+begin
+
+   {$IFDEF DEBUG}
+      printk('Welcome in tty_ioctl... (%h, %h4, %h)\n', [fichier, req, argp]);
+   {$ENDIF}
+
+   tmp_term := argp;
+
+   case req of
+      TCGETS: begin
+                 if (tmp_term = NIL) then
+		     begin
+		        printk('VFS (tty_ioctl): argp=NIL\n', []);
+		        result := EINVAL;
+		     end
+		 else
+		     begin
+		        tmp_term^.c_iflag := 0;
+			tmp_term^.c_oflag := 0;
+			tmp_term^.c_cflag := 0;
+			tmp_term^.c_lflag := 0;
+			tmp_term^.c_line  := 0;
+			for i := 0 to (NCCS - 1) do
+			begin
+			   tmp_term^.c_cc[i] := 0;
+			end;
+		        result := 0;
+		     end;
+              end;
+      else
+              begin
+	         printk('VFS (tty_ioctl): unknow request (%h4)', [req]);
+		 result := -1;
+	      end;
+   end;
+
+end;
+
+
 
 begin
 end.

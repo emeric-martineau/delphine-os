@@ -55,7 +55,7 @@ var
    ext2_file_inode_operations : inode_operations; external name 'U__EXT2_FILE_EXT2_FILE_INODE_OPERATIONS';
 
 
-function  ext2_lookup (dir : P_inode_t ; name : string ; len : dword ; res_inode : P_inode_t) : boolean;
+function  ext2_lookup (dir : P_inode_t ; name : pchar ; len : dword ; res_inode : P_inode_t) : boolean;
 procedure ext2_read_inode (inode : P_inode_t);
 
 
@@ -67,9 +67,10 @@ IMPLEMENTATION
 {******************************************************************************
  * ext2_read_inode
  *
- * Lit un inode sur un système de fichier ext2 et rempli l'objet inode passé
- * en paramètre. Les champs sb et ino de l'objet inode passé en paramètre 
- * doivent être initialisés AVANT l'appel de cette procédure.
+ * Read an inode on an ext2 filesystem and initialize 'inode' parameter.
+ * 'sb' and 'ino' fields in 'inode' must be initialized BEFORE calling this
+ * procedure.
+ *
  *****************************************************************************}
 procedure ext2_read_inode (inode : P_inode_t); [public, alias : 'EXT2_READ_INODE'];
 
@@ -103,8 +104,7 @@ printk('desc per block: %d\n', [inode^.sb^.ext2_sb.desc_per_block]);
 	 exit;
       end;
 
-   {* block_group défini le groupe de blocs contenant l'inode que l'on
-    * cherche *}
+   { block_group contains the inode we are looking for }
    block_group := (inode^.ino - 1) div (inode^.sb^.ext2_sb.inodes_per_group);
    if (block_group >= inode^.sb^.ext2_sb.groups_count) then
       begin
@@ -117,8 +117,7 @@ printk('desc per block: %d\n', [inode^.sb^.ext2_sb.desc_per_block]);
 printk('block_group: %d  ', [block_group]);
 {$ENDIF}
 
-   {* group_desc défini l'index a utilisé dans ext2_sb.group_desc[] afin de
-    * pouvoir lire le descripteur de bloc *}
+   { group_desc defines the index used to read ext2_sb.group_desc[] }
    group_desc := block_group div inode^.sb^.ext2_sb.desc_per_block;
 
 {$IFDEF DEBUG}
@@ -199,7 +198,7 @@ printk('block: %d\n', [block]);
    inode^.blocks   := raw_inode^.blocks;
    inode^.ext2_i.block_group := block_group;
 
-   { On va définir les 'inodes_operations' }
+   { Define 'inodes_operations' }
 
    if (IS_BLK(inode) or IS_CHR(inode)) then
       begin
@@ -247,18 +246,18 @@ end;
  * REMARQUE: on ne lit que les blocs directs de l'inode 'dir' (cela ne devrait
  *           pas poser de problème...   j'espère)
  *
- * REMARQUE 2: il faut 'traverser' les points de montage afin de remplir
+ * REMARQUE 2: il faudrait 'traverser' les points de montage afin de remplir
  *             correctement le champ sb de la variable inode lors de l'appel
  *             de ext2_read_inode().
  *****************************************************************************}
-function ext2_lookup (dir : P_inode_t ; name : string ; len : dword ; res_inode : P_inode_t) : boolean; [public, alias : 'EXT2_LOOKUP'];
+function ext2_lookup (dir : P_inode_t ; name : pchar ; len : dword ; res_inode : P_inode_t) : boolean; [public, alias : 'EXT2_LOOKUP'];
 
 var
    bh           : P_buffer_head;
    entry        : P_ext2_dir_entry;
-   entry_name   : string;
    i, j, ofs    : dword;
    major, minor : byte;
+   ok           : boolean;
 
 begin
 
@@ -273,7 +272,7 @@ begin
          bh := bread(major, minor, dir^.ext2_i.data[i], dir^.sb^.blocksize);
          if (bh = NIL) then
          begin
-            printk('VFS (ext2_lookup): cannot read block %d\n', [dir^.ext2_i.data[1]]);
+            printk('VFS (ext2_lookup): cannot read block %d\n', [dir^.ext2_i.data[i]]);
 	    result := FALSE;
 	    exit;
          end;
@@ -284,41 +283,54 @@ begin
 	 begin
             entry := bh^.data + ofs;
 
-            { entry_name string initialization }
-            entry_name[0] := chr(entry^.name_len);
-            for j := 1 to ord(entry_name[0]) do
-                entry_name[j] := entry^.name[j];
-            entry_name[j+1] := #0;
-
 	    {$IFDEF DEBUG}
-	       printk('%s (%d, %d)', [entry_name, entry^.rec_len, ofs]);
+	       printk('ext2_lookup: (%d, %d, %d)\n', [entry^.name_len, entry^.rec_len, ofs]);
 	    {$ENDIF}
 
-	    if (entry_name = name) then
-	    { Le fichier a été trouvé. On va lire son inode }
+	    ofs += entry^.rec_len;
+
+	    if (entry^.name_len = len) then
 	    begin
-	       res_inode^.ino := entry^.inode;
-	       res_inode^.sb  := dir^.sb;
-	       ext2_read_inode(res_inode);
-	       if not inode_uptodate(res_inode) then
-	          begin
-		     res_inode^.state := 0;
-		     {$IFDEF DEBUG}
-		        printk('\n', []);
-		     {$ENDIF}
-		     exit;
-		  end
+               {$IFDEF DEBUG}
+	          printk('ext2_lookup: good entry ??? -> ', []);
+	       {$ENDIF}
+	       ok := TRUE;
+	       for j := 0 to (len - 1) do
+	       begin
+	          if (name[j] <> entry^.name[j]) then
+		      begin
+		         ok := FALSE;
+			 break;
+		      end;
+	       end;
+
+	       if (ok) then
+	       { Le fichier a été trouvé. On va lire son inode }
+	       begin
+	          {$IFDEF DEBUG}
+		     printk('YES\n', []);
+		  {$ENDIF}
+	          res_inode^.ino := entry^.inode;
+	          res_inode^.sb  := dir^.sb;
+	          ext2_read_inode(res_inode);
+	          if not inode_uptodate(res_inode) then
+	             begin
+		        res_inode^.state := 0;
+		        exit;
+		     end
+	          else
+	             begin
+	                result := TRUE;
+		        exit;
+		     end;
+	       end
 	       else
-	          begin
-	             result := TRUE;
-		     {$IFDEF DEBUG}
-		        printk('\n', []);
-		     {$ENDIF}
-		     exit;
-		  end;
-	    end
-	    else
-	        ofs += entry^.rec_len;
+	       begin
+	          {$IFDEF DEBUG}
+		     printk('NO\n', []);
+		  {$ENDIF}
+	       end;
+	    end;
 	 end;   { while }
 
       end { if }

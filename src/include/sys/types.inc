@@ -1,15 +1,19 @@
-
 {$IFNDEF _TYPES_}
 {$DEFINE _TYPES_}
 
-{$IFDEF _POSIX_SOURCE}
-
 
 type
-   pid_t = dword;
-   off_t = dword;
+   size_t   = dword;
+   ssize_t  = dword;
+   pid_t    = dword;
+   off_t    = dword;
+   mode_t   = dword;
+   dev_t    = dword;
+   ino_t    = dword;
+   nlink_t  = dword;
+   uid_t    = dword;
+   gid_t    = dword;
+   time_t   = dword;
 
-
-{$ENDIF}   { _POSIX_SOURCE }
 
 {$ENDIF}   { _TYPES_ }

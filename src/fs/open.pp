@@ -57,8 +57,8 @@ var
 
 
 {* Unit procedures and functions definition *}
-function  namei (path : pointer) : P_inode_t;
-function  sys_open (path : pointer ; flags, mode : dword) : dword; cdecl;
+function  namei (path : pchar) : P_inode_t;
+function  sys_open (path : pchar ; flags, mode : dword) : dword; cdecl;
 
 
 IMPLEMENTATION
@@ -84,13 +84,18 @@ IMPLEMENTATION
  * lookup() is not file system dependent. If everything is ok, 'res_inode'
  * is fill with 'name' inode info
  *****************************************************************************}
-function lookup (dir : P_inode_t ; name : string ; len : dword ; res_inode : P_inode_t) : boolean;
+function lookup (dir : P_inode_t ; name : pchar ; len : dword ; res_inode : P_inode_t) : boolean;
 begin
+
+   {$IFDEF DEBUG}
+      printk('looking up %c%s\n', [name[0], name]);
+   {$ENDIF}
+
    if (dir^.op^.lookup <> NIL) then
        result := dir^.op^.lookup(dir, name, len, res_inode)
    else
        begin
-          printk('VFS: lookup is not defined\n', []);
+          printk('VFS: lookup is not defined for %c%s\n', [name[0], name]);
           result := FALSE;
        end;
 end;
@@ -106,41 +111,52 @@ end;
  *
  * Converts a pathname to an inode if the file is found.
  *
- * NOTE: for the moment, namei() doesn't check directories access rights
+ * FIXME: for the moment, namei() doesn't check directories access rights
  *****************************************************************************}
-function namei (path : pointer) : P_inode_t; [public, alias : 'NAMEI'];
+function namei (path : pchar) : P_inode_t; [public, alias : 'NAMEI'];
 
 var
-   tmp                 : ^string;
+   tmp                 : pchar;
    filename, basename  : string;
    base, inode         : P_inode_t;
    i, index, nb_dir, j : dword;
+   str_len            : dword;
 
 begin
 
-   tmp := path;
-
    { Check if path is not a null string }
 
-   if (tmp^[0] = #0) then
+   if (path[0] = #0) then
        begin
           printk('VFS (namei): file name is a null string\n', []);
-	  result := -1;
+	  result := -EINVAL;
 	  exit;
        end;
 
+   tmp := path;
+
    { 'filename' initialization }
 
-   for i := 0 to (ord(tmp^[0]) + 1) do
-       filename[i] := tmp^[i];
+   i := 0;
+   while (tmp^ <> #0) do
+   begin
+      filename[i] := tmp^;
+      tmp += 1;
+      i   += 1;
+   end;
+   filename[i] := #0;
 
-   if (filename[1] = '/') then
+   if (filename[0] = '/') then
        begin
           base := current^.root;
 	  { Remove the first character ('/') }
-	  filename[0] := chr(ord(filename[0]) - 1);
-	  for i := 1 to (ord(filename[0]) + 1) do
-	      filename[i] := filename[i + 1];
+	  i := 0;
+	  while (filename[i] <> #0) do
+	  begin
+	     filename[i] := filename[i + 1];
+	     i += 1;
+	  end;
+	  filename[i] := #0;
        end
    else
        base := current^.pwd;
@@ -151,14 +167,19 @@ begin
    nb_dir := 0;
    index  := 0;
 
-   for i := 1 to ord(filename[0]) do
-       if (filename[i] = '/') then nb_dir += 1;
+   i := 0;
+   while (filename[i] <> #0) do
+   begin
+      if (filename[i] = '/') then 
+          nb_dir += 1;
+      i += 1;
+   end;
 
    inode := kmalloc(sizeof(inode_t));
    if (inode = NIL) then
        begin
-          printk('VFS (namei): not enough memory to look for %s\n', [path]);
-	  result := -1;
+          printk('VFS (namei): not enough memory to look for %c%s\n', [path[0], path]);
+	  result := -ENOMEM;
 	  exit;
        end;
 
@@ -167,23 +188,22 @@ begin
    else
        for i := 1 to nb_dir do
        begin
-           index += 1;
-	   basename[0] := #0;
-	   j := 1;
+	   j := 0;
+	   str_len := 0;
 	   while (filename[index] <> '/') do
 	   begin
-	      basename[0] := chr(ord(basename[0]) + 1);
 	      basename[j] := filename[index];
-	      index += 1;
-	      j     += 1;
+	      str_len += 1;
+	      index   += 1;
+	      j       += 1;
 	   end;
 	   basename[j] := #0;   { A string MUST end with this character }
 
-	   if not lookup(base, basename, ord(basename[0]), inode) then
+	   if not lookup(base, @basename, str_len, inode) then
 	   begin
 	      { One of the directory in the path has not been found !!! }
 	      kfree_s(inode, sizeof(inode_t));
-	      printk('VFS (namei): cannot find directory %s (in %s)\n', [basename, filename]);
+	      printk('VFS (namei): cannot find directory %c%s (in %c%s)\n', [basename[0], basename, path[0], path]);
 	      result := -ENOENT;
 	      exit;
 	   end;
@@ -192,32 +212,34 @@ begin
 	   if not IS_DIR(inode) then
 	      begin
 		 kfree_s(inode, sizeof(inode_t));
-		 printk('VFS(namei): %s is not a directory\n', [path, basename]);
+		 printk('VFS(namei): %c%s is not a directory\n', [basename[0], basename]);
 		 result := -ENOTDIR;
 		 exit;
 	      end;
 
-           base := inode;   { Next directory }
+           base  := inode;   { Next directory }
+	   index += 1;
        end;
 
    { Look for the file }
-   j     := 1;
-   index += 1;
-   basename[0] := #0;
+   j       := 0;
+   str_len := 0;
    while (filename[index] <> #0) do
       begin
-         basename[0] := chr(ord(basename[0]) + 1);
 	 basename[j] := filename[index];
+	 str_len     += 1;
 	 index       += 1;
 	 j           += 1;
       end;
    basename[j] := #0;
 
-   if not lookup(base, basename, ord(basename[0]), inode) then
+   if not lookup(base, @basename, str_len, inode) then
       begin
          { File has not been found !!! }
 	 kfree_s(inode, sizeof(inode_t));
-	 printk('VFS (namei): cannot find file %s\n', [path]);
+	 {$IFDEF DEBUG}
+	    printk('VFS (namei): cannot find file %c%s (in %c%s)\n', [basename[0], basename, path[0], path]);
+	 {$ENDIF}
 	 result := -ENOENT;
 	 exit;
       end
@@ -226,7 +248,7 @@ begin
          if IS_DIR(inode) then
 	    begin
 	       kfree_s(inode, sizeof(inode_t));
-	       printk('VFS (namei): %s is a directory\n', [path]);
+	       printk('VFS (namei): %c%s is a directory\n', [path[0], path]);
 	       result := -EISDIR;
 	       exit;
 	    end
@@ -245,7 +267,7 @@ end;
  *
  * Output : file descriptor or -1
  *****************************************************************************}
-function sys_open (path : pointer ; flags, mode : dword) : dword; cdecl; [public, alias : 'SYS_OPEN'];
+function sys_open (path : pchar ; flags, mode : dword) : dword; cdecl; [public, alias : 'SYS_OPEN'];
 
 var
    fd      : dword;
@@ -253,6 +275,10 @@ var
    inode   : P_inode_t;
 
 begin
+
+   {$IFDEF DEBUG}
+      printk('Welcome in sys_open (%c%s)\n', [path[0], path]);
+   {$ENDIF}
 
    asm
       sti   { Interrupts on }
@@ -270,8 +296,8 @@ begin
       fichier := kmalloc(sizeof(file_t));
       if (fichier = NIL) then
           begin
-	     printk('VFS (open): not enough memory to open %s\n', [path]);
-	     result := -1;
+	     printk('VFS (open): not enough memory to open %c%s\n', [path[0], path]);
+	     result := -ENOMEM;
 	     exit;
 	  end;
 
@@ -289,7 +315,7 @@ begin
       end;
 
       {$IFDEF DEBUG}
-         printk('open(): %s has inode number %d\n', [path, inode^.ino]);
+         printk('open(): %c%s has inode number %d\n', [path[0], path, inode^.ino]);
       {$ENDIF}
 
       if not (access_rights_ok(flags, inode)) then
@@ -297,7 +323,7 @@ begin
 	    printk('VFS (open): permission denied\n', []);
 	    kfree_s(fichier, sizeof(file_t));
 	    kfree_s(inode, sizeof(inode_t));
-	    result := -EACCESS;
+	    result := -EACCES;
 	    exit;
 	 end;
 
@@ -315,12 +341,14 @@ begin
 
       current^.file_desc[fd] := fichier;
       result := fd;  { OK, stop here (that was not funny) }
-
+      {$IFDEF DEBUG}
+         printk('VFS (open): fd %d is opened (%c%s)\n', [fd, path[0], path]);
+      {$ENDIF}
    end
    else
    { No more free file descriptors }
    begin
-      printk('VFS: cannot open %s (no file descriptor)\n', [path]);
+      printk('VFS: cannot open %c%s (no file descriptor)\n', [path[0], path]);
       result := -EMFILE;
    end;
 

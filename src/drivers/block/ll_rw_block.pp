@@ -5,7 +5,7 @@
  *
  *  CopyLeft 2002 GaLi
  *
- *  version 0.0 - 28/07/2002 - GaLi - version initiale
+ *  version 0.0 - 28/07/2002 - GaLi - initial version
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -39,6 +39,7 @@ INTERFACE
 
 
 { Déclaration des procédures externes }
+procedure schedule; external;
 procedure printk (format : string ; args : array of const); external;
 procedure sleep_on (wait : PP_wait_queue); external;
 procedure wake_up (wait : PP_wait_queue); external;
@@ -80,10 +81,27 @@ IMPLEMENTATION
 procedure lock_buffer (bh : P_buffer_head);
 begin
 
-   { On attend que le tampon soit déverrouillé }
+   {$IFDEF DEBUG}
+      printk('lock_buffer: Trying to lock buffer\n', []);
+   {$ENDIF}
+
+
+   asm
+      pushfd
+      cli
+   end;
+
+   { Wait for the buffer to be unlocked }
    while (bh^.state and BH_Lock) = BH_Lock do
       sleep_on(@bh^.wait);
 
+   asm
+      popfd
+   end;
+
+   {$IFDEF DEBUG}
+      printk('lock_buffer: lock buffer\n', []);
+   {$ENDIF}
    bh^.state := bh^.state or BH_Lock;
 end;
 
@@ -99,6 +117,9 @@ begin
       printk('unlock_buffer: buffer not locked !!!\n', [])
    else
       begin
+         {$IFDEF DEBUG}
+	    printk('unlock_buffer: unlock buffer and wake up processes\n', []);
+	 {$ENDIF}
          bh^.state := bh^.state and (not BH_Lock);
 	 wake_up(@bh^.wait);
       end;
@@ -144,7 +165,7 @@ begin
 	 panic('');
       end;
 
-   { On rempli req }
+   { Initialize req }
 
    req^.major  := major;
    req^.minor  := bh^.minor;
@@ -156,9 +177,8 @@ begin
    req^.bh     := bh;
    req^.next   := NIL;
 
-   {* On ajoute la requête
-    * NOTE: il faudrait ranger les reqêtes dans un ordre précis afin
-    * d'éviter au maximum les déplacements des têtes de lecture *}
+   {* Add request
+    * FIXME: order requests to avoid stupid read/write heads moves *}
 
    asm
       pushfd
@@ -178,7 +198,7 @@ begin
 	 asm
 	    popfd   { Fin section critique }
 	 end;
-	 blk_dev[major].request_fn(major);   { Exécution de la requête }
+	 blk_dev[major].request_fn(major);   { Execute the request }
       end
    else
       begin
@@ -251,34 +271,43 @@ begin
 
    cur_req := blk_dev[major].current_request;
 
+   unlock_buffer(cur_req^.bh);
+
    if (uptodate = FALSE) then
       begin
          printk('end_request: I/O error, dev %d:%d, sector %d !!!\n', [cur_req^.major, cur_req^.minor, cur_req^.sector]);
 	 cur_req^.bh^.state := cur_req^.bh^.state and (not BH_Uptodate);
-	 unlock_buffer(cur_req^.bh);
+	 {$IFDEF DEBUG}
+	    printk('end_request: buffer is NOT uptodate\n', []);
+	 {$ENDIF}
 	 blk_dev[major].current_request := cur_req^.next;
 	 asm
 	    popfd   { Fin section critique }
 	 end;
-	 if (cur_req^.next <> NIL) then
+	 kfree_s(cur_req, sizeof(request));
+   {schedule;}
+	 if (blk_dev[major].current_request <> NIL) then
 	     blk_dev[major].request_fn(major);
       end
    else
       begin
 	 cur_req^.bh^.state := cur_req^.bh^.state or BH_Uptodate;
-	 unlock_buffer(cur_req^.bh);
+	 {$IFDEF DEBUG}
+	    printk('end_request: buffer is now uptodate\n', []);
+	 {$ENDIF}
 	 cur_req := blk_dev[major].current_request;
 	 blk_dev[major].current_request := cur_req^.next;
 	 asm
 	    popfd   { Fin section critique }
 	 end;
-	 if (cur_req^.next <> NIL) then
+	 kfree_s(cur_req, sizeof(request));
+   {schedule;}
+	 if (blk_dev[major].current_request <> NIL) then
 	     blk_dev[major].request_fn(major);
       end;
 
 {   wake_up(@wait_for_request); }   { Réveille les processus qui attendent une
                                       demande de reqête !!! Inutile !!!}
-   kfree_s(cur_req, sizeof(request));
 
 end;
 

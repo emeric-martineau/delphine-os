@@ -1,77 +1,289 @@
-#!/bin/sh
+#!/bin/bash
 
-test_return()
+# DelphineOS installation script
+#
+# FIXME: if disk image already exists, we don't need to :
+#	 - Copy the boot sector
+#	 - Create directories, ...
+
+
+FPC_VERSION="1.0.6"   # Current FPC version
+VERSION="0.0.0d"      # Current DelphineOS version
+NOT_FOUND="\033[31;1mnot found\033[0m"
+
+
+compile_kernel()
 {
-   if [ $? != 0 ]
-   then
-      echo 'Error during installation !!!'
-      umount $1
-      rm -r wxy
-      echo ''
-      exit
+   echo -n "Compiling DelphineOS kernel...   "
+
+   make > kernel.log 2> kernel.log
+
+   if [ ! $? -eq 0 ]; then
+	echo -e "\033[31;1mCompilation error.\n\nPlease see kernel.log\033[0m"
+	echo;
+	return;
    fi
+
+   if [ ! -e mkboot ]; then
+        gcc -o mkboot mkboot.c
+   fi
+   
+   if [ -f $1 ]; then
+      losetup -o 32256 /dev/loop1 $1
+      mount -t ext2 /dev/loop1 wxy/ -o loop 2> /dev/null > /dev/null
+      if [ ! $? -eq 0 ]; then
+           echo;
+           echo -e "\033[31;1m\nCannot mount $1. Check if loopback is activated in your kernel.\033[0m"
+	   echo;
+	   rm -rf wxy/
+           exit;
+      fi
+   else
+      mount -t ext2 $1 wxy/ 2> /dev/null > /dev/null
+      if [ ! $? -eq 0 ]; then
+           echo;
+	   echo -e "\033[31;1m\nCannot mount $1. Check if a disk is present and ext2 formatted\033[0m"
+	   echo;
+	   rm -rf wxy/
+	   exit;
+      fi
+   fi
+
+   echo "OK"
+
+   echo -n "Copying kernel to $1...   "
+
+   cp ./src/kernel/kernel wxy/
+
+   if [ -f $1 ]; then
+        ./mkboot /dev/loop1 wxy/kernel
+   else
+        ./mkboot $1 wxy/kernel
+   fi
+
+   echo " OK"
+
+   echo -n 'Compiling boot sector file...   '
+   nasm ./src/boot/boot.S
+   echo " OK"
+
+   #Copying files to mount point
+   
+   mkdir wxy/dev 2> /dev/null
+   mkdir wxy/bin 2> /dev/null
+   mkdir wxy/sbin 2> /dev/null
+   mknod wxy/dev/keyb c 1 0 2> /dev/null
+   mknod wxy/dev/tty0 c 4 0 2> /dev/null
+
+   if [ -f $1 ]; then
+	umount wxy/
+	dd if=src/boot/boot of=/dev/loop1 2> /dev/null
+	losetup -d /dev/loop1
+	chmod a+rw $1
+   else
+   	./mkboot $1 wxy/kernel
+	dd if=./src/boot/boot of=$1 2> /dev/null
+	umount wxy/
+   fi
+
+   rm -rf wxy
+
 }
 
-echo ''
 
-if [ $# != 1 ] 
-   then
-   echo 'You must specify device where to install Delphine OS'
-   echo ''
-   echo 'Ex : delphine_install /dev/fd0 or delphine_install /dev/hda1'
-   echo ''
-   exit
+# Beginning of the DelphineOS install script
+
+clear;
+echo; echo;
+
+rm -f c.img
+
+echo -e "\033[32;1mDelphineOS $VERSION Installation:\033[0m"
+echo; echo;
+
+if [ $(whoami) != "root" ]; then
+     echo "Only root can execute this script"
+     echo;echo;
+     exit;  
 fi
 
-echo DelphineOS installation ...
-echo
+mkdir wxy 2> /dev/null
 
-mkdir wxy
+echo -n "Check if the FPC is present...   "
 
-case $1 in
-   /dev/fd0) mount /dev/fd0 -t ext2 wxy;test_return;;
-   /dev/hda1) mount /dev/hda1 -t ext2 wxy;test_return;;
-   /dev/hda2) mount /dev/hda2 -t ext2 wxy;test_return;;
-   /dev/hda3) mount /dev/hda3 -t ext2 wxy;test_return;;
-   /dev/hda4) mount /dev/hda4 -t ext2 wxy;test_return;;
-   /dev/hbd1) mount /dev/hdb1 -t ext2 wxy;test_return;;
-   /dev/hbd2) mount /dev/hdb2 -t ext2 wxy;test_return;;
-   /dev/hdb3) mount /dev/hdb3 -t ext2 wxy;test_return;;
-   /dev/hdb4) mount /dev/hdb4 -t ext2 wxy;test_return;;
-   *) echo $1 ': Device not supported for Delphine OS installation';
-      echo '';rm -r wxy;exit;;
+PPC=$(ppc386 -iV 2> /dev/null)
+
+if [ ! $? -eq 1 ]; then
+     echo -e $NOT_FOUND
+     echo;echo;
+     echo "Please install FPC $FPC_VERSION and try again  :-)"
+     exit;
+fi
+
+echo "OK (version $PPC)"
+
+if [ $PPC != $FPC_VERSION ]; then
+     echo -e "\033[31;1mWarning: Please update FPC to version $FPC_VERSION\033[0m"
+fi
+
+
+echo -n "Check FPC configuration...   "
+echo "begin" > test.pp
+echo "end." >> test.pp
+PPC=$(ppc386 test.pp 2> /dev/null)
+
+if [ ! $? -eq 0 ]; then
+     echo;echo;
+     echo "FPC isn't correctly configured"
+     rm -f test*
+     exit;
+fi
+
+rm -f test*
+
+echo "    OK"
+
+
+echo -n "Check if nasm is present...   "
+
+nasm -v 2>&1 > /dev/null
+
+if [ ! $? -eq 0 ]; then
+     echo -e $NOT_FOUND
+     echo;
+     echo -e "\033[31;1mWarning: Please install NASM 0.98\033[0m"
+     echo;
+     exit;
+fi
+
+echo "   OK"
+
+echo -n "Check if gcc is present...   "
+
+gcc -v 2> /dev/null
+
+if [ ! $? -eq 0 ]; then
+     echo -e $NOT_FOUND
+     echo;
+     echo -e "\033[31;1mWarning: Please install gcc\033[0m"
+     echo;
+     exit;
+fi
+
+echo "    OK"
+
+
+echo;
+echo "----------------------------------------"
+echo;
+echo "Where do you want to install DelphineOS:"
+echo;
+echo "	1 - Make a disk image for Bochs"
+echo "	2 - Floppy disk (/dev/fd0)"
+echo;
+echo -n "Please, enter your choice [1]: "
+read REP
+
+if [ "$REP" == "" ]; then
+     REP="1"
+fi
+
+case $REP in
+     1) echo; echo;
+        echo "Creating Bochs environment:"
+        echo;
+        echo -n "Check if Bochs is present...   "
+	bochs --help 2> /dev/null
+	if [ ! $? -eq 0 ]; then
+	     echo -e $NOT_FOUND
+	     echo;
+	     echo -e "\033[31;1mWarning: Please install Bochs 2.0\033[0m"
+	     echo
+	     exit;
+	fi
+
+	echo "  OK"
+
+	if [ ! -e ./bochs/delphineOS.img ]; then
+	     echo -n "Creating HDD image (10Mb) using bximage...   "
+	     echo -e "\n\n\n" > options
+	     bximage < options > /dev/null
+	     rm -f options
+
+	     mv c.img delphineOS.img
+
+	     rm -f c.img
+	     echo "OK"
+	     echo -n "Formatting HDD image (ext2)...   "
+	     losetup -o 32256 /dev/loop6 delphineOS.img
+	     mke2fs /dev/loop6 -F -q 2> /dev/null
+	     losetup -d /dev/loop6
+	     echo "OK"
+	else
+	     mv ./bochs/delphineOS.img delphineOS.img
+	fi
+
+	compile_kernel delphineOS.img
+
+	losetup /dev/loop1 delphineOS.img
+	cp ./src/boot/mbr partoche
+	echo -n -e "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x80\x01" >> partoche
+	echo -n -e "\x01\x00\x83\x0F\x3F\x13\x3F\x00\x00\x00\x81\x4e\x00\x00\x00\x00" >> partoche
+	echo -n -e "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00" >> partoche
+	echo -n -e "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00" >> partoche
+	echo -n -e "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x55\xAA" >> partoche
+	dd if=partoche of=/dev/loop1 2> /dev/null
+	rm partoche
+	losetup -d /dev/loop1
+
+	mv delphineOS.img bochs/delphineOS.img
+	echo;
+	echo -e "\033[32;1mTake a look at bochs/bochsrc (lines 89 and 132) and run Bochs  :-)\033[0m"
+	;;
+
+     2) echo; echo;
+        compile_kernel /dev/fd0
+	echo;
+	echo "You can now reboot with /dev/fd0. It should be OK  :-)";;
+     *) echo -e "\nIs your brain dead ???";
 esac
 
-# Compilation du noyau !!!
 
-make
-cp ./src/kernel/kernel wxy/kernel
+# Now, creating script to compile programs for DelphineOS using gcc
 
-# Voir mkboot.c
-if [ -e "mkboot" ]
-then
+   if [ ! -e flagger ]; then
+        echo
+        echo -n "Creating 'flagger' script...   "
+
+	echo "#!/bin/bash" > flagger
+	echo "#delphineOS" >> flagger
+	echo "" >> flagger
+	echo "TEST=\`echo \$@ |grep -e '-c '\`" >> flagger
+	echo "" >> flagger
+	echo "if [ ! -n \"\$TEST\" ]; then" >> flagger
+	echo -n "gcc \$@ -nostdinc -nostdlib -nodefaultlibs -nostartfiles -I$PWD/src/include -I. -Wall -fno-builtin -static " >> flagger
+	echo -n "$PWD/lib/dietlibc.a -Xlinker $PWD/lib/start.o -Xlinker $PWD/lib/environ.o " >> flagger
+	echo "-Xlinker -T -Xlinker $PWD/src/lib/c_linkfile" >> flagger
+	echo "else" >> flagger
+	echo "gcc \$@ -nostdinc -nostdlib -nodefaultlibs -nostartfiles -I$PWD/src/include -I. -Wall -fno-builtin -static " >> flagger
+	echo "fi" >> flagger
+	chmod +x flagger
+        echo "OK"
+   fi
+
    echo
-else
-   echo -n 'Compiling mkboot.c ... '
-   gcc  -o mkboot mkboot.c
-   echo 'OK'
-fi
+   if [ ! -e /usr/bin/flagger ]; then
+	 echo "Copying 'flagger' to /usr/bin"
+	 cp flagger /usr/bin/flagger
+   else
+        if [ -n "$(grep '#delphineOS' /usr/bin/flagger)" ]; then
+	     echo "Copying 'flagger' to /usr/bin"
+	     cp flagger /usr/bin/flagger
+	else
+             echo "You can move 'flagger' to /usr/bin to be able to use it easily"
+	fi
+   fi
 
-./mkboot $1 wxy/kernel
-
-echo -n 'Compiling boot sector file ...   '
-   a ./src/boot/boot.S
-   test_return
-   echo 'OK'
-
-# On copie le secteur de boot sur le périphérique spécifié
-   
-   dd if=./src/boot/boot of=$1 2> wxy/temp
-   test_return
-
-echo -n 'Unmounting device ...   '
-rm wxy/temp
-umount wxy
-rm -r wxy
-echo 'OK'
-echo ''
+echo;
+echo -e "\033[32;1mPlease\033[0m, send comments, questions, bug reports to g_cavelier@yahoo.fr. Thank you."
+echo;

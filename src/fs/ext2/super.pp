@@ -43,7 +43,7 @@ INTERFACE
 procedure register_filesystem (fs : P_file_system_type); external;
 procedure printk (format : string ; args : array of const); external;
 function  ext2_file_read (fichier : P_file_t ; buffer : pointer ; count : dword) : dword; external;
-function  ext2_lookup (dir : P_inode_t ; name : string ; len : dword ; res_inode : P_inode_t) : boolean; external;
+function  ext2_lookup (dir : P_inode_t ; name : pchar ; len : dword ; res_inode : P_inode_t) : boolean; external;
 procedure ext2_read_inode (inode : P_inode_t); external;
 function  kmalloc (len : dword) : pointer; external;
 function  bread (major, minor : byte ; block, size : dword) : P_buffer_head; external;
@@ -132,7 +132,7 @@ begin
 	     end
 	 else
 	     {* Superblock seems to be valid, we are going to fill sb (passed
-	      * a parameter) *}
+	      * as parameter) *}
 	      
 	     if (super^.rev_level > 0) then
 	         printk('EXT2-fs: superblock has revision level > 0 (%d), I may not read it correctly !!!\n', [super^.rev_level]);

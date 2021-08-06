@@ -32,16 +32,18 @@ unit cpu;
 INTERFACE
 
 
-procedure printk (format : string ; args : array of const); external;
-procedure outb (port : word ; val  : byte); external;
 function  inb  (port : word) : byte; external;
+procedure outb (port : word ; val  : byte); external;
+procedure printk (format : string ; args : array of const); external;
 
 
 procedure cpuspeed;
 procedure cpuinfo;
 
+
 var
    fpu_present : boolean;
+
 
 
 IMPLEMENTATION
@@ -51,6 +53,7 @@ IMPLEMENTATION
 const
    INTEL_STR = $756E6547;
    AMD_STR   = $68747541;
+
 
 var
    id_str   : dword;
@@ -89,14 +92,8 @@ end;
  * who told me I can use his source code. Source code has been modified so it
  * can run with DelphineOS.
  *
- * Elle détermine la vitesse du processeur en mesurant le temps d'éxécution 
- * d'une boucle. Pour les Pentium, le Time Stamp Counter (si supporté) est 
- * utilisé pour un résultat plus précis.
- *
- * Data speed table : Le premier compte le nombre de fois ou l'on répète la
- * boucle. Les nombres plus grands prennent plus de temps et sont utilisés pour
- * compenser pour les CPUs rapides. Le deuxième nombre est un facteur
- * d'ajustement pour obtenir une vitesse en Mhz
+ * It determines CPU speed by measuring a loop execution time. If CPU is a 
+ * Pentium, the Time Stamp Counter is used.
  *****************************************************************************}
 procedure cpuspeed;
 
@@ -132,22 +129,21 @@ begin
            push  es
            pop   es
 
-           { Démarrage du timer et attend 3M/6M cycles CPU }
+           { Start timer and wait 3M/6M CPU cycles }
            in    al , 61h
            push  es
            pop   es
-           or    al , 1          { Démarrage du timer (gate bit on) }
+           or    al , 1          { Start timer (gate bit on) }
            out   61h, al
            push  es
            pop   es
-           rdtsc                 { On récupère le Time Stamp Counter }
-           add   eax, 3000000    { On ajoute 3.000.000 }
+           rdtsc                 { Get the Time Stamp Counter }
+           add   eax, 3000000
            adc   edx, 0
            cmp   family, 6
            jb    @TIMER1
-           add   eax, 3000000    {* OK, on ajoute encore 3.000.000 .. }
-           adc   edx, 0          {* pour eviter une base de temps
-	                          * trop courte *}
+           add   eax, 3000000
+           adc   edx, 0
 
          @TIMER1:
            mov   count_lo, eax   { Save value }
@@ -156,17 +152,17 @@ begin
 
          @TIMER2:
            rdtsc
-           cmp   edx, count_hi   { Test si le compteur a passe 3M/6M }
+           cmp   edx, count_hi   { Test if counter beyond 3M/6M }
            jb    @TIMER2
            cmp   eax, count_lo
-           jb    @TIMER2         { On boucle sinon }
+           jb    @TIMER2         { If not, loop }
 
-           { Le TSC a passe 3M/6M, nettoyage et calcul de la vitesse du CPU }
+           { TSC is beyond 3M/6M, cleaning and calculate CPU speed }
 
            in    al , 61h
            push  es
            pop   es
-           and   al , 0FEh       { Arrêt du timer }
+           and   al , 0FEh       { Stop timer }
            out   61h, al
            push  es
            pop   es
@@ -174,17 +170,17 @@ begin
            out   43h, al
            push  es
            pop   es
-           in    al , 42h        { On récupère le LSB }
+           in    al , 42h        { Get LSB }
            push  es
            pop   es
            mov   dl , al
-           in    al , 42h        { On récupère le MSB }
+           in    al , 42h        { Get MSB }
            push  es
            pop   es
            mov   dh , al         { DX = timer 2 value }
 
            mov   cx , -1
-           sub   cx , dx         { CX = durée }
+           sub   cx , dx         { CX = duration }
            xor   ax , ax
            xor   dx , dx
            cmp   cx , 110
@@ -265,35 +261,34 @@ begin
 
            @begin_chk:
                xor   eax, eax
-               mov   ah , 32      { Taille d'une table (8*4) }
+               mov   ah , 32      { Size of one table (8*4) }
                mov   al , vendor
-               mul   ah           { AX = index de la table }
-               lea   esi, @type0  { Adresse des tables de valeurs }
+               mul   ah           { AX = table index }
+               lea   esi, @type0  { Values adress }
                add   esi, eax
 
                mov   eax, family
                xor   ah , ah
                shl   ax , 1
                shl   ax , 1
-               add   esi, eax     { SI pointe to sur le valeur pour le cpu }
-               xor   dx , dx      { On met la valeur décimale à zéro .. }
-               mov   ax , word [esi]   { ..au cas ou le timing serait inconnu }
+               add   esi, eax
+               xor   dx , dx      { Set decimal value to zero.. }
+               mov   ax , word [esi]   { ..if timing is unknown }
 
                cmp   ax , 0       { Timing inconnu ? }
-               je    @CPUS_SKP    { On saute tout ce qui suit si c'est la cas }
+               je    @CPUS_SKP
 
-               {* Maintenant, configuration du timer 2 pour calcul du temps 
-                * d'éxécution *}
+               { Now, configure timer 2 to calculate execution speed } 
 
                mov   al , 0B0h    { Timer 2 command, mode 0 }
-               out   43h, al      { Envoi commande }
+               out   43h, al      { Send command }
                push  es
                pop   es
-               mov   al , 0FFh    { Compteur = 0FFFFh }
-               out   42h, al      { Envoi LSB vers compteur }
+               mov   al , 0FFh    { Counter = 0FFFFh }
+               out   42h, al      { Send LSB to counter }
                push  es
                pop   es
-               out   42h, al      { Envoi MSB vers compteur }
+               out   42h, al      { Send MSB to counter }
                push  es
                pop   es
 
@@ -301,15 +296,15 @@ begin
                push  es
                pop   es
                or    al , 1       { Set gate bit on }
-               out   61h, al      { Démarrage timer }
+               out   61h, al      { Start timer }
                xor   dx , dx
                mov   bx , 1
                mov   ax , word [esi]
 
-               { Cette boucle éxécute quelques divisions (instruction lente) }
+               { This loop executes some divides (slow instruction) }
 
             @CPUS_LOOP1:
-               mov   cx , 10h     { On boucle 32 fois }
+               mov   cx , 10h     { Loop 32 times }
 
                @CPUS_LOOP2:
                    div   bx
@@ -330,7 +325,7 @@ begin
                dec   ax
                jnz   @CPUS_LOOP1
 
-               { Quand la boucle est terminée, le timer est stoppé }
+               { When loop is done, timer is stopped }
 
                in    al , 61h
                push  es
@@ -338,37 +333,32 @@ begin
                and   al , 0FEh    { Set gate bit off }
                out   61h, al
 
-               {* Maintenant, le contenu du timer est lu et la durée
-                * d'execution des instructions est déterminée *}
+               { Now, read timer }
 
                mov   al , 80h     { latch output command }
-               out   43h, al      { Envoi commande }
+               out   43h, al      { Send command }
                push  es
                pop   es
-               in    al , 42h     { On récupère le LSB du compteur }
+               in    al , 42h     { Get LSB from counter }
                push  es
                pop   es
                mov   dl , al
-               in    al , 42h     { On récupère le MSB du compteur }
-               mov   dh , al      { DX = compteur }
+               in    al , 42h     { Get MSB from counter }
+               mov   dh , al      { DX = counter }
                mov   ax , 0FFFFh
-               sub   ax , dx      { AX = durée }
+               sub   ax , dx      { AX = duration }
                mov   cx , ax
-               mov   bx , ax      { Sauvegarde }
+               mov   bx , ax      { Save AX }
                mov   ax , cx
-               cmp   word ptr [esi+2], 0    { Pas de facteur d'ajustement ? }
+               cmp   word ptr [esi+2], 0    { No factor ajust ? }
                je    @CPUS_SKP
 
-               {* Maintenant, on compense pour chaque type de CPU, vu que
-	        * chaque type éxécute les instructions avec des timings
-		* différents *}
-
-               mov   ax , word [esi+2]     { Récupère le facteur d'ajustement }
+               mov   ax , word [esi+2]     { Get factor ajust }
                xor   dx , dx
                shl   ax , 1
                rcl   dx , 1
                shl   ax , 1
-               rcl   dx , 1       { Facteur * 4 }
+               rcl   dx , 1       { Factor * 4 }
                div   cx
            
                push  ax
@@ -415,25 +405,24 @@ var
    stepping        : word;
 
 begin
-   {* On regarde d'abord si le ID flag (bit flag) peut être mis à 1 ou à 0. Si
-    * oui, on éxécute l'instruction CPUID sinon on fait les bons vieux
-    * tests. *}
+   {* Determines if ID flag (bit flag) can be set to 1 or 0. If yes,
+    * execute CPUID instruction *}
 
    fpu_present := check_fpu;
 
    printk('CPU: ', []);
 
    asm
-      pushfd                 { Empile Eflags }
-      pop   eax              { On récupère le registre Eflags dans EAX }
-      mov   ecx, eax         { On sauvegarde cette valeur dans ECX }
-      or    eax, 200000h     { Inverse ID bit dans Eflags }
+      pushfd
+      pop   eax              { Get Eflags register in EAX }
+      mov   ecx, eax         { Save EAX in ECX }
+      or    eax, 200000h     { Invert ID bit in Eflags }
       push  eax
-      popfd                  { On renvoie la valeur modifiée dans Eflags }
-      pushfd                 { On remet Eflags dans la pile }
-      pop   eax              { On met Eflags dans EAX }
+      popfd
+      pushfd
+      pop   eax
       xor   eax,ecx
-      je    @no_cpuid        { l'ID bit n'a pu être changé -> pas de CPUID }
+      je    @no_cpuid        { ID bit can't be changed -> can't CPUID }
 
       mov   byte cpuid_OK, 1
       jmp   @fin_test_cpuid
@@ -559,19 +548,19 @@ begin
            end; { -> then }
        end; { if (id_str = INTEL_STR) }
 
-       { C'est un processeur que nous ne reconnaissons pas pour le moment }
+       { It's an unkown CPU (nor Intel, nor AMD) }
        if (id_str <> INTEL_STR) and (id_str <> AMD_STR)
        then begin
            printk('Mysterious (%h) ', [id_str]) ;
        end ;
 
-       cpuspeed;      { Affiche la vitesse du CPU en Mhz }
+       cpuspeed;      { Print CPU speed }
 
    end { -> if (cpuid_OK) }
    else begin
        printk('CPUID instruction not supported !!! ', []);
      
-       { Ici, il faudrait faire les bons vieux tests (pas le temps !!!) }
+       { FIXME: if CPUID instruction isn't supported we could get CPU info with the good old tests }
      
    end;
 
