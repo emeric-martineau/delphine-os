@@ -37,9 +37,13 @@ procedure free_gdt_entry (index : dword);
 
 
 function  bitscan(nb : dword) : dword; external;
-procedure printf(format : string ; args : array of const); external;
+function  kmalloc (len : dword) : pointer; external;
 procedure memcpy(src, dest : pointer ; size : dword); external;
+procedure memset (adr : pointer ; c : byte ; size : dword); external;
+procedure printk (format : string ; args : array of const); external;
 
+
+{DEFINE DEBUG}
 
 {$I fs.inc}
 {$I gdt.inc }
@@ -102,34 +106,20 @@ end;
  *****************************************************************************}
 procedure init_tss (tss : P_tss_struct); [public, alias : 'INIT_TSS'];
 begin
+
+   memset(tss, 0, sizeof(tss_struct));
+
    with tss^ do
-      begin
-         back_link := 0;
-         __blh     := 0;
-   
-         ss0    := $18;
-	 __ss0  := 0;
-	 esp0   := 0;
-         ss1    := 0;
-         __ss1  := 0;
-         esp1   := 0;
-         ss2    := 0;
-         __ss2  := 0;
-         esp2   := 0;
-	 ss     := $2B;
-	 __ss   := 0;
-         esp    := 0;
-         ebp    := 0;
-	 cs     := $23;
-	 ds     := $2B;
-	 es     := $2B;
-	 fs     := $2B;
-	 gs     := $2B;
-         ldt    := 0;
-         __ldt  := 0;
-         trace  := 0;
-         bitmap := 0;
-      end;
+   begin
+      ss0 := $18;
+      ss  := $2B;
+      cs  := $23;
+      ds  := $2B;
+      es  := $2B;
+      fs  := $2B;
+      gs  := $2B;
+   end;
+
 end;
 
 
@@ -148,12 +138,13 @@ function set_tss_desc(adr : pointer) : dword; [public, alias : 'SET_TSS_DESC'];
 
 var
    nb                : dword;
-   tmp_desc          : t_gdt_desc;
+   tmp_desc          : gdt_desc;
    tss_desc_dest_adr : pointer;
    tmp1              : word;
    tmp2, tmp3        : byte;
 
 begin
+
    asm
       mov   eax, adr
       mov   tmp1, ax
@@ -176,27 +167,25 @@ begin
       cli   { Section critique }
    end;
 
-   nb := get_free_gdt_entry;
+   nb := get_free_gdt_entry();
    
    if (nb <> -1) then
-      begin
-         tss_desc_dest_adr := pointer(gdt_start + (nb * 8));
-
-         memcpy(@tmp_desc, tss_desc_dest_adr, sizeof(tmp_desc));
-
-         set_gdt_entry(nb);
-	 result := nb;
-	 asm
-	    popfd   { Fin section critique }
-	 end;
-      end
+   begin
+      tss_desc_dest_adr := pointer(gdt_start + (nb * 8));
+      memcpy(@tmp_desc, tss_desc_dest_adr, sizeof(tmp_desc));
+      set_gdt_entry(nb);
+      result := nb;
+   end
    else
-      begin
-         result := -1;
-	 asm
-	    popfd   { Fin section critique }
-	 end;
-      end;
+   begin
+      printk('set_tss_desc: no more free entries in the GDT\n', []);
+      result := -1;
+   end;
+
+   asm
+      popfd   { Fin section critique }
+   end;
+
 end;
 
 
@@ -218,31 +207,43 @@ var
 
 begin
 
+   asm
+      pushfd
+      cli
+   end;
+
    adr   := bitmap_start;
    compt := 0;
 
    while (adr <= bitmap_end) do
-      begin
-         asm
-	    mov   esi, adr
-	    mov   eax, [esi]
-	    mov   tmp, eax
-	 end;
-
-	 if (tmp<>$FFFFFFFF) then
-	    begin
-	       result := (compt * 32) + bitscan(tmp);
-	       exit;
-	    end;
-
-	 compt := compt + 1;
-	 adr   := adr + 4;
-
+   begin
+      asm
+         mov   esi, adr
+	 mov   eax, [esi]
+	 mov   tmp, eax
       end;
+
+      if (tmp <> $FFFFFFFF) then
+      begin
+	 result := (compt * 32) + bitscan(tmp);
+	 asm
+	    popfd
+	 end;
+	 exit;
+      end;
+
+      compt := compt + 1;
+      adr   := adr + 4;
+
+   end;
 
    { Si on n'arrive ici, c'est qu'il n'y a plus d'entrées libres !!! }
 
    result := -1;
+
+   asm
+      popfd
+   end;
 
 end;
 
@@ -263,16 +264,23 @@ var
 
 begin
 
+   {$IFDEF DEBUG}
+      printk('set_gdt_entry: index=%d\n', [index]);
+   {$ENDIF}
+
    ofs := (index div 32) * 4;
    adr := bitmap_start + ofs;   { Adresse du dword à modifier dans le bitmap }
 
    val := value[index mod 32];
 
    asm
+      pushfd
+      cli
       mov   edi, adr
       mov   eax, [edi]
       or    eax, val
       mov   [edi], eax
+      popfd
    end;
 
 end;
@@ -293,17 +301,24 @@ var
 
 begin
 
+   {$IFDEF DEBUG}
+      printk('free_gdt_entry: index=%d\n', [index]);
+   {$ENDIF}
+
    ofs := (index div 32) * 4;
    adr := bitmap_start + ofs;
 
    val := value[index mod 32];
 
    asm
+      pushfd
+      cli
       mov   edi, adr
       mov   eax, [edi]
       not   val
       and   eax, val
       mov   [edi], eax
+      popfd
    end;
 
 end;

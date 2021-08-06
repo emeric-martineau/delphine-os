@@ -17,6 +17,9 @@ procedure init_keyboard; external;
 procedure init_fd; external;
 procedure init_vfs; external;
 procedure init_sched; external;
+procedure init_rtl8139_pci; external;
+procedure init_rtl8139_isa; external;
+procedure init_ne_isa; external;
 
 procedure init_tss (tss : P_tss_struct); external;
 procedure printk (format : string ; args : array of const); external;
@@ -26,6 +29,8 @@ function  kmalloc (len : dword) : pointer; external;
 function  get_new_pid : dword; external;
 function  get_free_page : pointer; external;
 procedure memcpy (src, dest : pointer ; size : dword); external;
+procedure memset (adr : pointer ; c : byte ; size : dword); external;
+
 
 
 { Les définitions suivantes sont juste pour des tests }

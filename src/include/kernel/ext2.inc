@@ -8,6 +8,31 @@
 
 {$I buffer.inc}
 
+
+const
+
+{* File system states *}
+
+   EXT2_VALID_FS = 1;	{* Unmounted cleanly *}
+   EXT2_ERROR_FS = 2;	{* Errors detected *}
+
+
+{*
+ * Ext2 directory file types.  Only the low 3 bits are used.  The
+ * other bits are reserved for now.
+ *}
+
+   EXT2_FT_UNKNOWN  = 0;
+   EXT2_FT_REG_FILE = 1;
+   EXT2_FT_DIR      = 2;
+   EXT2_FT_CHRDEV   = 3;
+   EXT2_FT_BLKDEV   = 4;
+   EXT2_FT_FIFO     = 5;
+   EXT2_FT_SOCK     = 6;
+   EXT2_FT_SYMLINK  = 7;
+   EXT2_FT_MAX      = 8;
+
+
 type
 
    P_ext2_inode       = ^ext2_inode;

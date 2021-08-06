@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 
 # DelphineOS installation script
 #
@@ -7,13 +7,78 @@
 #	 - Create directories, ...
 
 
-FPC_VERSION="1.0.6"   # Current FPC version
-VERSION="0.0.0d"      # Current DelphineOS version
+FPC_VERSION="1.0.10"   # Current FPC version
+VERSION="0.0.0e"      # Current DelphineOS version
 NOT_FOUND="\033[31;1mnot found\033[0m"
 
 
 compile_kernel()
 {
+
+   echo -n "Check if the FPC is present...   "
+
+   PPC=$(ppc386 -iV 2> /dev/null)
+
+   if [ ! $? -eq 1 ]; then
+        echo -e $NOT_FOUND
+        echo;echo;
+        echo "Please install FPC $FPC_VERSION and try again  :-)"
+        echo;echo;
+        exit;
+   fi
+
+   echo "            OK (version $PPC)"
+
+   if [ $PPC != $FPC_VERSION ]; then
+        echo -e "\033[31;1mWARNING: Latest version of the FPC is version $FPC_VERSION\033[0m"
+   fi
+
+
+   echo -n "Check FPC configuration...   "
+   echo "begin" > test.pp
+   echo "end." >> test.pp
+   PPC=$(ppc386 test.pp 2> /dev/null)
+
+   if [ ! $? -eq 0 ]; then
+        echo;echo;
+        echo "FPC isn't correctly configured"
+        echo;echo;
+        rm -f test*
+        exit;
+   fi
+
+   rm -f test*
+
+   echo "                OK"
+
+   echo -n "Check if nasm is present...   "
+
+   nasm -v 2>&1 > /dev/null
+
+   if [ ! $? -eq 0 ]; then
+        echo -e $NOT_FOUND
+        echo;
+        echo -e "\033[31;1mWarning: Please install NASM 0.98 or newer\033[0m"
+        echo;echo;
+        exit;
+   fi
+
+   echo "               OK"
+
+   echo -n "Check if gcc is present...   "
+
+   gcc -v 2> /dev/null
+
+   if [ ! $? -eq 0 ]; then
+        echo -e $NOT_FOUND
+        echo;
+        echo -e "\033[31;1mWarning: Please install gcc\033[0m"
+        echo;echo;
+        exit;
+   fi
+
+   echo "                OK"
+
    echo -n "Compiling DelphineOS kernel...   "
 
    make > kernel.log 2> kernel.log
@@ -49,7 +114,7 @@ compile_kernel()
       fi
    fi
 
-   echo "OK"
+   echo "            OK"
 
    echo -n "Copying kernel to $1...   "
 
@@ -61,19 +126,33 @@ compile_kernel()
         ./mkboot $1 wxy/kernel
    fi
 
-   echo " OK"
+   echo -e "\t\t\b\b\bOK"
 
    echo -n 'Compiling boot sector file...   '
    nasm ./src/boot/boot.S
-   echo " OK"
+   echo "             OK"
 
    #Copying files to mount point
    
-   mkdir wxy/dev 2> /dev/null
+   #FIXME: test if files already exist before copying them
+
    mkdir wxy/bin 2> /dev/null
+   mkdir wxy/etc 2> /dev/null
+   mkdir wxy/dev 2> /dev/null
+   mkdir wxy/tmp 2> /dev/null
    mkdir wxy/sbin 2> /dev/null
-   mknod wxy/dev/keyb c 1 0 2> /dev/null
+   mknod wxy/dev/null c 1 0 2> /dev/null
+   mknod wxy/dev/zero c 6 0 2> /dev/null
+   mknod wxy/dev/keyb c 2 0 2> /dev/null
+   mknod wxy/dev/tty  c 5 0 2> /dev/null
    mknod wxy/dev/tty0 c 4 0 2> /dev/null
+   mknod wxy/dev/tty1 c 4 1 2> /dev/null
+   mknod wxy/dev/tty2 c 4 2 2> /dev/null
+   mknod wxy/dev/tty3 c 4 3 2> /dev/null
+
+   cp base/sbin/*  wxy/sbin/
+   cp base/bin/*   wxy/bin/
+   cp base/etc/*   wxy/etc/
 
    if [ -f $1 ]; then
 	umount wxy/
@@ -96,12 +175,10 @@ compile_kernel()
 clear;
 echo; echo;
 
-rm -f c.img
-
 echo -e "\033[32;1mDelphineOS $VERSION Installation:\033[0m"
-echo; echo;
 
 if [ $(whoami) != "root" ]; then
+     echo;echo;
      echo "Only root can execute this script"
      echo;echo;
      exit;  
@@ -109,77 +186,12 @@ fi
 
 mkdir wxy 2> /dev/null
 
-echo -n "Check if the FPC is present...   "
-
-PPC=$(ppc386 -iV 2> /dev/null)
-
-if [ ! $? -eq 1 ]; then
-     echo -e $NOT_FOUND
-     echo;echo;
-     echo "Please install FPC $FPC_VERSION and try again  :-)"
-     exit;
-fi
-
-echo "OK (version $PPC)"
-
-if [ $PPC != $FPC_VERSION ]; then
-     echo -e "\033[31;1mWarning: Please update FPC to version $FPC_VERSION\033[0m"
-fi
-
-
-echo -n "Check FPC configuration...   "
-echo "begin" > test.pp
-echo "end." >> test.pp
-PPC=$(ppc386 test.pp 2> /dev/null)
-
-if [ ! $? -eq 0 ]; then
-     echo;echo;
-     echo "FPC isn't correctly configured"
-     rm -f test*
-     exit;
-fi
-
-rm -f test*
-
-echo "    OK"
-
-
-echo -n "Check if nasm is present...   "
-
-nasm -v 2>&1 > /dev/null
-
-if [ ! $? -eq 0 ]; then
-     echo -e $NOT_FOUND
-     echo;
-     echo -e "\033[31;1mWarning: Please install NASM 0.98\033[0m"
-     echo;
-     exit;
-fi
-
-echo "   OK"
-
-echo -n "Check if gcc is present...   "
-
-gcc -v 2> /dev/null
-
-if [ ! $? -eq 0 ]; then
-     echo -e $NOT_FOUND
-     echo;
-     echo -e "\033[31;1mWarning: Please install gcc\033[0m"
-     echo;
-     exit;
-fi
-
-echo "    OK"
-
-
-echo;
-echo "----------------------------------------"
 echo;
 echo "Where do you want to install DelphineOS:"
 echo;
-echo "	1 - Make a disk image for Bochs"
-echo "	2 - Floppy disk (/dev/fd0)"
+echo "	1 - On a Bochs a disk image"
+echo "	2 - On a floppy disk (/dev/fd0)"
+echo "	3 - On a hd partition"
 echo;
 echo -n "Please, enter your choice [1]: "
 read REP
@@ -189,20 +201,20 @@ if [ "$REP" == "" ]; then
 fi
 
 case $REP in
-     1) echo; echo;
-        echo "Creating Bochs environment:"
+     1) echo;
+        echo -e "\033[32;1mCreating Bochs environment:\033[0m"
         echo;
         echo -n "Check if Bochs is present...   "
 	bochs --help 2> /dev/null
 	if [ ! $? -eq 0 ]; then
 	     echo -e $NOT_FOUND
 	     echo;
-	     echo -e "\033[31;1mWarning: Please install Bochs 2.0\033[0m"
-	     echo
+	     echo -e "\033[31;1mWarning: Please install Bochs 2.0 or newer\033[0m"
+	     echo;echo;
 	     exit;
 	fi
 
-	echo "  OK"
+	echo "              OK"
 
 	if [ ! -e ./bochs/delphineOS.img ]; then
 	     echo -n "Creating HDD image (10Mb) using bximage...   "
@@ -218,7 +230,7 @@ case $REP in
 	     losetup -o 32256 /dev/loop6 delphineOS.img
 	     mke2fs /dev/loop6 -F -q 2> /dev/null
 	     losetup -d /dev/loop6
-	     echo "OK"
+	     echo "            OK"
 	else
 	     mv ./bochs/delphineOS.img delphineOS.img
 	fi
@@ -241,31 +253,58 @@ case $REP in
 	echo -e "\033[32;1mTake a look at bochs/bochsrc (lines 89 and 132) and run Bochs  :-)\033[0m"
 	;;
 
-     2) echo; echo;
+     2) echo;
+        echo -e "\033[32;1mCreating a bootable floppy:\033[0m"
+	echo;
         compile_kernel /dev/fd0
 	echo;
 	echo "You can now reboot with /dev/fd0. It should be OK  :-)";;
-     *) echo -e "\nIs your brain dead ???";
+
+     3) echo;
+        echo -n "Partition (ex: /dev/hda3): "
+	read PART
+	echo; echo -en "\033[31;1mWARNING: \033[0m"
+	echo -n "Are you sure you want to install DelphineOS on $PART [y/n]: "
+	read REP2
+	echo;
+	if [ "$REP2" != "y" ]; then
+	   echo "Bye"; echo;
+	   exit;
+	fi
+        compile_kernel $PART
+	;;
+
+     *) echo -e "\n\033[31;1mIs your brain dead ???   :-)\033[0m";
 esac
 
 
 # Now, creating script to compile programs for DelphineOS using gcc
+#
+# FIXME: When you can't compile a program because of unresolved symbols, try to delete the GCC
+#        flags "-nostdlib" and "-nodefaultlibs"
 
    if [ ! -e flagger ]; then
         echo
         echo -n "Creating 'flagger' script...   "
 
-	echo "#!/bin/bash" > flagger
+	echo "#!/bin/sh" > flagger
 	echo "#delphineOS" >> flagger
 	echo "" >> flagger
 	echo "TEST=\`echo \$@ |grep -e '-c '\`" >> flagger
 	echo "" >> flagger
 	echo "if [ ! -n \"\$TEST\" ]; then" >> flagger
-	echo -n "gcc \$@ -nostdinc -nostdlib -nodefaultlibs -nostartfiles -I$PWD/src/include -I. -Wall -fno-builtin -static " >> flagger
+	echo -n "gcc \$@ -nostdinc -nostartfiles -I$PWD/src/include -fno-builtin -static " >> flagger
 	echo -n "$PWD/lib/dietlibc.a -Xlinker $PWD/lib/start.o -Xlinker $PWD/lib/environ.o " >> flagger
-	echo "-Xlinker -T -Xlinker $PWD/src/lib/c_linkfile" >> flagger
+	echo "-Xlinker -T -Xlinker $PWD/lib/c_linkfile -Xlinker --strip-all" >> flagger
 	echo "else" >> flagger
-	echo "gcc \$@ -nostdinc -nostdlib -nodefaultlibs -nostartfiles -I$PWD/src/include -I. -Wall -fno-builtin -static " >> flagger
+	echo "gcc \$@ -nostdinc -I$PWD/src/include -fno-builtin" >> flagger
+
+#	echo -n "gcc \$@ -nostdinc -nostdlib -nodefaultlibs -nostartfiles -I$PWD/src/include -I. -Wall -fno-builtin -static " >> flagger
+#	echo -n "$PWD/lib/dietlibc.a -Xlinker $PWD/lib/start.o -Xlinker $PWD/lib/environ.o " >> flagger
+#	echo "-Xlinker -T -Xlinker $PWD/lib/c_linkfile" >> flagger
+#	echo "else" >> flagger
+#	echo "gcc \$@ -nostdinc -nostdlib -nodefaultlibs -nostartfiles -I$PWD/src/include -I. -Wall -fno-builtin -static" >> flagger
+
 	echo "fi" >> flagger
 	chmod +x flagger
         echo "OK"

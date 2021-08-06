@@ -38,6 +38,7 @@ INTERFACE
 
 
 {* External procedure and functions *}
+
 function  bread (major, minor : byte ; block, size : dword) : P_buffer_head; external;
 function  buffer_uptodate (bh : P_buffer_head) : boolean; external;
 function  kmalloc (len : dword) : pointer; external;
@@ -53,7 +54,8 @@ var
 
 
 {* Procedures and functions only used in THIS file *}
-function  get_real_block (block : dword ; inode : P_inode_t) : dword;
+
+function  ext2_get_real_block (block : dword ; inode : P_inode_t) : dword;
 
 
 
@@ -71,11 +73,13 @@ IMPLEMENTATION
  * Read a file on an ext2 filesystem
  *
  * WARNING : NOT FULLY TESTED, but it should work :-)
+ * FIXME: code optimization and cleanup
  *****************************************************************************}
 function ext2_file_read (fichier : P_file_t ; buffer : pointer ; count : dword) : dword; [public, alias : 'EXT2_FILE_READ'];
 
 var
    block        : dword; { Block to read }
+   orig_count   : dword;
    real_block   : dword;
    nb_blocks    : dword; { Number of blocks to read }
    blocksize    : dword; { Logical filesystem block size in bytes }
@@ -109,6 +113,7 @@ begin
        end;
 
    result      := count;   { If everything is ok, this will be the result }
+   orig_count  := count;
    major       := fichier^.inode^.dev_maj;
    minor       := fichier^.inode^.dev_min;
    inode       := fichier^.inode;
@@ -125,14 +130,21 @@ begin
    { while count > 0 ??? }
    for i := block to (block + nb_blocks - 1) do
    begin
-      real_block := get_real_block(block, inode);
+      real_block := ext2_get_real_block(block, inode);
+      if (real_block = 0) then
+      begin
+         printk('ext2_read_file: cannot get real block number for block %d\n', [block]);
+         result := -1;
+	 exit;
+      end;
+
       {$IFDEF DEBUG}
          printk('ext2_file_read: reading block %d (%d)\n', [i, real_block]);
       {$ENDIF}
       bh := bread(major, minor, real_block, blocksize);
       if (bh = NIL) then
           begin
-	     printk('ext2_file_read: unable to read block %d\n', [real_block]);
+	     printk('ext2_file_read: unable to read block %d (bread failed)\n', [real_block]);
 	     result := -1;
 	     exit;
 	  end;
@@ -144,23 +156,35 @@ begin
             mov eax, [esi]
             mov test1, eax
          end;
-         printk('ext2 (data): %d %h ', [block, test1]);
+         printk('ext2 (data): %d %h\n', [block, test1]);
       {$ENDIF}
 
       { Copying data to buffer }
-      {$IFDEF DEBUG}
-         printk('ext2_file_read: copying %d bytes from block %d (block_ofs=%d)\n', [(block*blocksize)-file_ofs, i, file_ofs-((block-1)*blocksize)]);
-      {$ENDIF}
-      memcpy(pointer(bh^.data + file_ofs-((block-1)*blocksize)), buffer, (block*blocksize)-file_ofs);
 
-      buffer   += (block*blocksize)-file_ofs;
-      file_ofs += (block*blocksize)-file_ofs;
-      block += 1;
+      if (count < (block * blocksize) - file_ofs) then
+      begin
+         {$IFDEF DEBUG}
+            printk('ext2_file_read: copying %d bytes from block %d (block_ofs=%d)\n', [count, i, file_ofs-((block-1)*blocksize)]);
+	 {$ENDIF}
+         memcpy(pointer(bh^.data + file_ofs-((block - 1) * blocksize)), buffer, count);
+      end
+      else
+      begin
+         {$IFDEF DEBUG}
+            printk('ext2_file_read: copying %d bytes from block %d (block_ofs=%d)\n', [(block*blocksize)-file_ofs, i, file_ofs-((block-1)*blocksize)]);
+	 {$ENDIF}
+         memcpy(pointer(bh^.data + file_ofs-((block - 1) * blocksize)), buffer, (block * blocksize) - file_ofs);
+	 count -= (block * blocksize) - file_ofs;
+      end;
+
+      buffer   += (block * blocksize) - file_ofs;
+      file_ofs += (block * blocksize) - file_ofs;
+      block    += 1;
 
    end;
 
    { Update file position }
-   fichier^.pos += count;
+   fichier^.pos += orig_count;
 
    {$IFDEF DEBUG}
       for i := block to (block + nb_blocks - 1) do
@@ -179,12 +203,12 @@ end;
  *
  * Input : logical block number
  *
- * Output : real block number
+ * Output : real block number, 0 on error
  *
  * Convert a logical block number into a real block number by reading inode
  * information
  *****************************************************************************}
-function get_real_block (block : dword ; inode : P_inode_t) : dword;
+function ext2_get_real_block (block : dword ; inode : P_inode_t) : dword; [public, alias : 'EXT2_GET_REAL_BLOCK'];
 
 var
    blocksize    : dword;
@@ -202,23 +226,52 @@ begin
    if (block <= 12) then
        result := inode^.ext2_i.data[block]
 
-   else if (block <= (12 + (blocksize div 4))) then
+   else if (block <= (12 + (blocksize div 4))) then   { Indirection simple }
        begin
-          tmp_block  := inode^.ext2_i.data[13];
+          tmp_block := inode^.ext2_i.data[13];
           bh := bread(major, minor, tmp_block, blocksize);
 	  if (bh = NIL) then
-	      begin
-	         printk('EXT2-fs (read_file: unable to read block %d\n', [tmp_block]);
-		 result := 0;
-	      end;
+	  begin
+	     printk('ext2_get_real_block: unable to read block %d\n', [tmp_block]);
+	     result := 0;
+	  end;
 	  buffer := bh^.data;
 	  result := buffer[(block - 12) - 1];
        end
+   else if (block <= (12 + (blocksize div 4) * (blocksize div 4))) then   { Indirection double }
+       begin
+          tmp_block := inode^.ext2_i.data[14];
+          bh := bread(major, minor, tmp_block, blocksize);
+	  if (bh = NIL) then
+	  begin
+	     printk('ext2_get_real_block: unable to read block %d\n', [tmp_block]);
+	     result := 0;
+	     exit;
+	  end;
+
+	  buffer := bh^.data;
+
+{	  printk('EXT2: going to read block %d  (%d)\n', [((block - 12) - (blocksize div 4) - 1) div blocksize, buffer[0]]);}
+
+	  bh := bread(major, minor, buffer[((block - 12) - (blocksize div 4) - 1) div blocksize], blocksize);
+	  if (bh = NIL) then
+	  begin
+	     printk('ext2_get_real_block: unable to read block %d\n', [tmp_block]);
+	     result := 0;
+	     exit;
+	  end;
+	  buffer := bh^.data;
+
+{	  printk('real block is %d\n', [buffer[((block - 12) - (blocksize div 4) - 1) mod blocksize]]);}
+
+	  result := buffer[((block - 12) - (blocksize div 4) - 1) mod blocksize];
+       end
    else
        begin
-          printk('EXT2-fs (read file): unable to read block %d (not supported)\n', [block]);
+          printk('ext2_get_real_block: unable to read block %d (not supported)\n', [block]);
 	  result := 0;
        end;
+
 end;
 
 

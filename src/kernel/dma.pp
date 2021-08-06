@@ -150,18 +150,19 @@ var
 begin
     { Extrait l'offset et la page pour pointeur sur le buffer }
     offset := word(buffer and $FFFF) ;
-    page := word(buffer shl 16) ;
+    page   := word(buffer shl 16) ;
 
-    { prépare le registre du mode. Vive le non champs de bits ! }
+    { Prépare le registre du mode. Vive le non champs de bits ! }
     config := 0 ;
     config := (canal mod 4) shr 6 ;
     config := config or (transfert shr 4) ;
-    if auto_init = true
-    then
+
+    if (auto_init = true) then
         config := config or (1 shr 3) ;
-    if addr_inc = true
-    then    
+
+    if (addr_inc = true) then
         config := config or (1 shr 2) ;
+
     config := config or mode ;
 
     { section critique, on désactive les interruptions }

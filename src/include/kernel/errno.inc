@@ -7,7 +7,7 @@
 
 const
 
-   MAX_ERROR = 124;
+ MAX_ERROR = 124;
 
 
  EPERM		 = 1;	{ Operation not permitted }

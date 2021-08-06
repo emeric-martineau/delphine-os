@@ -1,7 +1,7 @@
 {******************************************************************************
  *  init_vfs.pp
  * 
- *  Initialisation du Virtual File System
+ *  Virtual File System initialization
  *
  *  CopyLeft 2002 GaLi
  *
@@ -32,32 +32,42 @@ INTERFACE
 {$I blk.inc}
 {$I buffer.inc}
 {$I fs.inc}
+{$I major.inc}
 {$I process.inc}
 
 
-procedure printk(format : string ; args : array of const); external;
-procedure memset (adr : pointer ; c : byte ; size : dword); external;
 procedure init_ext2_fs; external;
+procedure init_pipe; external;
+procedure memset (adr : pointer ; c : byte ; size : dword); external;
+procedure printk(format : string ; args : array of const); external;
+
 function  blkdev_open (inode : P_inode_t ; filp : P_file_t) : dword; external;
 function  chrdev_open (inode : P_inode_t ; filp : P_file_t) : dword; external;
+
+function  null_write (fichier : P_file_t ; buf : pointer ; count : dword) : dword; external;
+function  null_read (fichier : P_file_t ; buf : pointer ; count : dword) : dword; external;
+
 function  tty_write (fichier : P_file_t ; buf : pointer ; count : dword) : dword; external;
 
+function  zero_write (fichier : P_file_t ; buf : pointer ; count : dword) : dword; external;
+function  zero_read (fichier : P_file_t ; buf : pointer ; count : dword) : dword; external;
 
 var
    file_systems : P_file_system_type;
    chrdevs : array [0..MAX_NR_CHAR_DEV] of device_struct;
    blkdevs : array [0..MAX_NR_BLOCK_DEV] of device_struct;
-   def_blk_fops : file_operations;
-   blkdev_inode_operations : inode_operations;
+   def_blk_fops, null_fops, zero_fops : file_operations;
+   blkdev_inode_operations, chrdev_inode_operations : inode_operations;
    def_chr_fops : file_operations;
-   chrdev_inode_operations : inode_operations;
+   wait_for_request : P_wait_queue;
 
    tty_fops : file_operations; external name 'U_TTY__TTY_FOPS';
    buffer_head_list : array [1..1024] of P_buffer_head; external name 'U_BUFFER_BUFFER_HEAD_LIST';
    nr_buffer_head   : dword; external name 'U_BUFFER_NR_BUFFER_HEAD';
    blk_dev : array [0..MAX_NR_BLOCK_DEV] of blk_dev_struct; external name 'U_RW_BLOCK_BLK_DEV';
    blksize : array [0..MAX_NR_BLOCK_DEV, 0..128] of dword; external name 'U_RW_BLOCK_BLKSIZE';
-   wait_for_request : P_wait_queue;
+   lookup_cache : array[1..1024] of lookup_cache_entry; external name 'U__NAMEI_LOOKUP_CACHE';
+   lookup_cache_entries : dword; external name 'U__NAMEI_LOOKUP_CACHE_ENTRIES';
 
 
 
@@ -74,7 +84,7 @@ IMPLEMENTATION
  *****************************************************************************}
 procedure register_filesystem (fs : P_file_system_type); [public, alias : 'REGISTER_FILESYSTEM'];
 
-{ Il faudrait verifier si le système de fichiers n'est pas deja enregistré }
+{ FIXME: Il faudrait verifier si le système de fichiers n'est pas deja enregistré }
 
 var
    tmp : P_file_system_type;
@@ -109,16 +119,16 @@ procedure register_chrdev (nb : byte ; name : string[20] ; fops : pointer); [pub
 begin
 
    if (nb > MAX_NR_CHAR_DEV) or (nb = 0) then
-       begin
-          printk('register_chrdev: illegal major number (%d) \n', [nb]);
-	  exit;
-       end;
+   begin
+      printk('register_chrdev: illegal major number (%d) \n', [nb]);
+      exit;
+   end;
 
    if (chrdevs[nb].fops <> NIL) then
-       begin
-          printk('register_chrdev: device %d is already registered\n', [nb]);
-	  exit;
-       end;
+   begin
+      printk('register_chrdev: device %d is already registered\n', [nb]);
+      exit;
+   end;
 
    asm
       pushfd
@@ -144,11 +154,17 @@ end;
 procedure unregister_chrdev (nb : byte);
 begin
 
+   if (nb > MAX_NR_CHAR_DEV) or (nb = 0) then
+   begin
+      printk('register_chrdev: illegal major number (%d) \n', [nb]);
+      exit;
+   end;
+
    if (chrdevs[nb].fops = NIL) then
-       begin
-          printk('unregister_chrdev: device %d is not registered\n', [nb]);
-	  exit;
-       end;
+   begin
+      printk('unregister_chrdev: device %d is not registered\n', [nb]);
+      exit;
+   end;
 
    asm
       pushfd
@@ -174,16 +190,16 @@ procedure register_blkdev (nb : byte ; name : string[20] ; fops : P_file_operati
 begin
 
    if (nb > MAX_NR_BLOCK_DEV) or (nb = 0) then
-       begin
-          printk('register_blkdev: illegal major number (%d)\n', [nb]);
-	  exit;
-       end;
+   begin
+      printk('register_blkdev: illegal major number (%d)\n', [nb]);
+      exit;
+   end;
 
    if (blkdevs[nb].fops <> NIL) then
-       begin
-          printk('register_blkdev: device %d already registered\n', [nb]);
-	  exit;
-       end;
+   begin
+      printk('register_blkdev: device %d already registered\n', [nb]);
+      exit;
+   end;
 
    asm
       pushfd
@@ -209,11 +225,17 @@ end;
 procedure unregister_blkdev (nb : byte);
 begin
 
+   if (nb > MAX_NR_BLOCK_DEV) or (nb = 0) then
+   begin
+      printk('register_blkdev: illegal major number (%d)\n', [nb]);
+      exit;
+   end;
+
    if (blkdevs[nb].fops = NIL) then
-       begin
-          printk('unregister_blkdev: device %d is not registered\n', [nb]);
-	  exit;
-       end;
+   begin
+      printk('unregister_blkdev: device %d is not registered\n', [nb]);
+      exit;
+   end;
 
    asm
       pushfd
@@ -245,31 +267,48 @@ begin
    memset(@blkdevs, 0, sizeof(blkdevs));
    memset(@blk_dev, 0, sizeof(blk_dev));
    memset(@blksize, 0, sizeof(blksize));
+   memset(@lookup_cache, 0, sizeof(lookup_cache));
 
-   nr_buffer_head   := 0;
-   file_systems     := NIL;
-   wait_for_request := NIL;
+{printk('VFS: %d bytes reserved for lookup_cache\n', [sizeof(lookup_cache)]);}
+
+   nr_buffer_head       := 0;
+   lookup_cache_entries := 0;
+   file_systems         := NIL;
+   wait_for_request     := NIL;
 
    { Initialisation des opérations sur les périphériques en mode bloc }
+   memset(@def_blk_fops, 0, sizeof(file_operations));
+   memset(@blkdev_inode_operations, 0, sizeof(inode_operations));
    def_blk_fops.open  := @blkdev_open;
-   def_blk_fops.read  := NIL;
-   def_blk_fops.write := NIL;
    blkdev_inode_operations.default_file_ops := @def_blk_fops;
-   blkdev_inode_operations.lookup           := NIL;
 
    { Initialisation des opérations sur les périphériques en mode caractère }
+   memset(@def_chr_fops, 0, sizeof(file_operations));
+   memset(@chrdev_inode_operations, 0, sizeof(inode_operations));
    def_chr_fops.open  := @chrdev_open;
-   def_chr_fops.read  := NIL;
-   def_chr_fops.write := NIL;
    chrdev_inode_operations.default_file_ops := @def_chr_fops;
-   chrdev_inode_operations.lookup           := NIL;
 
    { Filesystems structures initialization }
 
-   init_ext2_fs;
+   init_ext2_fs();
+   init_pipe();
 
    { Register 'tty' device }
-   register_chrdev(4, 'tty', @tty_fops);
+   register_chrdev(TTY_MAJOR, 'tty', @tty_fops);
+   register_chrdev(TTYAUX_MAJOR, 'ttyaux', @tty_fops);
+   
+   { Register 'null' device }
+   memset(@null_fops, 0, sizeof(file_operations));
+   null_fops.read  := @null_read;
+   null_fops.write := @null_write;
+   register_chrdev(NULL_MAJOR, 'null', @null_fops);
+   
+   { Register 'zero' device }
+   memset(@zero_fops, 0, sizeof(file_operations));
+   zero_fops.read  := @zero_read;
+   zero_fops.write := @zero_write;
+   register_chrdev(ZERO_MAJOR, 'zero', @zero_fops);
+
 end;
 
 

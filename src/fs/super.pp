@@ -32,10 +32,15 @@ unit vfs_super;
 INTERFACE
 
 
+{DEFINE DEBUG_MOUNT_ROOT}
+{DEFINE ACCESS_RIGHTS_WARNING}
+{DEFINE SHOW_BLOCKSIZE}
+
 {$I fs.inc}
 {$I process.inc }
 
 
+function  alloc_inode : P_inode_t; external;
 function  blkdev_open (inode : P_inode_t ; filp : P_file_t) : dword; external;
 function  inode_uptodate (inode : P_inode_t) : boolean; external;
 function  kmalloc (len : dword) : pointer; external;
@@ -43,6 +48,10 @@ procedure memset (adr : pointer ; c : byte ; size : dword); external;
 procedure panic (reason : string); external;
 procedure printk (format : string ; args : array of const); external;
 procedure read_inode (ino : P_inode_t); external;
+
+
+procedure sys_mount_root; cdecl;
+function  access_rights_ok (flags : dword ; inode : P_inode_t) : boolean;
 
 
 var
@@ -88,14 +97,14 @@ begin
       sti   { Put interrupts on }
    end;
 
-   inode := kmalloc(sizeof(inode_t));
+   inode := alloc_inode();
    if (inode = NIL) then
-      begin
-         printk('MOUNT_ROOT: not enough memory\n', []);
-      end;
+   begin
+      printk('mount_root: not enough memory\n', []);
+      panic('no root filesystem');
+   end;
 
    memset(@filp, 0, sizeof(filp));
-   memset(inode, 0, sizeof(inode_t));
 
    { Inode object initialization }
    inode^.dev_maj  := ROOT_DEV_MAJ;
@@ -105,53 +114,78 @@ begin
 
    filp.mode  := 1; { Read only }
 
+   {$IFDEF DEBUG_MOUNT_ROOT}
+      printk('mount_root: calling blkdev_open()...   ', []);
+   {$ENDIF}
    retval := blkdev_open(inode, @filp);
+   {$IFDEF DEBUG_MOUNT_ROOT}
+      printk('OK\n', []);
+   {$ENDIF}
 
    { retval = 0 if everything is ok }
    if (retval <> 0) then
-      begin
-         printk('VFS: cannot open device %d:%d !!!\n', [ROOT_DEV_MAJ,ROOT_DEV_MIN]);
-	 panic('no root filesystem');
-      end
+   begin
+      printk('VFS: cannot open device %d:%d\n', [ROOT_DEV_MAJ,ROOT_DEV_MIN]);
+      panic('no root filesystem');
+   end
    else
-      begin
-         fs_type := file_systems;
-	 sb := kmalloc(sizeof(super_block_t));
-	 sb^.dev_major := ROOT_DEV_MAJ;
-	 sb^.dev_minor := ROOT_DEV_MIN;
-	 repeat
-	    if (fs_type^.name = 'ext2') then
+   begin
+      {$IFDEF DEBUG_MOUNT_ROOT}
+         printk('mount_root: retval=0\n', []);
+      {$ENDIF}
+      fs_type := file_systems;
+      sb := kmalloc(sizeof(super_block_t));
+      sb^.dev_major := ROOT_DEV_MAJ;
+      sb^.dev_minor := ROOT_DEV_MIN;
+      repeat
+         {$IFDEF DEBUG_MOUNT_ROOT}
+            printk('mount_root: fs_type=%h\n', [fs_type]);
+         {$ENDIF}
+         if (fs_type^.name = 'ext2') then
+	 begin
+	    {$IFDEF DEBUG_MOUNT_ROOT}
+	       printk('mount_root: fs_type^.name=''ext2''\n', []);
+	       printk('mount_root: calling read_super()...   ', []);
+	    {$ENDIF}
+	    sb := fs_type^.read_super(sb);
+	    {$IFDEF DEBUG_MOUNT_ROOT}
+	       printk('OK\n', []);
+	    {$ENDIF}
+	    if (sb <> NIL) then
+	    {* We successfully read an ext2 superblock. So, we stop looking
+	     * for a superblock. Then, we try to read the ROOT_INODE
+	     * (inode n°2). *}
 	    begin
-	       sb := fs_type^.read_super(sb);
-	       if (sb <> NIL) then
-	       {* We successfully read an ext2 superblock. So, we stop looking
-	        * for a superblock. Then, we try to read the ROOT_INODE
-		* (inode n°2). *}
+	       inode^.sb    := sb;
+	       inode^.ino   := 2;
+	       read_inode(inode);
+	       if not inode_uptodate(inode) then
 	       begin
-		  inode^.sb    := sb;
-		  inode^.ino   := 2;
-		  read_inode(inode);
-		  if not inode_uptodate(inode) then
-		     begin
-		        printk('VFS: unable to read root inode\n', []);
-			panic('no root filesystem');
-		     end;
-		  current^.root := inode;
-		  current^.pwd  := inode;
-		  printk('VFS: Mounted root (ext2 filesystem) readonly.\n', []);
-	          exit;
+	          printk('VFS: unable to read root inode\n', []);
+		  panic('no root filesystem');
 	       end;
+	       inode^.count    += 1;
+	       current^.root   := inode;
+	       current^.pwd    := inode;
+	       current^.cwd[0] := #1;
+	       current^.cwd[1] := '/';
+	       printk('\nVFS: Mounted root (ext2 filesystem) readonly.\n', []);
+	       {$IFDEF SHOW_BLOCKSIZE}
+	          printk('VFS: Blocksize is %d bytes\n', [sb^.blocksize]);
+	       {$ENDIF}
+	       exit;
 	    end;
-	    fs_type := fs_type^.next;
-            sb := NIL;
-	 until fs_type = NIL;
-      end;
+	 end;
+	 fs_type := fs_type^.next;
+         sb := NIL;
+      until fs_type = NIL;
+   end;
 
    if (sb = NIL) then
-      begin
-         printk('VFS: Ext2 superblock not found on dev %d:%d !!!\n', [ROOT_DEV_MAJ, ROOT_DEV_MIN]);
-	 panic('no root filesystem');
-      end;
+   begin
+      printk('VFS: Ext2 superblock not found on dev %d:%d\n', [ROOT_DEV_MAJ, ROOT_DEV_MIN]);
+      panic('no root filesystem');
+   end;
 
 end;
 
@@ -165,6 +199,8 @@ end;
  * Output : TRUE or FALSE.
  *
  * Compare inode's access rights and user's access rights
+ *
+ * FIXME: rewrite this function.
  *****************************************************************************}
 function access_rights_ok (flags : dword ; inode : P_inode_t) : boolean; [public, alias : 'ACCESS_RIGHTS_OK'];
 
@@ -173,41 +209,69 @@ var
 
 begin
 
+   {* We just care about the three first bits *}
+   flags := flags and $3;
+
+   {$IFDEF ACCESS_RIGHTS_WARNING}
+      if (flags = 3) then
+          printk('WARNING: access_rights_ok called with flags=3\n', []);
+   {$ENDIF}
+
+   case (flags) of
+   0: begin
+         flags := 4;   { Read only }
+      end;
+   1: begin
+         flags := 2;   { Write only }
+      end;
+   2: begin
+         flags := 6;   { Read/Write }
+      end;
+   3: begin
+         flags := 1;   { Execute ??? } { FIXME }
+      end;
+   else
+      begin
+         printk('access_rights_ok: %h is not a correct value. Set flags to read only.\n', [flags]);
+	 flags := 4;
+      end;
+   end;
+
    result := TRUE;
 
    { If user is 'root', then we consider him as the owner }
    if (current^.uid = 0) and (current^.gid = 0) then
-       begin
-          tuid := inode^.uid;
-	  tgid := inode^.gid;
-       end
+   begin
+      tuid := inode^.uid;
+      tgid := inode^.gid;
+   end
    else
-       begin
-          tuid := current^.uid;
-	  tgid := current^.gid;
-       end;
+   begin
+      tuid := current^.uid;
+      tgid := current^.gid;
+   end;
 
    if (tuid = inode^.uid) then
    { User is the owner }
-       begin
-          tflags := (inode^.mode and $1C0) div 64;
-	  if (flags and tflags) <> flags then
-	      result := FALSE;
-       end
+   begin
+      tflags := (inode^.mode and $1C0) div 64;
+      if (flags and tflags) <> flags then
+	  result := FALSE;
+   end
    else if (tgid = inode^.gid) then
    { User is a group member }
-       begin
-          tflags := (inode^.mode and $038) div 8;
-	  if (flags and tflags) <> flags then
-	      result := FALSE;
-       end
+   begin
+      tflags := (inode^.mode and $038) div 8;
+      if (flags and tflags) <> flags then
+          result := FALSE;
+   end
    else
    { User is 'others' }
-       begin
-          tflags := (inode^.mode and $007);
-	  if (flags and tflags) <> flags then
-	      result := FALSE;
-       end;
+   begin
+      tflags := (inode^.mode and $007);
+      if (flags and tflags) <> flags then
+          result := FALSE;
+   end;
 
 end;
 

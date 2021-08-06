@@ -15,7 +15,11 @@ const
 
 type
 
-   P_tm = ^tm;
+   P_tm       = ^tm;
+   P_utimbuf  = ^utimbuf;
+   P_tms      = ^tms;
+   P_timeval  = ^timeval;
+   P_timezone = ^timezone;
 
    tm = record
       tm_sec    : dword;     { Seconds after a minute }
@@ -29,4 +33,26 @@ type
       tm_isdst  : dword;     { DST. [-1/0/1] }
       tm_gmtoff : dword;     { Seconds east of UTC }
       tm_zone   : pointer;   { Timezone abbreviation }
+   end;
+
+   utimbuf = record
+      actime  : dword;
+      modtime : dword;
+   end;
+
+   tms = record
+	tms_utime  : dword;
+	tms_stime  : dword;
+	tms_cutime : dword;
+	tms_cstime : dword;
+   end;
+
+   timeval = record
+      tv_sec  : dword;   { seconds }
+      tv_usec : dword;   { microseconds }
+   end;
+
+   timezone = record
+      tz_minuteswest : dword;   { minutes west of Greenwich }
+      tz_dsttime     : dword;   { type of dst correction }
    end;

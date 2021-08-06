@@ -18,7 +18,7 @@
     mov   ds , ax
     mov   es , ax
     mov   ss , ax
-    mov   sp , 1000h              ; 4 Kb stack ( why not ? )
+    mov   sp , 1000h              ; 4 Kb stack (why not ?)
 
     mov   ax , NEW_BOOT_SEG
     mov   es , ax

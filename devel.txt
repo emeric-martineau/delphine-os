@@ -2,17 +2,10 @@
 Installation de DelphineOS:
 ---------------------------
 
-taper :  ./install device (device=/dev/fd0 ou /dev/hda?)
+taper :  ./install
 
 ATTENTION : L'anti-virus du BIOS doit être désactivé pour que DelphineOS
             fonctionne correctement.
-
-Bochs :
--------
-
-pour tester DelphineOS avec Bochs, il suffit de creer l'image
-taper : ./go_bochs
-
 
 
 

@@ -3,6 +3,9 @@
  * 
  *  IDT initialization
  *
+ *  FIXME: use only one procedure (set_gate) instead of three (set_intr_gate,
+ *         set_system_gate, set_trap_gate). We could save a few bytes  :-)
+ *
  *  CopyLeft 2002 GaLi
  *
  *  version 0.0 - ??/??/2001 - GaLi - initial version

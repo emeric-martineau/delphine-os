@@ -3,6 +3,15 @@
 
 {$I fs.inc}
 {$I mm.inc}
+{$I signal.inc}
+
+
+const
+
+   { Flags used by waitpid() }
+   WNOHANG   = 1;
+   WUNTRACED = 2;
+
 
 type
 
@@ -35,28 +44,37 @@ type
    end;
 
    task_struct = record
-      pid          : dword;
-      state        : byte;
-      counter      : byte;      { Nb de ticks qu'il reste }
-      tty          : byte;      { Console associée au processus }
-      nop          : byte;
-      ticks        : dword;     { Nb de ticks utilisés par le processus }
-      tss_entry    : dword;     { Numero du descripteur de TSS }
-      tss          : ^tss_struct;
-      errno        : dword;
-      ppid         : dword;     { PID du processus père }
-      uid          : dword;
-      gid          : dword;
-      size         : dword;     { Taille du processus en nombre de pages }
-      cr3          : P_pte_t;   { Pointe vers le repertoire global de pages }
-      page_table   : P_pte_t;   { Table de pages (4Mo) }
-      file_desc    : array[0..31] of P_file_t;
-      root, pwd    : P_inode_t;
-      wait_queue   : P_wait_queue;
-      next_task    : P_task_struct;
-      prev_task    : P_task_struct;
-      next_run     : P_task_struct;
-      prev_run     : P_task_struct;
+      pid            : dword;
+      state          : byte;
+      counter        : byte;      { Nb de ticks qu'il reste }
+      tty            : byte;      { Console associée au processus ($FF si pas de console) }
+      nop            : byte;
+      ticks          : dword;     { Nb de ticks utilisés par le processus }
+      utime, stime   : dword;
+      tss_entry      : dword;     { Numero du descripteur de TSS }
+      tss            : ^tss_struct;
+      errno          : dword;
+      ppid, uid, gid : dword;
+      exit_code      : dword;
+      brk            : dword;     { Last legal address for the process }
+      size           : dword;     { Taille du processus en nombre de pages }
+      cr3            : P_pte_t;   { Pointe vers le repertoire global de pages }
+      page_table     : P_pte_t;   { Table de pages (4Mo) }
+      mmap           : P_mmap_req;
+      close_on_exec  : dword;     { Un bit par fichier }
+      file_desc      : array[0..31] of P_file_t;
+      root, pwd      : P_inode_t;
+      cwd            : array[0..254] of char;
+      signal         : sigset_t;  { Indique les signaux envoyés au processus }
+      blocked        : sigset_t;  { Indique les signaux bloqués par le processus }
+      signal_struct  : array[1..32] of sigaction;
+      wait_queue     : P_wait_queue;
+      p_pptr         : P_task_struct;   { Pointe sur le père }
+      p_cptr         : P_task_struct;   { Pointe sur le plus jeune fils }
+      p_ysptr        : P_task_struct;   { Pointe sur le processus créé APRES P par le père de P }
+      p_osptr        : P_task_struct;   { Pointe sur le processus créé AVANT P par le père de P }
+      next_task, prev_task : P_task_struct;
+      next_run, prev_run   : P_task_struct;
    end;
 
    pid_table_struct = record

@@ -5,7 +5,9 @@
  *
  *  CopyLeft 2002 GaLi
  *
- *  version 0.7  - 22/12/2003  - GaLi - Correct a bug (line and column number).
+ *  version 0.7a - 09/05/2003  - GaLi - Begin "escape" code management.
+ *
+ *  version 0.7  - 22/12/2002  - GaLi - Correct a bug (line and column number).
  *
  *  version 0.6  - 29/06/2002  - Edo & GaLi - Habby perfday
  *                                          - printk prend en charge les
@@ -22,7 +24,7 @@
  *  version 0.4  - 07/02/2002  - GaLi - Correction d'une 'erreur a la con' par
  *                                      Edo. Merci beaucoup :-)
  *
- *  version 0.1  - ??/12/2001  - GaLi - Version initiale
+ *  version 0.1  - ??/12/2001  - GaLi - Initial version
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -47,27 +49,38 @@ INTERFACE
 
 
 {DEFINE DEBUG}
+{DEFINE DEBUG_TTY_IOCTL}
 
 {$I errno.inc}
 {$I fs.inc}
+{$I major.inc}
 {$I process.inc}
+{$I termios.inc}
 {$I tty.inc}
 
 
-procedure update_cursor (ontty : byte);
+procedure memset (adr : pointer ; c : byte ; size : dword); external;
+procedure print_byte (nb : byte); external;
+procedure print_dec_dword (nb : dword); external;
+procedure print_dword (nb : dword); external;
+procedure print_port (nb : word); external;
+procedure print_word (nb : word); external;
+
+
 procedure change_tty (ontty : byte);
+procedure csi_J (vpar : dword ; ontty : byte);
+procedure csi_m (ontty : byte);
 procedure get_vesa_info;
+procedure init_tty;
 procedure printk (format : string ; args : array of const);
+procedure putc (car : char ; ontty : byte);
+procedure putchar (car : char);
+function  tty_close (fichier : P_file_t) : dword;
 function  tty_ioctl (fichier : P_file_t ; req : dword ; argp : pointer) : dword;
 function  tty_open (inode : P_inode_t ; filp : P_file_t) : dword;
 function  tty_seek (fichier : P_file_t ; offset, whence : dword) : dword;
 function  tty_write (fichier : P_file_t ; buf : pointer ; count : dword) : dword;
-
-procedure print_dec_dword (nb : dword); external;
-procedure print_word (nb : word); external;
-procedure print_byte (nb : byte); external;
-procedure print_dword (nb : dword); external;
-procedure register_chrdev (nb : byte ; name : string[20] ; fops : pointer); external;
+procedure update_cursor (ontty : byte);
 
 
 const
@@ -89,39 +102,11 @@ IMPLEMENTATION
 
 
 {******************************************************************************
- * get_vesa_info
- *
- *****************************************************************************}
-procedure get_vesa_info;
-var
-   vesa_info : P_vesa_info_t;
-   oemstr    : ^char;
-
-begin
-
-   vesa_info := $10200;   { See boot/setup.S }
-
-   if (vesa_info^.signature = $41534556) then
-       begin
-	  printk('VESA %d.%d BIOS found (', [hi(vesa_info^.version), lo(vesa_info^.version)]);
-	  oemstr := pointer(hi(longint(vesa_info^.oemstr)) shl 4 + lo(longint(vesa_info^.oemstr)));
-	  repeat
-	     printk('%c', [oemstr^]);
-	     oemstr += 1;
-	  until (oemstr^ = #0);
-	  printk('), %dKb\n', [vesa_info^.memory shl 6]);
-       end;
-
-end;
-
-
-
-{******************************************************************************
  * init_tty
  *
  * Initialise les consoles. Cette procédure met le numéro de ligne et de
- * colonne à 0 pour toutes les consoles sauf la premièré dont la ligne et la
- * colonne ont été stockées dans DX par setup.S.
+ * colonne à 0 pour toutes les consoles sauf la première dont la ligne et la
+ * colonne ont été stockées dans DX par src/boot/setup.S.
  *****************************************************************************}
 procedure init_tty; [public, alias : 'INIT_TTY'];
 
@@ -135,9 +120,10 @@ begin
       mov   byte x, dl
    end;
 
+   memset(@tty_fops, 0, sizeof(file_operations));
    tty_fops.open  := @tty_open;
-   tty_fops.read  := NIL;
    tty_fops.write := @tty_write;
+   tty_fops.close := @tty_close;
    tty_fops.seek  := @tty_seek;
    tty_fops.ioctl := @tty_ioctl;
 
@@ -145,20 +131,21 @@ begin
     * chrdevs n'est pas encore initialisée. L'enregistrement du périphérique
     * 'tty' se fait donc dans init_vfs.pp *}
 
-   tty[0].x := x;
-   tty[0].y := y;
+   memset(@tty, 0, sizeof(tty));
+   tty[0].x    := x;
+   tty[0].y    := y;
    tty[0].echo := TRUE;
+   tty[0].attr := 07;
 
-   for i:=1 to 7 do
-      begin
-         tty[i].x := 0;
-         tty[i].y := 0;
-	 tty[i].echo := TRUE;
-      end;
+   for i := 1 to 7 do
+   begin
+      tty[i].echo := TRUE;
+      tty[i].attr := 07;
+   end;
 
    current_tty := 0;
 
-   { On va effacer toutes les consoles }
+   { Clear all consoles }
 
    asm
       cld
@@ -171,7 +158,36 @@ begin
 
    change_tty(0);
 
-   get_vesa_info;
+   get_vesa_info();
+
+end;
+
+
+
+{******************************************************************************
+ * get_vesa_info
+ *
+ *****************************************************************************}
+procedure get_vesa_info;
+
+var
+   vesa_info : P_vesa_info_t;
+   oemstr    : ^char;
+
+begin
+
+   vesa_info := $10200;   { See boot/setup.S }
+
+   if (vesa_info^.signature = $41534556) then
+   begin
+      printk('VESA %d.%d BIOS found (', [hi(vesa_info^.version), lo(vesa_info^.version)]);
+      oemstr := pointer(hi(longint(vesa_info^.oemstr)) shl 4 + lo(longint(vesa_info^.oemstr)));
+      repeat
+         printk('%c', [oemstr^]);
+	 oemstr += 1;
+      until (oemstr^ = #0);
+      printk('), %dKb\n', [vesa_info^.memory shl 6]);
+   end;
 
 end;
 
@@ -183,13 +199,15 @@ end;
  * Entrée : caractère à écrire, numéro de la console
  *
  * Ecris un caractère sur la console spécifiée
+ *
  * NOTE : le caractère $0A (ou #10) est considéré comme un retour charriot
+ *        le caractère $08 (ou #08) est considéré comme un backspace
  *****************************************************************************}
 procedure putc (car : char ; ontty : byte); [public,alias : 'PUTC'];
 
 var
-   ofs, dep       : dword;
-   colonne, ligne : byte;
+   ofs, dep             : dword;
+   colonne, ligne, attr : byte;
 
 begin
 
@@ -198,52 +216,66 @@ begin
       cli   { Section critique }
    end;
 
-   ligne   :=  tty[ontty].y;
-   colonne :=  tty[ontty].x;
-   ofs     :=  (ligne * 160 + colonne * 2);
-   dep     :=  (ontty * screen_size);
+   attr    := tty[ontty].attr;
+   ligne   := tty[ontty].y;
+   colonne := tty[ontty].x;
+   ofs     := (ligne * 160 + colonne * 2);
+   dep     := (ontty * screen_size);
 
    if (car = #10) then   { Caractère = retour charriot ? }
-      begin
-         ligne += 1;
-         ofs   := (ligne * 160);
-      end
+   begin
+      ligne += 1;
+      ofs   := (ligne * 160);
+   end
    else if (car = #08) then
-      begin
-         
-      end
-   else
-      begin
-         asm
-            mov   edi, ofs
-            add   edi, dep
-            add   edi, video_ram_start
-            mov   ah , 07
-            mov   al , car
-            mov   word [edi], ax
-         end;
-
-         ofs += 2;
+   begin
+      asm
+	 mov   edi, ofs
+	 add   edi, dep
+	 add   edi, video_ram_start
+	 sub   edi, 2
+	 mov   ah , attr
+	 mov   al , $20
+	 mov   word [edi], ax
       end;
+      ofs -= 2;
+   end
+   else
+   begin
+      asm
+         mov   edi, ofs
+         add   edi, dep
+         add   edi, video_ram_start
+         mov   ah , attr
+         mov   al , car
+         mov   word [edi], ax
+      end;
+      ofs += 2;
+   end;
 
    if (ofs >= screen_size) then  { On est arrivé au bout de l'écran }
-      begin
+   begin
 
-         ofs := 24 * 80 * 2;
+      ofs := 24 * 80 * 2;
 
-         asm
-            mov   esi, video_ram_start
-            add   esi, dep
-            mov   edi, esi
-            add   esi, 160
-            mov   ecx, 960
-            rep   movsd
+      asm
+         mov   esi, video_ram_start
+         add   esi, dep
+         mov   edi, esi
+         add   esi, 160
+         mov   ecx, 960
+         rep   movsd
 
-            mov   eax, $07200720
-            mov   ecx, 40
-            rep   stosd
-         end;
+         {mov   eax, $07200720}
+	 mov   ah , attr
+	 mov   al , $20
+	 shl   eax, 16
+	 mov   ah , attr
+	 mov   al , $20
+         mov   ecx, 40
+         rep   stosd
       end;
+   end;
 
    { On remet le numéro de ligne et de colonne dans le tableau tty_state }
 
@@ -271,7 +303,6 @@ end;
  * Ecris un caractère dans la console courante
  *****************************************************************************}
 procedure putchar (car : char); [public, alias : 'PUTCHAR'];
-
 begin
    putc(car, current_tty);
 end;
@@ -300,6 +331,7 @@ end;
  *     - \n  : affiche un retour charriot
  *     - %h  : affiche une variable en héxadécimal (8 chiffres affichés)
  *     - %h4 : affiche une variable en héxadécimal (4 chiffres affichés)
+ *     - %h3 : affiche une variable en héxadécimal (3 chiffres affichés)
  *     - %h2 : affiche une variable en héxadécimal (2 chiffres affichés)
  *
  * Exemple : printk('Hello %d %h %s\n', [var1, var2, chaine]);
@@ -342,12 +374,14 @@ begin
 				              print_byte(args[num_args].Vinteger);
 					      pos += 1;
 					   end;
-
+				      '3': begin
+				              print_port(args[num_args].Vinteger);
+					      pos += 1;
+					   end;
 				      '4': begin
 				              print_word(args[num_args].Vinteger);
 					      pos += 1;
 				           end;
-
 				      else
 				           begin
                                               print_dword(args[num_args].Vinteger);
@@ -358,7 +392,7 @@ begin
                                    num_args += 1;
                                 end;
                           's' : begin
-                                   tmp := 1;
+                                   tmp := 0;
                                    while (args[num_args].VString^[tmp] <> #0) do
                                    begin
                                       putchar(args[num_args].VString^[tmp]);
@@ -396,31 +430,11 @@ end;
 
 
 {******************************************************************************
- * sys_printf
- *
- * Appel système qui permet d'afficher une chaîne de caractères
- * REMARQUE : cet appel système est temporaire !!!
- *****************************************************************************}
-procedure sys_printf (format : string ; args : array of const); cdecl; assembler; [public, alias : 'SYS_PRINTF'];
-asm
-   mov   edx, [ebp+16]
-   mov   ecx, [ebp+12]
-   mov   ebx, [ebp+8]
-   push  edx
-   push  ecx
-   push  ebx
-   call  PRINTK
-end;
-
-
-
-{******************************************************************************
  * change_tty
  *
- * Entrée : numéro de la console
+ * Entry : Console number
  *
- * Change la console active. tty doit être compris entre 0 et 7 (pas de
- * vérification effectuée)
+ * Change active console. 'ontty' must be between 0 and 7 (no checks)
  *****************************************************************************}
 procedure change_tty (ontty : byte); [public, alias : 'CHANGE_TTY'];
 
@@ -532,24 +546,110 @@ end;
  * Sortie : Nombre d'octets écris ou -1 en cas d'erreur
  *
  * Cette fonction est appelée quand un appel systeme 'write' vise une console
+ *
+ * NOTE: code inspired from linux 0.12 (kernel/chr_drv/console.c)
  *****************************************************************************}
 function tty_write (fichier : P_file_t ; buf : pointer ; count : dword) : dword; [public, alias : 'TTY_WRITE'];
 
 var
-   i     : dword;
-   ontty : byte;
+   i, state   : dword;
+   npar       : dword;
+   ontty      : byte;
+   car        : char;
 
 begin
 
    ontty := fichier^.inode^.rdev_min;
 
-   if tty[ontty].echo then
+   if (tty[ontty].echo) then
    begin
+      state := ESnormal;
       for i := 1 to count do
          begin
-            putc(chr(byte(buf^)), ontty);
-	    buf += 1; 
-         end;
+	    car := chr(byte(buf^));
+	    case (state) of
+	       ESnormal:
+	          begin
+		     if ((car = #11) or (car = #12)) then   { I've done this because I saw it in Linux  :-) }
+		          car := #10
+		     else if ((car > #31) and (car < #127) or (car = #10)) then   { Printable character }
+		          putc(car, ontty)
+		     else if (car = #27) then   { Escape code }
+		          state := ESesc
+		     else if (car = #7) then
+		          begin
+			     {FIXME: this is the 'bell' character. We've got to make some noise  :-) }
+			  end
+		     else if (car = #8) then   { Baskspace character }
+		          begin
+			     putc(car, ontty);
+			  end;
+	          end;
+	       ESesc:
+	          begin
+		     case (car) of
+		        '[': state := ESsquare
+		     else
+		        state := ESnormal;
+		     end;
+	          end;
+	       ESsquare:
+	          begin
+		     {putc(car, ontty);}
+		     buf -= 1;
+		     i   -= 1;
+		     for npar := 0 to NBPAR do
+		         tty[ontty].par[npar] := 0;
+		     tty[ontty].npar := 0;
+		     npar  := 0;
+		     state := ESgetpars;
+		  end;
+	       ESgetpars:
+	          begin
+		  {putc(car, ontty);}
+		     if ((car = ';') and (npar <= NBPAR)) then
+		          begin
+		             npar += 1;
+			     tty[ontty].npar += 1;
+			  end
+		     else if ((car >= '0') and (car <= '9')) then
+		          tty[ontty].par[npar] := (tty[ontty].par[npar] * 10) + ord(car) - ord('0')
+		     else
+		          begin
+		             state := ESgotpars;
+			     buf -= 1;
+			     i   -= 1;
+			  end;
+		  end;
+	       ESgotpars:
+	          begin
+		     state := ESnormal;
+		     case (car) of
+		        'J': csi_J(tty[ontty].par[0], ontty);
+			'H': begin
+			        if (tty[ontty].par[0] <> 0) then tty[ontty].par[0] -= 1;
+				if (tty[ontty].par[1] <> 0) then tty[ontty].par[1] -= 1;
+				tty[ontty].x := tty[ontty].par[1];
+				tty[ontty].y := tty[ontty].par[0];
+			     end;
+			'm': csi_m(ontty);
+		     end;
+		  end;
+	       ESfunckey:
+	          begin
+		  end;
+	       ESsetterm:
+	          begin
+		  end;
+	       ESsetgraph:
+	          begin
+		  end;
+	    
+	    end;   { ...case(state) }
+
+	    buf += 1;
+
+         end;   { ...for }
 
       asm
          pushfd
@@ -561,7 +661,8 @@ begin
       i := fichier^.pos div 2;
       tty[ontty].y := i div 80;
       tty[ontty].x := i mod 80;
-      update_cursor(ontty);
+      if (ontty = current_tty) then
+          update_cursor(ontty);
       asm 
          popfd
       end;
@@ -584,11 +685,13 @@ end;
 function tty_seek (fichier : P_file_t ; offset, whence : dword) : dword;
 begin
 
-   offset *= 2;
    {$IFDEF DEBUG}
       printk('debut : %d\n',[fichier^.pos]);
    {$ENDIF}
-   case whence of
+
+   offset *= 2;
+
+   case (whence) of
       SEEK_SET: begin
                    if (offset >= screen_size) then
                       begin
@@ -653,43 +756,166 @@ end;
 function tty_ioctl (fichier : P_file_t ; req : dword ; argp : pointer) : dword;
 
 var
-   i        : dword;
-   tmp_term : P_termios;
+   i              : dword;
+   tmp_TCGETS     : P_termios;
+   tmp_TIOCGWINSZ : P_winsize;
 
 begin
 
-   {$IFDEF DEBUG}
+   {$IFDEF DEBUG_TTY_IOCTL}
       printk('Welcome in tty_ioctl... (%h, %h4, %h)\n', [fichier, req, argp]);
    {$ENDIF}
 
-   tmp_term := argp;
+   result := 0;
 
-   case req of
-      TCGETS: begin
-                 if (tmp_term = NIL) then
+   case (req) of
+      TCGETS: begin   { FIXME: it returns a zero filled structure }
+                 if (argp = NIL) then
 		     begin
-		        printk('VFS (tty_ioctl): argp=NIL\n', []);
-		        result := EINVAL;
+		        printk('tty_ioctl (TCGETS): argp=NIL\n', []);
+		        result := -EINVAL;
 		     end
 		 else
 		     begin
-		        tmp_term^.c_iflag := 0;
-			tmp_term^.c_oflag := 0;
-			tmp_term^.c_cflag := 0;
-			tmp_term^.c_lflag := 0;
-			tmp_term^.c_line  := 0;
+		        tmp_TCGETS := argp;
+		        tmp_TCGETS^.c_iflag := 0;
+			tmp_TCGETS^.c_oflag := 0;
+			tmp_TCGETS^.c_cflag := 0;
+			tmp_TCGETS^.c_lflag := 0;
+			tmp_TCGETS^.c_line  := 0;
 			for i := 0 to (NCCS - 1) do
-			begin
-			   tmp_term^.c_cc[i] := 0;
-			end;
-		        result := 0;
+			    tmp_TCGETS^.c_cc[i] := 0;
+			{printk('WARNING (tty_ioctl): TCGETS request\n', []);}
 		     end;
               end;
+      TIOCGWINSZ: begin
+                     tmp_TIOCGWINSZ := argp;   { FIXME: don't know what values should I return }
+		     tmp_TIOCGWINSZ^.ws_row := 25;
+		     tmp_TIOCGWINSZ^.ws_col := 80;
+		     tmp_TIOCGWINSZ^.ws_xpixel := 0;
+		     tmp_TIOCGWINSZ^.ws_ypixel := 0;
+                  end;
       else
               begin
-	         printk('VFS (tty_ioctl): unknow request (%h4)', [req]);
+	         printk('tty_ioctl (%d): unknown request (%h4)\n', [current^.pid, req]);
 		 result := -1;
 	      end;
+   end;
+
+end;
+
+
+
+{******************************************************************************
+ * tty_close
+ *
+ * FIXME: do more checks (is the file really opened, ...)
+ *****************************************************************************}
+function tty_close (fichier : P_file_t) : dword;
+
+var
+   ontty : byte;
+
+
+begin
+
+   ontty := fichier^.inode^.rdev_min;
+
+   tty[ontty].next_c := 0;
+   tty[ontty].last_c := 0;
+
+   result := 0;
+
+end;
+
+
+
+{******************************************************************************
+ * csi_J
+ *
+ * NOTE: code inspired from linux 0.12 (kernel/chr_drv/console.c)
+ *****************************************************************************}
+procedure csi_J (vpar : dword ; ontty : byte); [public, alias : 'CSI_J'];
+
+var
+   dep, count, start : dword;
+   attr : byte;
+
+begin
+
+   attr := tty[ontty].attr;
+
+   case (vpar) of
+   0: begin   { erase from cursor to end of display }   { FIXME: need more tests (but should be ok) }
+         dep   := (ontty * screen_size);
+	 start := tty[ontty].y * 80 + tty[ontty].x;
+	 count := screen_resolution - start;
+      end;
+   1: begin   { erase from start to cursor }   { FIXME: not tested (but should be ok) }
+         dep   := (ontty * screen_size);
+	 start := 0;
+	 count := tty[ontty].y * 80 + tty[ontty].x;
+      end;
+   2: begin   { erase whole display }
+	 dep   := (ontty * screen_size);
+	 start := 0;
+	 count := screen_resolution;
+      end;
+   end;
+
+   asm
+      mov   edi, video_ram_start
+      add   edi, dep
+      add   edi, start
+      mov   ecx, count
+      mov   ah , attr
+      mov   al , $20
+      cld
+      rep   stosw
+   end;
+
+end;
+
+
+{******************************************************************************
+ * csi_m
+ *
+ * NOTE: code inspired from linux 0.12 (kernel/chr_drv/console.c)
+ *****************************************************************************}
+procedure csi_m (ontty : byte);
+
+var
+   i : dword;
+
+begin
+
+   for i := 0 to tty[ontty].npar do
+   begin
+      case (tty[ontty].par[i]) of
+         00: tty[ontty].attr := 07;   { Default }
+         01: tty[ontty].attr := tty[ontty].attr or $08;    { Bold }
+	 05: tty[ontty].attr := tty[ontty].attr or $80;    { Blinking }
+	 07: tty[ontty].attr := (tty[ontty].attr shl 4) or (tty[ontty].attr shr 4);   { Negative }
+	 22: tty[ontty].attr := tty[ontty].attr and $F7;   { Not bold }
+	 25: tty[ontty].attr := tty[ontty].attr and $7F;   { Not blinking }
+	 27: tty[ontty].attr := 07;   { Positive image (FIXME: don't know if it's correct to set 'attr' to 07) }
+	 30: tty[ontty].attr := (tty[ontty].attr and $F8) or 0;   { Black foreground }
+	 31: tty[ontty].attr := (tty[ontty].attr and $F8) or 4;   { Red foreground }
+	 32: tty[ontty].attr := (tty[ontty].attr and $F8) or 2;   { Green foreground }
+	 33: tty[ontty].attr := (tty[ontty].attr and $F8) or 6;   { Brown foreground }
+	 34: tty[ontty].attr := (tty[ontty].attr and $F8) or 1;   { Blue foreground }
+	 35: tty[ontty].attr := (tty[ontty].attr and $F8) or 5;   { Magenta (purple) foreground }
+	 36: tty[ontty].attr := (tty[ontty].attr and $F8) or 3;   { Cyan (light blue) foreground }
+	 37: tty[ontty].attr := (tty[ontty].attr and $F8) or 7;   { Gray foreground }
+	 40: tty[ontty].attr := (tty[ontty].attr and $F8) or 0;   { Black background }
+	 41: tty[ontty].attr := (tty[ontty].attr and $F8) or (4 shl 4);   { Red background }
+	 42: tty[ontty].attr := (tty[ontty].attr and $F8) or (2 shl 4);   { Green background }
+	 43: tty[ontty].attr := (tty[ontty].attr and $F8) or (6 shl 4);   { Brown background }
+	 44: tty[ontty].attr := (tty[ontty].attr and $F8) or (1 shl 4);   { Blue background }
+	 45: tty[ontty].attr := (tty[ontty].attr and $F8) or (5 shl 4);   { Magenta (purple) background }
+	 46: tty[ontty].attr := (tty[ontty].attr and $F8) or (3 shl 4);   { Cyan (light blue) background }
+	 47: tty[ontty].attr := (tty[ontty].attr and $F8) or (7 shl 4);   { White background }
+      end;
    end;
 
 end;

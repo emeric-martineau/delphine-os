@@ -97,12 +97,16 @@
     mov   si , RGB
     mov   al , 07
     mov   dx , 03C8h
-    out   dx , al
+    ;out   dx , al
+    nop
 
     mov   dx , 03C9h
-    outsb
-    outsb
-    outsb
+    ;outsb
+    nop
+    ;outsb
+    nop
+    ;outsb
+    nop
 
     ; Look on which drive the kernel is
 
@@ -128,7 +132,7 @@
     ; Those variables MUST be in the first 512 bytes of the boot sector
 
     RGB:
-        db 30,45,15    ; Colors : Red, Green, Blue
+        db 30, 45, 15    ; Colors : Red, Green, Blue (30, 45, 15)
 
     cylindres:
         dw 0
@@ -361,6 +365,7 @@
     jmp @lkj
 
     db 'B.E.G'                    ; Bubule, Edo, GaLi
+    dw 47h, 47h, 47h
     dw 0AA55h                     ; Boot sector signature 
 
     @lkj:

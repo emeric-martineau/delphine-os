@@ -7,11 +7,6 @@ const
 
    MAX_NR_PART = 10;   { Number of partitions accepted by DelphineOS }
 
-   IDE0_MAJ    = 3;
-   IDE1_MAJ    = 4;
-   IDE2_MAJ    = 5;
-   IDE3_MAJ    = 6;
-
 
 type
 
@@ -29,6 +24,7 @@ type
 
    ide_struct = record
       ide_type    : byte;
+      dword_io    : byte;     { = 1 if 32bits I/O are supported }
       IO_base     : word;
       irq         : byte;     { IDE controller IRQ }
       ide_sem     : byte;     { Semaphore (not used) }
@@ -41,14 +37,14 @@ type
 
    { ide_struct details :
 
-     - ide_type :   FFh -> No drive
-                    82h -> Hard drive using LBA
-                    05h -> CD-ROM or DVD-ROM
-                    02h -> Hard drive without LBA
-                    01h -> IDE TAPE
-                    00h -> IDE FLOPPY (zip drive)
+     - ide_type :   $FF -> No drive
+                    $82 -> Hard drive using LBA
+                    $05 -> CD-ROM or DVD-ROM
+                    $02 -> Hard drive without LBA
+                    $01 -> IDE TAPE
+                    $00 -> IDE FLOPPY (zip drive)
 
-     cyls, heads and sectors are initialized only if drive has type 2.
+     cyls, heads and sectors are initialized only if drive has type $02.
   
      lba_sectors is initialized only if drive has type $82
    }

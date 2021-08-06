@@ -1,0 +1,269 @@
+00000000000i[MEM0 ] allocated memory at 0x40297008. after alignment, vector=0x40298000
+00000000000i[MEM0 ] 16.00MB
+00000000000i[MEM0 ] rom at 0xf0000/65536 ('/usr/bochs/latest/BIOS-bochs-latest')
+00000000000i[MEM0 ] rom at 0xc0000/32769 ('/usr/bochs/latest/VGABIOS-elpin-2.40')
+00000000000i[CMOS ] Setting initial clock to: Mon Jul 21 23:45:41 2003 (time0=1058823941)
+00000000000i[DMA  ] channel 4 used by cascade
+00000000000i[DMA  ] channel 2 used by Floppy Drive
+00000000000i[XGUI ] test_alloc_colors: 16 colors available out of 16 colors tried
+00000000000i[XGUI ] font 8 wide x 16 high, display depth = 24
+00000000000i[KMAP ] Loading keymap from '/usr/local/share/bochs/keymaps/x11-pc-fr.map'
+00000000000i[KMAP ] Loaded 182 symbols
+00000000000i[VGA  ] interval=300000
+00000000000i[     ] init_mem of 'harddrv' plugin device by virtual method
+00000000000i[     ] init_mem of 'keyboard' plugin device by virtual method
+00000000000i[     ] init_mem of 'serial' plugin device by virtual method
+00000000000i[     ] init_mem of 'parallel' plugin device by virtual method
+00000000000i[     ] init_dev of 'harddrv' plugin device by virtual method
+00000000000i[HD   ] HD on ata0-0: 'delphineOS.img'
+00000000000i[HD   ] translation on ata0-0 set to 'none'
+00000000000i[HD   ] Boot device will be 'c'
+00000000000i[HD   ] Floppy boot signature check is enabled
+00000000000i[     ] init_dev of 'keyboard' plugin device by virtual method
+00000000000i[KBD  ] will paste characters every 1000 keyboard ticks
+00000000000i[     ] init_dev of 'serial' plugin device by virtual method
+00000000000i[SER  ] com1 at 0x3f8/8 irq 4
+00000000000i[     ] init_dev of 'parallel' plugin device by virtual method
+00000000000i[PAR  ] parallel port 1 at 0x378
+00000000000i[     ] reset of 'harddrv' plugin device by virtual method
+00000000000i[     ] reset of 'keyboard' plugin device by virtual method
+00000000000i[     ] reset of 'serial' plugin device by virtual method
+00000000000i[     ] reset of 'parallel' plugin device by virtual method
+00000000000i[XGUI ] [x] Mouse off
+00000004012i[BIOS ]  rombios.c,v 1.42.2.1 2002/05/15 13:41:03 cbothamy Exp $
+00000158557e[HD   ] device set to 1 which does not exist
+00000165387e[HD   ] device set to 1 which does not exist
+00000178534i[HD   ] enabling LBA mode
+00000431695i[PIT81] Changing GATE 2 to: 0
+00000431713i[PIT81] Changing GATE 2 to: 1
+00003431727i[PIT81] Changing GATE 2 to: 0
+00004126657e[HD   ] device set to 1 which does not exist
+00004126717e[HD   ] device set to 1 which does not exist
+00004126765e[HD   ] device set to 1 which does not exist
+00004406814e[HD   ] device set to 1 which does not exist
+00004406862e[HD   ] device set to 1 which does not exist
+00005740775i[HD   ] enabling LBA mode
+00005763539i[HD   ] enabling LBA mode
+00005778332i[HD   ] enabling LBA mode
+00005801126i[HD   ] enabling LBA mode
+00005817287i[HD   ] enabling LBA mode
+00005832494i[HD   ] enabling LBA mode
+00005850975i[HD   ] enabling LBA mode
+00005876767i[HD   ] enabling LBA mode
+00005894849i[HD   ] enabling LBA mode
+00005909988i[HD   ] enabling LBA mode
+00005925169i[HD   ] enabling LBA mode
+00005940424i[HD   ] enabling LBA mode
+00005967652i[HD   ] enabling LBA mode
+00005982935i[HD   ] enabling LBA mode
+00005998260i[HD   ] enabling LBA mode
+00006013659i[HD   ] enabling LBA mode
+00006038978i[HD   ] enabling LBA mode
+00006054351i[HD   ] enabling LBA mode
+00006071079i[HD   ] enabling LBA mode
+00006086622i[HD   ] enabling LBA mode
+00006103291i[HD   ] enabling LBA mode
+00006118862i[HD   ] enabling LBA mode
+00006145116i[HD   ] enabling LBA mode
+00006160803i[HD   ] enabling LBA mode
+00006177662i[HD   ] enabling LBA mode
+00006193423i[HD   ] enabling LBA mode
+00006210367i[HD   ] enabling LBA mode
+00006226152i[HD   ] enabling LBA mode
+00006243131i[HD   ] enabling LBA mode
+00006258851i[HD   ] enabling LBA mode
+00006275563i[HD   ] enabling LBA mode
+00006290823i[HD   ] enabling LBA mode
+00006308571i[HD   ] enabling LBA mode
+00006325076i[HD   ] enabling LBA mode
+00006341623i[HD   ] enabling LBA mode
+00006359477i[HD   ] enabling LBA mode
+00006377224i[HD   ] enabling LBA mode
+00006393873i[HD   ] enabling LBA mode
+00006410564i[HD   ] enabling LBA mode
+00006428661i[HD   ] enabling LBA mode
+00006446552i[HD   ] enabling LBA mode
+00006463345i[HD   ] enabling LBA mode
+00006480180i[HD   ] enabling LBA mode
+00006498322i[HD   ] enabling LBA mode
+00006516449i[HD   ] enabling LBA mode
+00006533386i[HD   ] enabling LBA mode
+00006550365i[HD   ] enabling LBA mode
+00006568750i[HD   ] enabling LBA mode
+00006586929i[HD   ] enabling LBA mode
+00006604010i[HD   ] enabling LBA mode
+00006621133i[HD   ] enabling LBA mode
+00006639563i[HD   ] enabling LBA mode
+00006657886i[HD   ] enabling LBA mode
+00006675203i[HD   ] enabling LBA mode
+00006692470i[HD   ] enabling LBA mode
+00006711051i[HD   ] enabling LBA mode
+00006729610i[HD   ] enabling LBA mode
+00006746979i[HD   ] enabling LBA mode
+00006764390i[HD   ] enabling LBA mode
+00006783108i[HD   ] enabling LBA mode
+00006801787i[HD   ] enabling LBA mode
+00006819161i[HD   ] enabling LBA mode
+00006836344i[HD   ] enabling LBA mode
+00006854887i[HD   ] enabling LBA mode
+00006873270i[HD   ] enabling LBA mode
+00006890647i[HD   ] enabling LBA mode
+00006907974i[HD   ] enabling LBA mode
+00006926562i[HD   ] enabling LBA mode
+00006945181i[HD   ] enabling LBA mode
+00006962610i[HD   ] enabling LBA mode
+00006980081i[HD   ] enabling LBA mode
+00006998912i[HD   ] enabling LBA mode
+00007017629i[HD   ] enabling LBA mode
+00007035202i[HD   ] enabling LBA mode
+00007052817i[HD   ] enabling LBA mode
+00007071739i[HD   ] enabling LBA mode
+00007090600i[HD   ] enabling LBA mode
+00007108317i[HD   ] enabling LBA mode
+00007126221i[HD   ] enabling LBA mode
+00007145241i[HD   ] enabling LBA mode
+00007164246i[HD   ] enabling LBA mode
+00007182153i[HD   ] enabling LBA mode
+00007200056i[HD   ] enabling LBA mode
+00007219266i[HD   ] enabling LBA mode
+00007238415i[HD   ] enabling LBA mode
+00007256420i[HD   ] enabling LBA mode
+00007274566i[HD   ] enabling LBA mode
+00007293920i[HD   ] enabling LBA mode
+00007313167i[HD   ] enabling LBA mode
+00007331362i[HD   ] enabling LBA mode
+00007349553i[HD   ] enabling LBA mode
+00007369051i[HD   ] enabling LBA mode
+00007388510i[HD   ] enabling LBA mode
+00007406763i[HD   ] enabling LBA mode
+00007424726i[HD   ] enabling LBA mode
+00007443996i[HD   ] enabling LBA mode
+00007463205i[HD   ] enabling LBA mode
+00007481270i[HD   ] enabling LBA mode
+00007499423i[HD   ] enabling LBA mode
+00007518837i[HD   ] enabling LBA mode
+00007538243i[HD   ] enabling LBA mode
+00007556452i[HD   ] enabling LBA mode
+00007574749i[HD   ] enabling LBA mode
+00007594307i[HD   ] enabling LBA mode
+00007613804i[HD   ] enabling LBA mode
+00007632157i[HD   ] enabling LBA mode
+00007650598i[HD   ] enabling LBA mode
+00007670300i[HD   ] enabling LBA mode
+00007689994i[HD   ] enabling LBA mode
+00007708537i[HD   ] enabling LBA mode
+00007727076i[HD   ] enabling LBA mode
+00007746922i[HD   ] enabling LBA mode
+00007766707i[HD   ] enabling LBA mode
+00007785394i[HD   ] enabling LBA mode
+00007804123i[HD   ] enabling LBA mode
+00007824120i[HD   ] enabling LBA mode
+00007844049i[HD   ] enabling LBA mode
+00007862880i[HD   ] enabling LBA mode
+00007881707i[HD   ] enabling LBA mode
+00007901887i[HD   ] enabling LBA mode
+00007921960i[HD   ] enabling LBA mode
+00007940935i[HD   ] enabling LBA mode
+00007959959i[HD   ] enabling LBA mode
+00007980283i[HD   ] enabling LBA mode
+00008000554i[HD   ] enabling LBA mode
+00008020695i[HD   ] enabling LBA mode
+00008039412i[HD   ] enabling LBA mode
+00008059390i[HD   ] enabling LBA mode
+00008079353i[HD   ] enabling LBA mode
+00008098271i[HD   ] enabling LBA mode
+00008117178i[HD   ] enabling LBA mode
+00008137346i[HD   ] enabling LBA mode
+00008157453i[HD   ] enabling LBA mode
+00008176462i[HD   ] enabling LBA mode
+00008195513i[HD   ] enabling LBA mode
+00008215825i[HD   ] enabling LBA mode
+00008236129i[HD   ] enabling LBA mode
+00008255236i[HD   ] enabling LBA mode
+00008274431i[HD   ] enabling LBA mode
+00008294841i[HD   ] enabling LBA mode
+00008315236i[HD   ] enabling LBA mode
+00008334533i[HD   ] enabling LBA mode
+00008353826i[HD   ] enabling LBA mode
+00008374479i[HD   ] enabling LBA mode
+00008395064i[HD   ] enabling LBA mode
+00008414505i[HD   ] enabling LBA mode
+00008433988i[HD   ] enabling LBA mode
+00008454686i[HD   ] enabling LBA mode
+00008475323i[HD   ] enabling LBA mode
+00008494908i[HD   ] enabling LBA mode
+00008514634i[HD   ] enabling LBA mode
+00008535522i[HD   ] enabling LBA mode
+00008556303i[HD   ] enabling LBA mode
+00008576032i[HD   ] enabling LBA mode
+00008595849i[HD   ] enabling LBA mode
+00008616881i[HD   ] enabling LBA mode
+00008637874i[HD   ] enabling LBA mode
+00008657661i[HD   ] enabling LBA mode
+00008677205i[HD   ] enabling LBA mode
+00008697964i[HD   ] enabling LBA mode
+00008718662i[HD   ] enabling LBA mode
+00008738308i[HD   ] enabling LBA mode
+00008757996i[HD   ] enabling LBA mode
+00008778991i[HD   ] enabling LBA mode
+00008799886i[HD   ] enabling LBA mode
+00008819676i[HD   ] enabling LBA mode
+00008839554i[HD   ] enabling LBA mode
+00008860601i[HD   ] enabling LBA mode
+00008881633i[HD   ] enabling LBA mode
+00008901567i[HD   ] enabling LBA mode
+00008921543i[HD   ] enabling LBA mode
+00008942833i[HD   ] enabling LBA mode
+00008964055i[HD   ] enabling LBA mode
+00008984087i[HD   ] enabling LBA mode
+00009004115i[HD   ] enabling LBA mode
+00009198568i[HD   ] enabling LBA mode
+00009218985i[HD   ] enabling LBA mode
+00009241551i[HD   ] enabling LBA mode
+00015539450i[HD   ] enabling LBA mode
+00015558835i[HD   ] enabling LBA mode
+00015579438i[HD   ] enabling LBA mode
+00015598943i[HD   ] enabling LBA mode
+00015629178i[HD   ] enabling LBA mode
+00015648707i[HD   ] enabling LBA mode
+00015669454i[HD   ] enabling LBA mode
+00015689156i[HD   ] enabling LBA mode
+00015709988i[HD   ] enabling LBA mode
+00015729860i[HD   ] enabling LBA mode
+00015750612i[HD   ] enabling LBA mode
+00015770033i[HD   ] enabling LBA mode
+00015790632i[HD   ] enabling LBA mode
+00015809825i[HD   ] enabling LBA mode
+00015835460i[HD   ] enabling LBA mode
+00015859944i[HD   ] enabling LBA mode
+00015884424i[HD   ] enabling LBA mode
+00015910211i[HD   ] enabling LBA mode
+00015935891i[HD   ] enabling LBA mode
+00015960519i[HD   ] enabling LBA mode
+00015985196i[HD   ] enabling LBA mode
+00016079975i[HD   ] enabling LBA mode
+00016174757i[HD   ] enabling LBA mode
+00016194530i[HD   ] enabling LBA mode
+00016260236i[HD   ] enabling LBA mode
+00129927280p[XGUI ] >>PANIC<< POWER button turned off.
+00129927280i[SYS  ] Last time is 1058824405
+00129927280i[XGUI ] Exit.
+00129927280i[CPU  ] protected mode
+00129927280i[CPU  ] CS.d_b = 32 bit
+00129927280i[CPU  ] SS.d_b = 32 bit
+00129927280i[CPU  ] | EAX=00000007  EBX=ffffffff  ECX=00000000  EDX=00000018
+00129927280i[CPU  ] | ESP=00001fc8  EBP=ffc00fd4  ESI=0010cd6c  EDI=00ff6000
+00129927280i[CPU  ] | IOPL=0 NV UP DI NG NZ AC PE CY
+00129927280i[CPU  ] | SEG selector     base    limit G D
+00129927280i[CPU  ] | SEG sltr(index|ti|rpl)     base    limit G D
+00129927280i[CPU  ] |  DS:0018( 0003| 0|  0) 00000000 000fffff 1 1
+00129927280i[CPU  ] |  ES:0018( 0003| 0|  0) 00000000 000fffff 1 1
+00129927280i[CPU  ] |  FS:002b( 0005| 0|  3) 00000000 000fffff 1 1
+00129927280i[CPU  ] |  GS:002b( 0005| 0|  3) 00000000 000fffff 1 1
+00129927280i[CPU  ] |  SS:0018( 0003| 0|  0) 00000000 000fffff 1 1
+00129927280i[CPU  ] |  CS:0010( 0002| 0|  0) 00000000 000fffff 1 1
+00129927280i[CPU  ] | EIP=0001da6a (0001da6a)
+00129927280i[CPU  ] | CR0=0xe0000019 CR1=0x00000000 CR2=0xffc2b294
+00129927280i[CPU  ] | CR3=0x00fff000 CR4=0x00000000
+00129927280i[     ] restoring default signal behavior
+00129927280i[CTRL ] quit_sim called with exit code 1

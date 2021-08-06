@@ -1,6 +1,16 @@
 
 Const
 
+    ESnormal      = 1;
+    ESesc         = 2;
+    ESsquare      = 3;
+    ESgetpars     = 4;
+    ESgotpars     = 5;
+    ESfunckey     = 6;
+    ESsetterm     = 7;
+    ESsetgraph    = 8;
+    NBPAR         = 15;
+
     MAX_BUFF_CLAV = 31;
     Num_Lock      = 0;
     Caps_Lock     = 1;
@@ -8,17 +18,20 @@ Const
     NCCS          = 19;
 
     TCGETS        = $5401;
+    TIOCGWINSZ    = $5413;
 
 Type 
     tty_struct = record 
-       x, y, align1, align2 : byte;    { align1&2 pour aligner sur 32bits }
-       buffer_keyboard      : array[0..MAX_BUFF_CLAV] of word;
+       x, y, attr, align    : byte;      { alignement }
+       buffer_keyboard      : array[0..MAX_BUFF_CLAV] of char;
+       keyboard_wq          : P_wait_queue;
        next_c,last_c        : byte;
-       pad, pad1            : byte;     { align 4 bytes }
+       pad, pad1            : byte;      { alignement }
        depassement          : boolean;
        num_caps_scroll      : dword;
-       echo                 : boolean; 
-
+       echo                 : boolean;
+       npar		    : dword;
+       par                  : array[0..15] of dword;
     end;
 
     P_vesa_info_t = ^vesa_info_t;

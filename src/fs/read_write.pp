@@ -43,11 +43,19 @@ var
 
 
 function  IS_REG (inode : P_inode_t) : boolean; external;
+procedure lock_inode (inode : P_inode_t); external;
 procedure printk (format : string ; args : array of const); external;
+procedure unlock_inode (inode : P_inode_t); external;
+
+
+function  sys_lseek (fd, offset, whence : dword) : dword; cdecl;
+function  sys_read (fd : dword ; buf : pointer ; count : longint) : dword; cdecl;
+function  sys_write (fd : dword ; buf : pointer ; count : dword) : dword; cdecl;
 
 
 
 IMPLEMENTATION
+
 
 
 
@@ -62,14 +70,19 @@ var
 
 begin
 
+   {$IFDEF DEBUG}
+      printk('Welcome in sys_lseek  %d, %d, %d\n', [fd, offset, whence]);
+   {$ENDIF}
+
    asm
       sti   { Put interrupts on }
    end;
 
+   result := -EBADF;
+
    if (fd >= OPEN_MAX) then
        begin
-          printk('VFS (lseek): fd number is too big (%d)\n', [fd]);
-	  result := -EBADF;
+          printk('sys_lseek: fd number is too big (%d)\n', [fd]);
 	  exit;
        end;
 
@@ -77,15 +90,13 @@ begin
 
    if (fichier = NIL) then
        begin
-          printk('VFS (lseek): fd %d is not a valid file desciptor\n', [fd]);
-	  result := -EBADF;
+          printk('sys_lseek: fd %d is not a valid file desciptor\n', [fd]);
 	  exit;
        end;
 
    if (fichier^.inode = NIL) then
        begin
-          printk('VFS (lseek): inode not defined fo fd %d (kernel bug ???)\n', [fd]);
-	  result := -EBADF;
+          printk('sys_lseek: inode not defined fo fd %d (kernel bug ???)\n', [fd]);
 	  exit;
        end;
 
@@ -95,7 +106,7 @@ begin
              SEEK_SET: begin
                           if (offset > fichier^.inode^.size) then
 		              begin
-		                 printk('VFS (lseek): offset > file size\n', []);
+		                 printk('sys_lseek: offset > file size\n', [fd]);
 			         result := -EINVAL;
 			         exit;
 		              end
@@ -105,7 +116,7 @@ begin
              SEEK_CUR: begin
                           if (fichier^.pos + offset > fichier^.inode^.size) then
 		              begin
-		                 printk('VFS (lseek): current ofs + ofs > file size\n', []);
+		                 printk('sys_lseek: current ofs + ofs > file size (fd=%d)\n', [fd]);
 			         result := -EINVAL;
 			         exit;
 		              end
@@ -113,13 +124,18 @@ begin
 		              fichier^.pos += offset;
                         end;
              SEEK_END: begin
-                          printk('VFS (lseek): cannot add offset to current file size (not supported)\n', []);
-		          result := -ENOSYS;   { May we could return another value ??? }
-		          exit;
+	                  if (offset = 0) then
+			      fichier^.pos := fichier^.inode^.size
+			  else
+			  begin
+                              printk('sys_lseek: cannot add offset to current file size (not supported, fd=%d offset=%d)\n', [fd,offset]);
+       		              result := -ENOTSUP;
+		              exit;
+			  end;
                        end;
              else
                 begin
-		   printk('VFS (lseek): whence parameter has a bad value (%d)\n', [whence]);
+		   printk('sys_lseek: whence parameter has a bad value (fd=%d, whence=%d)\n', [fd, whence]);
 		   result := -EINVAL;
 		   exit;
 		end;
@@ -130,12 +146,14 @@ begin
       begin
          if (fichier^.op = NIL) or (fichier^.op^.seek = NIL) then
 	     begin
-	        printk('VFS (lseek): no seek operation defined for this file\n', []);
-		result := -ENOSYS;   { May we could return another value ??? }
+	        printk('sys_lseek: no seek operation defined for fd %d (ofs=%d whence=%d)\n', [fd, offset, whence]);
+		result := -ENOTSUP;
 	     end
 	 else
 	     begin
+	        lock_inode(fichier^.inode);
 	        result := fichier^.op^.seek(fichier, offset, whence);
+		unlock_inode(fichier^.inode);
 	     end;
       end;
 
@@ -152,14 +170,12 @@ end;
  *
  * This function is called when a process uses the 'read' system call
  *****************************************************************************}
-function sys_read (fd : dword ; buf : pointer ; count : dword) : dword; cdecl; [public, alias : 'SYS_READ'];
+function sys_read (fd : dword ; buf : pointer ; count : longint) : dword; cdecl; [public, alias : 'SYS_READ'];
 
 var
    fichier : P_file_t;
 
 begin
-
-{ FIXME: It may be great to check if we have read right !!! }
 
    asm
       sti   { Put interrupts on }
@@ -169,14 +185,14 @@ begin
    
    if (fd >= OPEN_MAX) then
        begin
-          printk('VFS (read): fd is too big (%d)\n', [fd]);
-	  result := -1;
+          printk('sys_read (%d): fd is too big (%d)\n', [current^.pid, fd]);
+	  result := -EINVAL;
 	  exit;
        end;
    if (count < 0) then
        begin
-          printk('VFS (read): count < 0 (%d)\n', [count]);
-	  result := -1;
+          printk('sys_read (%d): count < 0 (%d)\n', [current^.pid, count]);
+	  result := -EINVAL;
 	  exit;
        end;
 
@@ -184,25 +200,25 @@ begin
 
    if (fichier = NIL) then
        begin
-          printk('VFS (read): fd %d not defined\n', [fd]);
-	  result := -1;
+          printk('sys_read (%d): fd %d not defined\n', [current^.pid, fd]);
+	  result := -EBADF;
 	  exit;
        end;
    if (fichier^.inode = NIL) then
        begin
-          printk('VFS (read): inode not defined for fd %d\n', [fd]);
+          printk('sys_read (%d): inode not defined for fd %d\n', [current^.pid, fd]);
 	  result := -1;
 	  exit;
        end;
    if (fichier^.op = NIL) then
        begin
-          printk('VFS (read): file operations not defined for fd %d\n', [fd]);
+          printk('sys_read (%d): file operations not defined for fd %d\n', [current^.pid, fd]);
 	  result := -1;
 	  exit;
        end;
    if (fichier^.op^.read = NIL) then
        begin
-          printk('VFS (read): read operation not defined for fd %d\n', [fd]);
+          printk('sys_read (%d): read operation not defined for fd %d\n', [current^.pid, fd]);
 	  result := -1;
 	  exit;
        end;
@@ -213,7 +229,15 @@ begin
          exit;
       end;
 
+   if (fichier^.flags = O_WRONLY) then
+   begin
+      result := -EBADF;
+      exit;
+   end;
+
+   lock_inode(fichier^.inode);
    result := fichier^.op^.read(fichier, buf, count);
+   unlock_inode(fichier^.inode);
 
 end;
 
@@ -250,16 +274,16 @@ begin
 
    if (fd >= OPEN_MAX) then
        begin
-          printk('VFS (write): fd is too big (%d)\n', [fd]);
-	  result := -1;
+          printk('sys_write (%d): fd is too big (%d)\n', [current^.pid, fd]);
+	  result := -EINVAL;
 	  exit;
        end;
    
    
    if (count < 0) then
        begin
-          printk('VFS (write): count < 0 (%d)\n', [count]);
-	  result := -1;
+          printk('sys_write (%d): count < 0 (%d)\n', [current^.pid, count]);
+	  result := -EINVAL;
 	  exit;
        end;
    
@@ -267,28 +291,28 @@ begin
    
    if (fichier = NIL) then
       begin
-         printk('VFS (write): fd %d not defined\n', [fd]);
-         result := -1;
+         printk('sys_write (%d): fd %d not defined\n', [current^.pid, fd]);
+         result := -EBADF;
 	 exit;
       end;
 
    if (fichier^.inode = NIL) then
       begin
-         printk('VFS (write): inode not defined for fd %d\n', [fd]);
+         printk('sys_write (%d): inode not defined for fd %d\n', [current^.pid, fd]);
          result := -1;
 	 exit;
       end;
 
    if (fichier^.op = NIL) then
       begin
-         printk('VFS (write): file operations not defined for fd %d\n', [fd]);
+         printk('sys_write (%d): file operations not defined for fd %d\n', [current^.pid, fd]);
          result := -1;
 	 exit;
       end;
 
    if (fichier^.op^.write = NIL) then
       begin
-         printk('VFS (write): write operation not defined for fd %d\n', [fd]);
+         printk('sys_write (%d): write operation not defined for fd %d\n', [current^.pid, fd]);
          result := -1;
 	 exit;
       end;
@@ -299,7 +323,15 @@ begin
          exit;
       end;
 
+   if (fichier^.flags = O_RDONLY) then
+   begin
+      result := -EBADF;
+      exit;
+   end;
+
+   lock_inode(fichier^.inode);
    result := fichier^.op^.write(fichier, buf, count);
+   unlock_inode(fichier^.inode);
 
 end;
 

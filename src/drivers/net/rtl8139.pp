@@ -29,28 +29,16 @@ unit rtl8139;
 
 INTERFACE
 
-
-
-type
-
-   T_pci_device = record
-      nb        : dword;
-      bus       : dword;
-      dev       : dword;
-      func      : dword;
-      irq       : dword;
-      io        : array[0..5] of dword;
-      vendor_id : dword;
-      device_id : dword;
-      next      : ^T_pci_device;
-   end;
-
-   P_pci_device = ^T_pci_device;
+{$I pci.inc}
 
 
 function  pci_lookup (vendorid, deviceid : dword) : P_pci_device; external;
 procedure printk (format : string ; args : array of const); external;
 procedure outb (port : dword ; val : byte); external;
+
+
+procedure init_rtl8139_isa;
+procedure init_rtl8139_pci;
 
 
 
@@ -64,7 +52,7 @@ IMPLEMENTATION
  * Initialise les cartes réseaux Realtek 8139. Appelée uniquement lors de
  * l'initialisation de DelphineOS.
  *****************************************************************************}
-procedure init_rtl8139; [public, alias : 'INIT_RTL8139'];
+procedure init_rtl8139_pci; [public, alias : 'INIT_RTL8139_PCI'];
 
 var
    dev     : P_pci_device;
@@ -74,14 +62,19 @@ begin
 
    dev := pci_lookup($10EC, $8139);
 
-   if (dev = NIL) then
-      begin
-         exit;
-      end;
+   if (dev = NIL) then exit;
 
    io_base := dev^.io[0];
 
    printk('RTL8139: %h4', [io_base]);
+
+end;
+
+
+
+procedure init_rtl8139_isa; [public, alias : 'INIT_RTL8139_ISA'];
+begin
+
 end;
 
 

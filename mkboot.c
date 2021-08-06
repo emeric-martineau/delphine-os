@@ -26,17 +26,16 @@ short max_kernel_blocs;
 
 int main (int argc, char *argv[])
 {
-   if ( argc != 3 ) {
-      printf("\nmkboot : You must specify device and kernel file ...\n");
-      printf("Ex : mkboot /dev/hda1 /mnt/kernel\n\n");
-      return(-1);
+   if (argc != 3) {
+      puts("\nmkboot : You must specify device and kernel file ...");
+      puts("Ex : mkboot /dev/hda1 /mnt/kernel\n");
+      return -1;
    }
 
    if (stat(argv[2], &st) != 0) {   
-      perror("Stat ");
-      return(-1);
+      perror("stat");
+      return -1;
    }
-
 
    major = st.st_dev >> 8;
    minor = st.st_dev & 0xFF;
@@ -81,7 +80,7 @@ int main (int argc, char *argv[])
       return(-1);
    }
 
-/* On va lire le superbloc pour avoir le nombre de inodes par bloc */
+/* On va lire le superbloc pour avoir le nombre d'inodes par bloc */
    
    if (lseek (fd,0x400,SEEK_SET) != 0x400) {
       printf("\nCan't open device !!!\n\n");

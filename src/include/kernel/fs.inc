@@ -18,6 +18,8 @@
 {$DEFINE __FS__}
 
 {$I ext2.inc}
+{$I fcntl.inc}
+{$I pipe.inc}
 
 const
 
@@ -34,27 +36,36 @@ const
 
    MAX_NR_CHAR_DEV  = 10; { Même chose pour les périphériques caractères }
 
-   { L'argument 'flags' utilisé lors de l'appel système open() peut prendre
-     UNE SEULE des valeurs suivantes }
+   {* Values for the second argument to access.
+     These may be OR'd together. *}
+   R_OK = 4; { Test for read permission. }
+   W_OK = 2; { Test for write permission. }
+   X_OK = 1; { Test for execute permission. }
+   F_OK = 0; { Test for existence. }
 
-   O_WRONLY   = 2;   { Ouverture en écriture }
-   O_RDONLY   = 4;   { Ouverture en lecture }
-   O_RDWR     = 6;   { Ouverture en lecture/écriture }
-
-   O_CREAT    = 8;
-   O_EXCL     = 16;
 
    { Inodes flags }
-   I_RO       = 4;   { Read }
-   I_WO       = 2;   { Write }
-   I_XO       = 1;   { Execute }
+   I_RO       = 0;   { Read }
+   I_WO       = 1;   { Write }
+   I_XO       = 3;   { Execute }
 
    I_Lock     = 1;
    I_Uptodate = 2;
 
+   { Files types }
+   S_IFSOCK = $A000;   { Socket }
+   S_IFLNK  = $C000;   { Symbolic link }
+   S_IFREG  = $8000;   { Regular file }
+   S_IFBLK  = $6000;   { Block device }
+   S_IFDIR  = $4000;   { Directory }
+   S_IFCHR  = $2000;   { Character device }
+   S_IFIFO  = $1000;   { FIFO }
+
 type
 
+   P_dirent_t         = ^dirent_t;
    P_file_t           = ^file_t;
+   PP_inode_t         = ^P_inode_t;
    P_inode_t          = ^inode_t;
    P_file_system_type = ^file_system_type;
    P_file_operations  = ^file_operations;
@@ -75,6 +86,7 @@ type
       open  : function (inode : P_inode_t ; fichier : P_file_t) : dword;
       read  : function (fichier : P_file_t ; buf : pointer ; count : dword) : dword;
       write : function (fichier : P_file_t ; buf : pointer ; count : dword) : dword;
+      close : function (fichier : P_file_t) : dword;
       seek  : function (fichier : P_file_t ; offset, whence : dword) : dword;
       ioctl : function (fichier : P_file_t ; req : dword ; argp : pointer) : dword;
    end;
@@ -82,7 +94,7 @@ type
 
    inode_operations = record
       default_file_ops : P_file_operations;
-      lookup : function (dir : P_inode_t ; name : pchar ; len : dword ; res_inode : P_inode_t) : boolean;
+      lookup : function (dir : P_inode_t ; name : pchar ; len : dword ; res_inode : PP_inode_t) : boolean;
    end;
 
 
@@ -94,6 +106,13 @@ type
    device_struct = record
       name : string[20];
       fops : P_file_operations;
+   end;
+
+   dirent_t = record
+      d_ino    : dword;   { Inode number }
+      d_off    : dword;   { Offset to next dirent (not used by dietlibc ???) }
+      d_reclen : word;    { Length if this dirent }
+      d_name   : array[0..255] of char;   { Filename (null-terminated) }
    end;
 
 
@@ -139,6 +158,7 @@ type
       { Les données suivantes sont liées au type de système de fichiers }
       case dword of
          1: (ext2_i : ext2_inode_info);
+	 2: (pipe_i : pipe_inode_info);
    end;
 
 {-----------------------------------------------------------------------------}
@@ -149,8 +169,22 @@ type
       pos    : dword;   { Deplacement du fichier courant }
       uid    : dword;   { UID de l'utilisateur }
       gid    : dword;   { GID de l'utilisateur }
+      count  : dword;   { Compteur d'utilisation }
       op     : P_file_operations;
       inode  : P_inode_t;
+   end;
+
+{-----------------------------------------------------------------------------}
+
+{* Following structures are used for lookup() cache *}
+
+   P_lookup_cache_entry = ^lookup_cache_entry;
+
+   lookup_cache_entry = record
+      dir  : P_inode_t;
+      name : pchar;
+      len  : dword;
+      res_inode : P_inode_t;
    end;
 
 {$ENDIF}

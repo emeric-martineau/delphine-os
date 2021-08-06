@@ -32,20 +32,21 @@ INTERFACE
 
 function  bitscan (nb : dword) : dword;
 function  btod (nb : byte) : dword;
+procedure halt;
 function  inb (port : word) : byte;
 function  ind (port : word) : dword;
-function  inw (port : word) : word;
-function  memd (adr : pointer) : dword;
-function  wtod (nb : word) : dword;
-procedure halt;
 procedure int_strcmp (dstr, sstr : pointer);
+procedure int_strcopy (len : dword ; sstr, dstr : pointer);
+function  inw (port : word) : word;
 procedure IO_delay;
+function  memd (adr : pointer) : dword;
 procedure outb (port : word ; val : byte);
 procedure outd (port : word ; val : dword);
 procedure outw (port : word ; val : word);
 procedure reset_computer;
 procedure set_bit (i : dword ; ptr_nb : pointer);
 procedure unset_bit (i : dword ; ptr_nb : pointer);
+function  wtod (nb : word) : dword;
 
 
 
@@ -101,7 +102,7 @@ asm
    jnz @wait
 
    mov   edi, $472
-   mov   word [edi], $1234
+   mov   word [edi], $1234   { Don't check the RAM again (unlike $4312) }
    mov   al , $FC
    out   $64, al
 

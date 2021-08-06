@@ -5,7 +5,7 @@
  *
  *  CopyLeft 2002 Bubule
  *
- *  version 0.1 - 25/04/2002 - Bubule
+ *  version 0.1 - 25/04/2002 - Bubule - Initial version
  *
  *  Remerciement à Cornelis Frank (EduOS) qui pète du code de ouf mais en
  *  restant simple et compréhensible. Dommage que ce soit en C !
@@ -31,12 +31,14 @@ unit time;
 
 INTERFACE
 
-
+{$I errno.inc}
+{$I process.inc}
 {$I time.inc}
 
 
 procedure enable_IRQ (irq : byte); external;
 function  inb (port : word) : byte; external;
+procedure memset (adr : pointer ; c : byte ; size : dword); external;
 procedure outb (port : word ; val : byte); external;
 procedure printk (format : string ; args : array of const);external;
 procedure set_intr_gate (n : dword ; addr : pointer); external;
@@ -48,12 +50,14 @@ procedure configurer_frequence_PIT(frequence : word);
 function  get_value_counter : dword;
 procedure initialise_compteur;
 procedure mdelay (time : dword);
+function  sys_gettimeofday (tv : P_timeval ; tz : P_timezone) : dword; cdecl;
 function  sys_time (t : pointer) : dword; cdecl;
 
 
 { Global variables }
 
 var
+   current : P_task_struct; external name 'U_PROCESS_CURRENT';
    compteur : dword;
 
 
@@ -217,13 +221,41 @@ begin
    end;
 
    result :=
-   (( ((year div 4 - year div 100 + year div 400 + 367*mon div 12 + day)  +(year * 365)  -(719499))
-   *24 +hour ) 
-   *60 +min  )
-   *60 +sec;
+   ((((year div 4 - year div 100 + year div 400 + 367 * mon div 12 + day) +
+   (year * 365) - (719499)) * 24 + hour) * 60 + min) * 60 + sec;
 
    if (t <> NIL) and (t > pointer($FFC01000)) then
        longint(t^) := result;
+
+{printk('sys_time (%d): t=%h  result=%d\n', [current^.pid, t, result]);}
+
+end;
+
+
+
+{******************************************************************************
+ * sys_gettimeofday
+ *
+ * FIXME: sys_gettimeofday does nothing !!!
+ ******************************************************************************}
+function sys_gettimeofday (tv : P_timeval ; tz : P_timezone) : dword; cdecl; [public, alias : 'SYS_GETTIMEOFDAY'];
+begin
+
+{   printk('sys_gettimeofday (%d): tv=%h  tz=%h\n', [current^.pid, tv, tz]);}
+
+   if (tv <> NIL) then
+   begin
+      memset(tv, 0, sizeof(timeval));
+      { FIXME: Fill tv }
+   end;
+
+   if (tz <> NIL) then
+   begin
+      memset(tz, 0, sizeof(timezone));
+      { FIXME: Fill tz }
+   end;
+
+   result := -ENOTSUP;
 
 end;
 

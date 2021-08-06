@@ -20,7 +20,7 @@
  *    			               la quantité de RAM du système en octets.
  *				       free_memory : contient la quantité de
  *				       RAM disponible en octets à un instant
- *				       donne. free_memory est modifié par :
+ *				       donné. free_memory est modifié par :
  *				          - kmalloc()
  *					  - kfree_s()
  *					  - get_free_page()
@@ -51,14 +51,19 @@ INTERFACE
 
 
 {DEFINE DEBUG}
+{DEFINE DEBUG_KREE_S}
+{DEFINE KMALLOC_WARNING}
+{DEFINE DEBUG_UNLOAD_PAGE_TABLE}
+{$DEFINE USE_MEMSET}   { FIXME: one day, we'll have to unset this }
 
 {$I process.inc}
 {$I mm.inc}
 
 
 var
-   total_memory   : dword; { in bytes }
-   free_memory    : dword; { in bytes }
+   total_memory   : dword; { nb of bytes }
+   free_memory    : dword; { nb of bytes }
+   shared_pages   : dword; { nb of pages }
    nb_free_pages  : dword;
    mem_map        : P_page;
    debut_pile     : pointer;
@@ -69,18 +74,33 @@ var
 
    current        : P_task_struct; external name 'U_PROCESS_CURRENT';
 
-function  get_free_page : pointer;
-function  init_free_list (i : dword) : dword;
 function  find_page (page : pointer ; list : P_page_desc) : P_page_desc;
-function  get_free_dma_page : pointer;
 procedure free_to_full_free (i : dword ; src : P_page_desc);
 procedure full_free_to_full (i : dword ; src : P_page_desc);
 procedure full_to_full_free (i : dword ; src : P_page_desc);
 procedure full_free_to_free (i : dword ; src : P_page_desc);
+function  get_free_dma_page : pointer;
+function  get_free_page : pointer;
+function  get_page_rights (adr : pointer) : dword;
+function  get_phys_addr (adr : pointer) : pointer;
+function  init_free_list (i : dword) : dword;
 procedure kfree_s (addr : pointer ; size : dword);
-procedure unload_page_table (pt : P_pte_t);
+function  kmalloc (len : dword) : pointer;
+function  MAP_NR(adr : pointer) : dword;
+function  memcmp (src, dest : pointer ; size : dword) : boolean;
+procedure memcpy (src, dest : pointer ; size : dword);
+procedure memset (adr : pointer ; c : byte ; size : dword);
+function  null_write (fichier : P_file_t ; buf : pointer ; count : dword) : dword;
+function  null_read (fichier : P_file_t ; buf : pointer ; count : dword) : dword;
+function  page_align (nb : longint) : dword;
+function  page_aligned (nb : longint) : boolean;
+function  PageReserved (adr : dword) : boolean;
+procedure push_page (page_addr : pointer);
+procedure set_page_rights (adr : pointer ; r :dword);
+procedure unload_page_table (ts : P_task_struct);
 
 
+procedure panic (reason : string); external;
 procedure printk (format : string ; args : array of const); external;
 procedure set_bit (i : dword ; ptr_nb : pointer); external;
 procedure unset_bit (i : dword ; ptr_nb : pointer); external;
@@ -154,7 +174,7 @@ begin
          end;
 
          {$IFDEF DEBUG}
-            printk(' get_free_page: %h ', [tmp]);
+            printk('get_free_page: %h\n', [tmp]);
 	 {$ENDIF}
 
 	 nb_free_pages -= 1;
@@ -163,7 +183,14 @@ begin
 	 asm
 	    popfd   { Fin section critique }
 	 end;
+
+	 {$IFDEF USE_MEMSET}
+	 memset(tmp, 0, 4096);   {* FIXME: We don't have to put this if
+	                          *        everything was coded the rigth way*}
+	 {$ENDIF}
+
 	 result := tmp;
+
       end;
 end;
 
@@ -201,7 +228,7 @@ begin
          end;
 
          {$IFDEF DEBUG}
-            printk(' get_free_dma_page: %h ', [tmp]);
+            printk('get_free_dma_page: %h\n', [tmp]);
          {$ENDIF}
 
 	 nb_free_pages -= 1;
@@ -211,6 +238,12 @@ begin
 	    popfd  { On remet les interruptions (fin section critique) }
 	 end;
 	 result := tmp;
+
+	 {$IFDEF USE_MEMSET}
+	 memset(tmp, 0, 4096);   {* FIXME: We don't have to put this if
+	                          *       everything else was right coded  :-) *}
+	 {$ENDIF}
+
       end;
 end;
 
@@ -227,7 +260,7 @@ end;
 procedure push_page (page_addr : pointer); [public, alias : 'PUSH_PAGE'];
 
 var
-    index : dword;
+    index, r_eip : dword;
 
 begin
 
@@ -239,48 +272,56 @@ begin
    end;
 
    if (mem_map[index].count = 0) then
-       begin
-           printk('push_page: Trying to push page a free page (%h) !!!\n', [page_addr]);
-	   asm
-	      popfd
-	   end;
-	   exit;
-       end
+   begin
+      asm
+         mov   eax, [ebp + 4]
+	 mov   r_eip, eax
+      end;
+      printk('push_page (%d): %h is already free (EIP=%h) !!!\n', [current^.pid, page_addr, r_eip]);
+      asm
+         popfd
+      end;
+      panic('');
+   end
    else
-       begin
-           mem_map[index].count -= 1;
-	   if (mem_map[index].count = 0) then
-	   { On libère vraiment la page car plus aucun processus ne l'utilise }
-	       begin
-                   if (page_addr < pointer($1000000)) then   { This a "DMA page" }
-                       begin
-                           asm
-                               mov   edi, debut_pile_dma
-                               mov   eax, page_addr
-                               mov   [edi], eax
-                               add   edi, 4
-                               mov   debut_pile_dma, edi
-                           end;
-                        end
-                    else
-                        begin
-                           asm
-                               mov   edi, debut_pile
-                               mov   eax, page_addr
-                               mov   [edi], eax
-                               add   edi, 4
-                               mov   debut_pile, edi
-                           end;
-                         end;
+   begin
+      mem_map[index].count -= 1;
+      if (mem_map[index].count = 0) then
+      { On libère vraiment la page car plus aucun processus ne l'utilise }
+      begin
+         if (page_addr < pointer($1000000)) then   { This a "DMA page" }
+         begin
+            asm
+               mov   edi, debut_pile_dma
+               mov   eax, page_addr
+               mov   [edi], eax
+               add   edi, 4
+               mov   debut_pile_dma, edi
+            end;
+         end
+         else
+         begin
+            asm
+               mov   edi, debut_pile
+               mov   eax, page_addr
+               mov   [edi], eax
+               add   edi, 4
+               mov   debut_pile, edi
+            end;
+         end;
 
-		    nb_free_pages += 1;
-		    free_memory   += 4096;
-		    {$IFDEF DEBUG}
-		        printk('push_page: %h\n', [page_addr]);
-		    {$ENDIF}
+	 nb_free_pages += 1;
+	 free_memory   += 4096;
+	 {$IFDEF DEBUG}
+	    printk('push_page: %h\n', [page_addr]);
+	 {$ENDIF}
 
-               end;
-       end;
+      end
+      else
+      begin
+         shared_pages -= 1;
+      end;
+   end;
 
    asm
       popfd   { Fin section critique }
@@ -298,6 +339,9 @@ end;
  *
  * Cette fonction renvoie un pointeur vers une zone de mémoire de taille len.
  * ATTENTION : len doit être inferieure ou égale à 4096
+ *
+ * FIXME: utiliser un sémaphore pour accéder à 'size_dir' plutot que de couper
+ *        les interruptions.
  *****************************************************************************}
 function kmalloc (len : dword) : pointer; [public, alias : 'KMALLOC'];
 
@@ -312,18 +356,18 @@ begin
    { On vérifie si la demande de mémoire n'est pas supérieure à 4096 octets }
 
    if (len > 4096) then
-      begin
-         printk('kmalloc: try to allocate %d bytes (>4096) !!!\n', [len]);
-         result := NIL;
-	 exit;
-      end;
+   begin
+      printk('kmalloc: Process #%d is trying to allocate %d bytes (>4096) !!!\n', [current^.pid, len]);
+      result := NIL;
+      exit;
+   end;
 
+   {$IFDEF KMALLOC_WARNING}
    if (len = 4096) then
    {* We put a warning here because it's better to call get_free_page() than kmalloc(4096)
     * although it still works *}
-       begin
-           printk('\nkernel warning: kmalloc() called with len=4096\n\n', []);
-       end;
+      printk('WARNING (%d): kmalloc() called with len=4096\n', [current^.pid]);
+   {$ENDIF}
 
    { On va rechercher quelle entrée de size_dir utiliser }
 
@@ -335,80 +379,88 @@ begin
 
    { i est donc notre index dans size_dir }
 
+   asm
+      pushfd
+      cli
+   end;
+
    if (size_dir[i].full_free_list = NIL) then
+   begin
+      if (size_dir[i].free_list = NIL) then
       begin
-         if (size_dir[i].free_list = NIL) then
-	    begin
-	       res := init_free_list(i);
-	       if (res = 0) then { On n'a pas pu allouer une nouvelle page }
-	          begin
-		     printk('kmalloc: No more free pages !!!', []);
-		     result := NIL;
-		     exit;
-		  end;
-            end;
+         res := init_free_list(i);
+	 if (res = 0) then { On n'a pas pu allouer une nouvelle page }
+	 begin
+	    printk('kmalloc (%d): No more free pages !!!', [current^.pid]);
+            result := NIL;
+	    exit;
+	 end;
+      end;
 
       { On va deplacer un descripteur de la free_list vers la
 	full_free_list }
-
 	free_to_full_free(i, size_dir[i].free_list);
 
-      end;
+   end;
 
    { Ici, on sait que la full_free_list contient au moins un element }
 
    tmp := size_dir[i].full_free_list; { tmp = 1er element de full_free }
 
    if (i > 3) then { La taille demandée est supérieure à 64 octets }
-      begin
+   begin
 
-	 { Recherche du premier bloc libre }
-	 res := bitscan(tmp^.bitmap);
+      { Recherche du premier bloc libre }
+      res := bitscan(tmp^.bitmap);
 
-	 { On va marquer le bloc comme occupé }
-	 set_bit(res, @tmp^.bitmap);
+      { On va marquer le bloc comme occupé }
+      set_bit(res, @tmp^.bitmap);
 	 
-	 { On regarde si tous les blocs sont maintenant pris. Si oui, on
-	   déplace le descripteur dans la full_list }
-	 if (tmp^.bitmap = $FFFFFFFF) then full_free_to_full(i, tmp);
+      { On regarde si tous les blocs sont maintenant pris. Si oui, on
+        déplace le descripteur dans la full_list }
+      if (tmp^.bitmap = $FFFFFFFF) then full_free_to_full(i, tmp);
 
-         { On met à jour free_memory }
-	 free_memory := free_memory - size_dir[i].size;
+      { On met à jour free_memory }
+      free_memory := free_memory - size_dir[i].size;
 
-	 { On renvoie au noyau l'adresse du bloc }
-	 result := tmp^.page + (res * size_dir[i].size);
+      { On renvoie au noyau l'adresse du bloc }
+      result := tmp^.page + (res * size_dir[i].size);
 
-      end
+   end
    else  { La taille demandée est inférieure ou égale à 64 octets }
+   begin
+
+      { Recherche du premier bloc libre }
+      res := bitscan(tmp^.bitmap);
+
+      { res correspond a un bitmap secondaire, on va rechercher un bloc
+        libre dans le bitmap secondaire }
+      tmp_ptr := pointer(tmp^.page + tmp^.adr_bitmap2 + (res * 4));
+
+      { tmp_ptr est un pointer sur le bitmap secondaire }
+      res2 := bitscan(tmp_ptr^);
+
+      { On va marquer le bloc comme occupé }
+      set_bit(res2, @tmp_ptr^);
+
+      if (tmp_ptr^ = $FFFFFFFF) then
       begin
-
-	 { Recherche du premier bloc libre }
-	 res := bitscan(tmp^.bitmap);
-
-	 { res correspond a un bitmap secondaire, on va rechercher un bloc
-	   libre dans le bitmap secondaire }
-	 tmp_ptr := pointer(tmp^.page + tmp^.adr_bitmap2 + (res * 4));
-
-	 { tmp_ptr est un pointer sur le bitmap secondaire }
-	 res2 := bitscan(tmp_ptr^);
-
-	 { On va marquer le bloc comme occupé }
-	 set_bit(res2, @tmp_ptr^);
-
-	 if (tmp_ptr^ = $FFFFFFFF) then
-	    begin
-	       set_bit(res, @tmp^.bitmap);
-	       if (tmp^.bitmap = $FFFFFFFF) then
-	          full_free_to_full(i, tmp);
-	    end;
-
-         { On met à jour free_memory }
-	 free_memory -= size_dir[i].size;
-
-	 { On renvoie l'adresse du bloc au noyau }
-	 result := tmp^.page + (((res * 32) + res2) * size_dir[i].size);
-
+         set_bit(res, @tmp^.bitmap);
+         if (tmp^.bitmap = $FFFFFFFF) then
+             full_free_to_full(i, tmp);
       end;
+
+      { On met à jour free_memory }
+      free_memory -= size_dir[i].size;
+
+      { On renvoie l'adresse du bloc au noyau }
+      result := tmp^.page + (((res * 32) + res2) * size_dir[i].size);
+
+   end;
+
+   asm
+      popfd
+   end;
 
 end;
 
@@ -438,8 +490,8 @@ end;
  * recherche dans l'entrée correspondante a size, ce qui est beaucoup plus
  * rapide. => il faut utiliser au maximum la procedure free_s plutôt que free
  *
- * TODO : Renvoyer dans la pile des pages libres les pages qui ne contiennent
- *        plus de descipteur (bitmap = 0 après unset_bit) : à partir ligne 423
+ * FIXME: utiliser un sémaphore pour accéder à 'size_dir' plutot que de couper
+ *        les interruptions.
  *****************************************************************************}
 procedure kfree_s (addr : pointer ; size : dword); [public, alias : 'KFREE_S'];
 
@@ -458,6 +510,8 @@ begin
       mov   eax, addr
       and   eax, $FFFFF000
       mov   page, eax
+      pushfd
+      cli
    end;
 
    { page pointe vers la page qui contient le bloc à libérer. On va rechercher
@@ -469,6 +523,9 @@ begin
      dans toutes les entrées de size_dir }
 
       begin
+         {$IFDEF DEBUG_KREE_S}
+	    printk('kfree_s: size=0\n', []);
+	 {$ENDIF}
          repeat
 	    desc := find_page(page, size_dir[i].full_list);
 	    i += 1;
@@ -492,6 +549,9 @@ begin
 
 		  begin
 		     printk('kfree_s: Bad address passed to kernel (%h) !!!\n', [addr]);
+		     asm
+		        popfd
+		     end;
 		     exit;
 		  end;
 	    end;
@@ -505,6 +565,9 @@ begin
      directement ou il faut }
 
       begin
+         {$IFDEF DEBUG_KREE_S}
+	    printk('kfree_s: size=%d\n', [size]);
+	 {$ENDIF}
          i := 0;
 	 repeat
 	    i += 1;
@@ -521,6 +584,9 @@ begin
 	       if (desc = NIL) then
 	          begin
 		     printk('kfree_s: Bad address passed to kernel (%h) !!!\n', [addr]);
+		     asm
+		        popfd
+		     end;
 		     exit;
 		  end;
 	    end;
@@ -539,6 +605,9 @@ begin
    if ((block mod size_dir[i].size) <> 0) then
       begin
          printk('kfree_s: Bad address passed to kernel (%h) !!!\n', [addr]);
+	 asm
+	    popfd
+	 end;
 	 exit;
       end;
 
@@ -576,6 +645,10 @@ begin
 
    { On met à jour free_memory }
    free_memory += size_dir[i].size;
+
+   asm
+      popfd
+   end;
 
 end;
 
@@ -937,6 +1010,37 @@ end;
 
 
 {******************************************************************************
+ * memcmp
+ *
+ * Entrée : souce, destination, taille
+ *
+ * Compare size octets entre src et dest
+ *****************************************************************************}
+function memcmp (src, dest : pointer ; size : dword) : boolean; [public, alias : 'MEMCMP'];
+
+var
+   i : dword;
+
+begin
+
+   result := TRUE;
+
+   for i := 1 to size do
+   begin
+      if (byte(src^) <> byte(dest^)) then
+      begin
+         result := FALSE;
+         break;
+      end;
+      src  += 1;
+      dest += 1;
+   end;
+
+end;
+
+
+
+{******************************************************************************
  * memcpy
  *
  * Entrée : souce, destination, taille
@@ -987,6 +1091,7 @@ begin
    small := size mod 4;
 
    asm
+      pushfd
       cld
       mov   ecx, big
       mov   al , c
@@ -995,6 +1100,7 @@ begin
 
       mov   ecx, small
       rep   stosb
+      popfd
    end;
 
 end;
@@ -1004,7 +1110,7 @@ end;
 {******************************************************************************
  * get_phys_addr
  *
- * Input  : virtual address
+ * Input : virtual address
  * Ouput : physical address
  *
  * Converts a virtual address into a physical address
@@ -1012,7 +1118,7 @@ end;
  * NOTE : I don't think we have to put interrupts off because each process has
  *        his own CR3 value (hope I'm right)
  *****************************************************************************}
-function get_phys_adr (adr : pointer) : pointer; [public, alias : 'GET_PHYS_ADDR'];
+function get_phys_addr (adr : pointer) : pointer; [public, alias : 'GET_PHYS_ADDR'];
 
 var
    glob_index, page_index, ofs : dword;
@@ -1048,7 +1154,7 @@ begin
    end;
 
    {$IFDEF DEBUG}
-      printk('get_phys_adr:\nglob_index=%d  page_index=%d  ofs=%h\n', [glob_index, page_index, ofs]);
+      printk('get_phys_adr: glob_index=%d  page_index=%d  base=%h ofs=%h\n', [glob_index, page_index, longint(res) and $FFFFF000, ofs]);
    {$ENDIF}
 
    result := res;
@@ -1074,8 +1180,6 @@ var
 
 begin
    asm
-      {pushfd
-      cli}   { Section critique }
       mov   eax, adr
       push  eax
       shr   eax, 22   { On récupère les 10 bits de poids fort }
@@ -1095,7 +1199,6 @@ begin
       mov   eax, [esi+ebx]
       and   eax, $FFF
       mov   res, eax
-      {popfd}   { Fin section critique }
    end;
 
    result := res;
@@ -1113,7 +1216,6 @@ end;
  * NOTE : I don't think we have to put interrupts off because each process has
  *        his own CR3 value (hope I'm right)
  *
- * THIS PROCEDURE ISN'T USED FOR THE MOMENT !!!	 (so, it hasn't been tested)
  *****************************************************************************}
 procedure set_page_rights (adr : pointer ; r :dword); assembler; [public, alias : 'SET_PAGE_RIGHTS'];
 
@@ -1121,8 +1223,8 @@ var
    glob_index, page_index, ofs : dword;
 
 asm
-   {pushfd
-   cli}   { Section critique }
+   pushfd
+   cli
    mov   eax, adr
    push  eax
    shr   eax, 22   { On récupère les 10 bits de poids fort }
@@ -1134,7 +1236,7 @@ asm
       
    mov   esi, cr3
    mov   ebx, glob_index
-   shl   ebx, 2
+   shl   ebx, 2   { EAX = EAX * 4 }
    mov   esi, [esi+ebx]
    and   esi, 11111111111111111111000000000000b
    mov   ebx, page_index
@@ -1142,7 +1244,7 @@ asm
    mov   eax, r
    and   eax, $FFF   { FIXME: Just to avoid kernel bug (we could remove that later) }
    or   [esi+ebx], eax
-   {popfd}   { Fin section critique }
+   popfd
 end;
 
 
@@ -1158,7 +1260,7 @@ end;
 function MAP_NR(adr : pointer) : dword; [public, alias : 'MAP_NR'];
 
 begin
-    result := longint(get_phys_adr(adr)) shr 12;
+    result := longint(get_phys_addr(adr)) shr 12;
 end;
 
 
@@ -1195,28 +1297,139 @@ end;
  * unload_page_table
  *
  *****************************************************************************}
-procedure unload_page_table (pt : P_pte_t); [public, alias : 'UNLOAD_PAGE_TABLE'];
+procedure unload_page_table (ts : P_task_struct); [public, alias : 'UNLOAD_PAGE_TABLE'];
 
 var
    i : dword;
+   page_table : P_pte_t;
 
 begin
 
    i := 0;
-   while (pt[i] <> 0) and (i <= 1023) do
+
+   while (i <> ts^.size + 1) do
    begin
-      push_page(pointer(pt[i] and $FFFFF000));   { Instead of kfree_s }
-      pt[i] := $0;
+      if (ts^.page_table[i] <> 0) then
+      begin
+         {$IFDEF DEBUG_UNLOAD_PAGE_TABLE}
+            printk('unload_page_table (%d): freeing entry %d (%h)\n', [ts^.pid, i, longint(ts^.page_table[i]) and $FFFFF000]);
+	 {$ENDIF}
+         push_page(pointer(longint(ts^.page_table[i]) and $FFFFF000));
+      end;
       i += 1;
-      current^.size -= 1;
    end;
 
-   current^.size += 1;
+   { Free extra stack }
+   if (ts^.cr3[1022] <> 0) then
+   begin
+      {$IFDEF DEBUG_UNLOAD_PAGE_TABLE}
+         printk('unload_page_table (%d): freeing extra stack...  ', [ts^.pid]);
+      {$ENDIF}
+      page_table := pointer(ts^.cr3[1022] and (not $FFF));
+      push_page(pointer(page_table[1023] and (not $FFF)));
+      push_page(page_table);
+      {$IFDEF DEBUG_UNLOAD_PAGE_TABLE}
+         printk('OK\n', []);
+      {$ENDIF}
+      ts^.cr3[1022] := 0;
+   end;
 
-   {$IFDEF DEBUG}
-      printk('unload_page_table: %d pages freed\n', [i]);
+   ts^.size -= i - 1;   { NOTE: not necessary but cool for debugging }
+
+   {$IFDEF DEBUG_UNLOAD_PAGE_TABLE}
+      printk('unload_page_table (%d): %d pages freed\n', [ts^.pid, i]);
    {$ENDIF}
 
+end;
+
+
+
+{******************************************************************************
+ * page_align
+ *
+ *****************************************************************************}
+function page_align (nb : longint) : dword; [public, alias : 'PAGE_ALIGN'];
+begin
+
+   if (nb mod 4096) = 0 then
+       result := nb
+   else
+       result := (nb + 4096) and $FFFFF000;
+
+end;
+
+
+
+{******************************************************************************
+ * page_aligned
+ *
+ *****************************************************************************}
+function page_aligned (nb : longint) : boolean; [public, alias : 'PAGE_ALIGNED'];
+begin
+   if ((nb mod 4096) <> 0) then
+       result := FALSE
+   else
+       result := TRUE;
+end;
+
+
+
+{******************************************************************************
+ * /dev/null 
+ *
+ *****************************************************************************}
+
+
+
+{******************************************************************************
+ * null_write 
+ *
+ *****************************************************************************}
+function null_write (fichier : P_file_t ; buf : pointer ; count : dword) : dword; [ public, alias : 'NULL_WRITE' ];
+begin
+   result := count;
+end;
+
+
+
+{******************************************************************************
+ * null_read 
+ *
+ *****************************************************************************}
+function null_read (fichier : P_file_t ; buf : pointer ; count : dword) : dword; [ public, alias : 'NULL_READ' ];
+begin
+   result := 0;
+end;
+
+
+
+{******************************************************************************
+ * /dev/zero
+ *
+ *****************************************************************************}
+
+
+
+{******************************************************************************
+ * zero_write 
+ *
+ *****************************************************************************}
+function zero_write (fichier : P_file_t ; buf : pointer ; count : dword) : dword; [ public, alias : 'ZERO_WRITE' ];
+begin
+   result := count;
+end;
+
+
+
+{******************************************************************************
+ * zero_read
+ *
+ *****************************************************************************}
+function zero_read (fichier : P_file_t ; buf : pointer ; count : dword) : dword; [ public, alias : 'ZERO_READ' ];
+begin
+   { FIXME : check if buf is in user space }
+   memset(buf, 0, count);
+   result := count;
 end;
 
 

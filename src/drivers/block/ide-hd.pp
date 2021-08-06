@@ -59,6 +59,8 @@ var
    do_hd      : pointer; external name 'U_IDE_INIT_DO_HD';
    blk_dev    : array [0..MAX_NR_BLOCK_DEV] of blk_dev_struct; external name 'U_RW_BLOCK_BLK_DEV';
 
+   ide_hd_nb_intr : dword;
+   ide_hd_nb_sect : dword;
 
 
 procedure do_hd_request (major : byte);
@@ -143,13 +145,15 @@ begin
    minor := inode^.rdev_min;
    drv   := minor div 64;
 
-   if (drive_info[major, drv].ide_type <> $FF) and (drive_info[major, drv].part[minor].p_type <> $00) then
-       begin
-          fichier^.pos := 0;
-	  result := 0;
-       end
+   if (drive_info[major, drv].ide_type <> $FF) and
+      (drive_info[major, drv].part[minor].p_type <> $00) then
+   begin
+      fichier^.pos := 0;
+      result := 0;
+   end
    else
-       result := -1;
+      result := -1;
+
 end;
 
 
@@ -161,6 +165,11 @@ end;
  *****************************************************************************}
 procedure hd_intr; assembler; interrupt; [public, alias : 'HD_INTR'];
 asm
+
+   mov eax, ide_hd_nb_intr
+   inc eax
+   mov ide_hd_nb_intr, eax
+
    sti
    mov   eax, do_hd
    call  eax
@@ -186,7 +195,7 @@ var
    i : dword;
 
 begin
-   printk('IDE: unexpected interrupt !!!\n', []);
+   printk('IDE: unexpected interrupt\n', []);
 
    for i := 3 to 6 do
    begin
@@ -209,13 +218,14 @@ end;
 procedure hd_read_intr;
 
 var
-   status, major : byte;
+   status, major, minor : byte;
    reg, base     : word;
    buf           : pointer;
 
 begin
 
    major  := cur_hd_req^.major;
+   minor  := cur_hd_req^.minor;
    base   := drive_info[major, 0].IO_base;
    status := inb(base + STATUS_REG);
 
@@ -226,22 +236,40 @@ begin
    if ((status and (BUSY_STAT or READY_STAT or DRQ_STAT or ECC_STAT or
                    ERR_STAT)) = (READY_STAT or DRQ_STAT)) then
       begin
-	 {* Pas d'erreur, on va lire les données. Le transfert se fait word par
-	  * word. On a donc 256 words à lire pour 1 secteur. *}
+	 { No errors, we are going to read data. }
 	 reg := base + DATA_REG;
 	 buf := cur_hd_req^.buffer;
-	 asm
-	    pushfd
-	    cli
-	    mov   ecx, 256
-	    mov   edi, buf
-	    xor   edx, edx
-	    mov   dx , reg
-	    @read_loop:
-	       in    ax , dx
-	       stosw
-	    loop @read_loop
-	    popfd
+	 if (drive_info[major, minor].dword_io <> 0) then
+	 begin
+	    asm
+	       pushfd
+	       cli
+	       mov   ecx, 128
+	       mov   edi, buf
+	       xor   edx, edx
+	       mov   dx , reg
+	       @read_loop:
+	          in    eax, dx
+	          stosd
+	       loop @read_loop
+	       popfd
+	    end;
+	 end
+	 else
+	 begin
+	    asm
+	       pushfd
+	       cli
+	       mov   ecx, 256
+	       mov   edi, buf
+	       xor   edx, edx
+	       mov   dx , reg
+	       @read_loop:
+	          in    ax , dx
+	          stosw
+	       loop @read_loop
+	       popfd
+	    end;
 	 end;
 	 cur_hd_req^.errors := 0;
 	 cur_hd_req^.buffer += 512;
@@ -265,7 +293,10 @@ begin
       begin
          if (status and $01) = $01 then
             begin
-               printk('ide-hd: error register is %h2\n', [inb(base + ERR_REG)]);
+               printk('hd_read_intr: error register = %h2\n', [inb(base + ERR_REG)]);
+               printk('hd_read_intr: %h2 %h2 %h2 %h2 %h2\n', [inb(base + NRSECT_REG), inb(base + SECTOR_REG),
+      		inb(base + CYL_LSB_REG), inb(base + CYL_MSB_REG), inb(base + DRIVE_HEAD_REG)]);
+
 	       end_request(major, FALSE);
             end;
 
@@ -307,9 +338,7 @@ begin
 	 cli   { Section critique }
       end;
       do_hd := intr_adr;   { intr_adr is a parameter from hd_out() }
-      asm
-         popfd   { Fin section critique }
-      end;
+
       if (drive_info[major, drive].lba_sectors <> 0) then
       { Drive uses LBA }
          begin
@@ -353,7 +382,15 @@ begin
       {$IFDEF DEBUG}
          printk('hd_out: sending command\n', []);
       {$ENDIF}
+      {printk('hd_out: %h2 %h2 %h2 %h2 %h2\n', [inb(base + NRSECT_REG), inb(base + SECTOR_REG),
+      		inb(base + CYL_LSB_REG), inb(base + CYL_MSB_REG), inb(base + DRIVE_HEAD_REG)]);}
+
       outb(base + CMD_REG, cmd);
+
+      asm
+         popfd   { Fin section critique }
+      end;
+
       {schedule;}
 
    end
@@ -383,7 +420,7 @@ var
 begin
 
    {$IFDEF DEBUG}
-      printk('do_hd_request: going to execute a request\n', []);
+      printk('do_hd_request (%d): going to execute a request\n', [current^.pid]);
    {$ENDIF}
 
    asm
@@ -430,14 +467,15 @@ begin
 
    case (cur_hd_req^.cmd) of
       READ:  begin
+                ide_hd_nb_sect += nsect;
                 hd_out(major, minor, block, nsect, WIN_READ, @hd_read_intr);
              end;
       WRITE: begin
-                printk('Cannot write for the moment !!! Sorry.\n', []);
+                printk('do_hd_request: cannot write for the moment. Sorry.\n', []);
              end
       else
              begin
-	        printk('unknown hd_command !!!\n', []);
+	        printk('unknown hd_command\n', []);
 	     end;
    end;
 

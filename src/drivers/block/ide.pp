@@ -62,6 +62,7 @@ INTERFACE
 {$I buffer.inc}
 {$I fs.inc}
 {$I ide.inc}
+{$I major.inc}
 {$I process.inc}
 {$I pci.inc}
 
@@ -69,17 +70,18 @@ INTERFACE
 { External procedures }
 
 procedure delay; external;
-procedure printk (format : string ; args : array of const); external;
-procedure set_intr_gate (n : dword ; addr : pointer); external;
-procedure enable_IRQ (irq : byte); external;
-procedure outb (port : word ; val : byte); external;
-procedure register_blkdev (nb : byte ; name : string[20] ; fops : P_file_operations); external;
-procedure unexpected_hd_intr; external;
-procedure hd_log_to_chs (major, minor : byte ; log : dword ; var c : word ; var h,s : byte); external;
-procedure hd_intr; external;
 procedure do_hd_request (major : byte); external;
-function  inb (port : word) : byte; external;
+procedure enable_IRQ (irq : byte); external;
+procedure hd_intr; external;
+procedure hd_log_to_chs (major, minor : byte ; log : dword ; var c : word ; var h,s : byte); external;
 function  hd_open (inode : P_inode_t ; fichier : P_file_t) : dword; external;
+function  inb (port : word) : byte; external;
+procedure memset (adr : pointer ; c : byte ; size : dword); external;
+procedure outb (port : word ; val : byte); external;
+procedure printk (format : string ; args : array of const); external;
+procedure register_blkdev (nb : byte ; name : string[20] ; fops : P_file_operations); external;
+procedure set_intr_gate (n : dword ; addr : pointer); external;
+procedure unexpected_hd_intr; external;
 
 
 { External variables }
@@ -87,11 +89,14 @@ var
    blk_dev : array [0..MAX_NR_BLOCK_DEV] of blk_dev_struct; external name 'U_RW_BLOCK_BLK_DEV';
    first_pci_device : P_pci_device; external name 'U_PCI_INIT_FIRST_PCI_DEVICE';
    nb_pci_devices : dword; external name 'U_PCI_INIT_NB_PCI_DEVICES';
+   
+   ide_hd_nb_intr : dword; external name 'U_IDE_HD_IDE_HD_NB_INTR';
+   ide_hd_nb_sect : dword; external name 'U_IDE_HD_IDE_HD_NB_SECT';
 
 
 { Exported variables }
 var
-   drive_info    : array[IDE0_MAJ..IDE3_MAJ, MASTER..SLAVE] of ide_struct;
+   drive_info    : array[IDE0_MAJOR..IDE3_MAJOR, MASTER..SLAVE] of ide_struct;
    do_hd         : pointer;
 
 
@@ -111,10 +116,10 @@ IMPLEMENTATION
 
 const
    drive   : array[MASTER..SLAVE] of byte = ($A0, $B0);
-   hd_str  : array[IDE0_MAJ..IDE3_MAJ, MASTER..SLAVE] of string[4] = (('hda' + #0, 'hdb' + #0),
-                                               ('hdc' + #0, 'hdd' + #0),
-                                               ('hde' + #0, 'hdf' + #0),
-					       ('hdg' + #0, 'hdh' + #0));
+   hd_str  : array[IDE0_MAJOR..IDE3_MAJOR, MASTER..SLAVE] of string[4] = (('hda' + #0, 'hdb' + #0),
+                                             			          ('hdc' + #0, 'hdd' + #0),
+                                               				  ('hde' + #0, 'hdf' + #0),
+					       				  ('hdg' + #0, 'hdh' + #0));
 
 var
    ata_buffer : drive_id;
@@ -307,27 +312,27 @@ begin
    drv := drive[min];
 
    if (drive_info[major, min].lba_sectors <> 0) then
-       begin
-          asm
-	     mov   eax, p_begin
-	     mov   secteur, al
-	     mov   cyl_LSB, ah
-	     shr   eax, 16
-	     mov   cyl_MSB, al
-	     and   ah, $0F
-	     or    ah, $40
-	     mov   tete, ah
-	  end;
-       end
+   begin
+      asm
+        mov   eax, p_begin
+	mov   secteur, al
+	mov   cyl_LSB, ah
+	shr   eax, 16
+	mov   cyl_MSB, al
+	and   ah, $0F
+	or    ah, $40
+	mov   tete, ah
+      end;
+   end
    else
-       begin
-          hd_log_to_chs(major, minor, p_begin, cylindre, tete, secteur);
-          asm
-             mov   ax , cylindre
-             mov   cyl_LSB, al
-             mov   cyl_MSB, ah
-          end;
-       end;
+   begin
+      hd_log_to_chs(major, minor, p_begin, cylindre, tete, secteur);
+      asm
+         mov   ax , cylindre
+         mov   cyl_LSB, al
+         mov   cyl_MSB, ah
+      end;
+   end;
 
    base := drive_info[major, min].IO_base;
    outb(base + NRSECT_REG, 1);          { Read 1 sector }
@@ -338,58 +343,58 @@ begin
    outb(base + CMD_REG, WIN_READ);             { Read sector command }
 
    if not drive_error(major, minor) then 
+   begin
+      while (not data_ready(major, minor)) do
       begin
-	  while (not data_ready(major, minor)) do
+      end;
+      { Data are there, no error }
+      port := base;
+      buf_adr := addr(buffer);
+
+      asm
+         mov   edi, buf_adr
+         mov   dx , port
+         mov   ecx, 256
+         cld
+         @read_data_loop:
+            in    ax , dx
+            stosw
+         loop @read_data_loop
+      end; { -> asm }
+   end
+   else
+   begin
+      printk('\nextended_part: cannot read sector\n', []);
+   end;
+
+   if (buffer.magic_word) <> $AA55 then
+       printk('!', []);
+
+   for i := 1 to 4 do
+   begin
+      if (buffer.entry[i].type_part <> 0) then
+      begin
+         case (buffer.entry[i].type_part) of
+	    $5: extended_part(major, minor, buffer.entry[i].dist_sec + p_begin);
+	    $F: extended_part(major, minor, buffer.entry[i].dist_sec + p_begin);
+	    else
 	    begin
+	       if (buffer.entry[i].type_part <> 0) then
+	       begin
+	          drive_info[major, min].part[ext_no].p_type := buffer.entry[i].type_part;
+	          drive_info[major, min].part[ext_no].p_begin := buffer.entry[i].dist_sec + p_begin;
+		  drive_info[major, min].part[ext_no].p_size := buffer.entry[i].taille_part;
+		  printk(hd_str[major, min], []);
+		  printk('%d ', [ext_no]);
+		  {$IFDEF SHOW_PART_TYPE}
+		     printk('(%h2: %d->%d) ', [buffer.entry[i].type_part, buffer.entry[i].dist_sec, buffer.entry[i].dist_sec + buffer.entry[i].taille_part]);
+		  {$ENDIF}
+		  ext_no += 1;
+	       end;
 	    end;
-          { Data are there, no error }
-          port := base;
-          buf_adr := addr(buffer);
-
-          asm
-             mov   edi, buf_adr
-             mov   dx , port
-             mov   ecx, 256
-             cld
-             @read_data_loop:
-                in    ax , dx
-                stosw
-             loop @read_data_loop
-          end; { -> asm }
-      end
-      else
-	  begin
-	     printk('\nextended_part: cannot read sector !!!\n', []);
-	  end;
-
-         if (buffer.magic_word) <> $AA55 then
-	     printk('!', []);
-
-         for i := 1 to 4 do
-	     begin
-	        if (buffer.entry[i].type_part <> 0) then
-		    begin
-		       case (buffer.entry[i].type_part) of
-		          $5: extended_part(major, minor, buffer.entry[i].dist_sec + p_begin);
-			  $F: extended_part(major, minor, buffer.entry[i].dist_sec + p_begin);
-		          else
-		              begin
-		              if (buffer.entry[i].type_part <> 0) then
-		                 begin
-				    drive_info[major, min].part[ext_no].p_type := buffer.entry[i].type_part;
-				    drive_info[major, min].part[ext_no].p_begin := buffer.entry[i].dist_sec + p_begin;
-				    drive_info[major, min].part[ext_no].p_size := buffer.entry[i].taille_part;
-		                    printk(hd_str[major, min], []);
-		                    printk('%d ', [ext_no]);
-				    {$IFDEF SHOW_PART_TYPE}
-			               printk('(%h2: %d->%d) ', [buffer.entry[i].type_part, buffer.entry[i].dist_sec, buffer.entry[i].dist_sec + buffer.entry[i].taille_part]);
-				    {$ENDIF}
-				    ext_no += 1;
-			         end;
-			      end;
-		       end;
-		    end;
-	     end;
+	 end;
+      end;
+   end;
 end;
 
 
@@ -436,67 +441,67 @@ begin
    outb(base + CMD_REG, WIN_READ);             { Read sector command }
 
    if not drive_error(major, minor) then
+   begin
+      while (not data_ready(major, minor)) do
       begin
-         while (not data_ready(major, minor)) do
-	    begin
-	    end;
-         { Data is ready, no error }
-         port := base;
-         buf_adr := addr(buffer);
-
-         asm
-             mov   edi, buf_adr
-             mov   dx , port
-             mov   ecx, 256
-             cld
-             @read_data_loop:
-                 in    ax , dx
-                 stosw
-             loop @read_data_loop
-         end; { -> asm }
-      end
-   else
-      begin
-         printk('partition_check: cannot read sector\n', []);
       end;
+      { Data is ready, no error }
+      port := base;
+      buf_adr := addr(buffer);
 
-      { Verify 'magic word' to know if the partition table is valid }
-      if (buffer.magic_word = $AA55) then
-          begin
-             for i:=1 to 4 do
-                 begin
-                    if (buffer.entry[i].type_part <> 0) then
-		        begin
-		           drive_info[major, min].part[i].p_begin := buffer.entry[i].dist_sec;
-		           drive_info[major, min].part[i].p_size  := buffer.entry[i].taille_part;
-                           drive_info[major, min].part[i].p_type  := buffer.entry[i].type_part;
-		           printk(hd_str[major, min], []);
-                           printk('%d ', [i]);
-			   {$IFDEF SHOW_PART_TYPE}
-			      printk('(%h2: %d->%d) ', [buffer.entry[i].type_part, buffer.entry[i].dist_sec, buffer.entry[i].dist_sec + buffer.entry[i].taille_part]);
-			   {$ENDIF}
+      asm
+         mov   edi, buf_adr
+         mov   dx , port
+         mov   ecx, 256
+         cld
+         @read_data_loop:
+             in    ax , dx
+             stosw
+         loop @read_data_loop
+      end; { -> asm }
+   end
+   else
+   begin
+      printk('partition_check: cannot read sector\n', []);
+   end;
 
-                           case (buffer.entry[i].type_part) of
-                              $5 : begin
-			              printk('< ', []);
-			              extended_part(major, minor, drive_info[major, min].part[i].p_begin);
-				      printk('> ', []);
-				   end;
-                              $F : begin
-			              printk('< ', []);
-			              extended_part(major, minor, drive_info[major, min].part[i].p_begin);
-				      printk('> ', []);
-				   end;
-                           end; { case }
-                        end; { -> then }
+   { Verify 'magic word' to know if the partition table is valid }
+   if (buffer.magic_word = $AA55) then
+   begin
+      for i := 1 to 4 do
+      begin
+         if (buffer.entry[i].type_part <> 0) then
+	 begin
+	    drive_info[major, min].part[i].p_begin := buffer.entry[i].dist_sec;
+	    drive_info[major, min].part[i].p_size  := buffer.entry[i].taille_part;
+            drive_info[major, min].part[i].p_type  := buffer.entry[i].type_part;
+	    printk(hd_str[major, min], []);
+            printk('%d ', [i]);
+	    {$IFDEF SHOW_PART_TYPE}
+	       printk('(%h2: %d->%d) ', [buffer.entry[i].type_part, buffer.entry[i].dist_sec, buffer.entry[i].dist_sec + buffer.entry[i].taille_part]);
+	    {$ENDIF}
 
-                 end; { -> for }
+            case (buffer.entry[i].type_part) of
+               $5 : begin
+	               printk('< ', []);
+		       extended_part(major, minor, drive_info[major, min].part[i].p_begin);
+		       printk('> ', []);
+		    end;
+               $F : begin
+		       printk('< ', []);
+		       extended_part(major, minor, drive_info[major, min].part[i].p_begin);
+		       printk('> ', []);
+		    end;
+            end; { case }
+         end; { -> then }
 
-          end { -> then }
-       else
-          begin
-             printk('bad partition table !!!', []);
-          end; { if (buffer.magic_word = $AA55) }
+      end; { -> for }
+
+   end { -> then }
+   else
+   begin
+      printk('bad partition table', []);
+   end; { if (buffer.magic_word = $AA55) }
 
    printk('\n', []);
 
@@ -512,7 +517,7 @@ end; { -> procedure }
  *
  * Print some informations about the device.
  * Parameter 'command' is here to know if it is an ATA or an ATAPI device so
- * that we can register infos at the right place.
+ * that we can register infos in the right place.
  *****************************************************************************}
 procedure print_ide_info(command : byte ; major, minor : byte);
 
@@ -544,12 +549,9 @@ begin
     end;
 
     while (ata_buffer.model[i] = ' ') or (i = 40) do
-    begin
-        i += 1;
-    end;
+           i += 1;
 
-    if (i < 40)
-    then
+    if (i < 40) then
         printk('%c', [#32]);
 
     while (ata_buffer.model[i] <> ' ') and (i < 40) do
@@ -558,11 +560,15 @@ begin
         i += 1;
     end;
 
+{ FIXME: we could use ata_buffer.max_mulsect to make read and write operations faster }
+{ printk('  %d  ', [ata_buffer.max_mulsect]); }
+
     {* If it is an ATA device, we suppose it's a hard drive and we give it
      * type 2 *}
 
-    if (command = ATA_IDENTIFY)
-    then begin
+    if (command = ATA_IDENTIFY) then
+    begin
+        printk(', DISK drive', []);
         blk_dev[major].request_fn := @do_hd_request;
         drive_info[major, min].ide_type := 2;
         printk(', ', []);
@@ -577,8 +583,8 @@ begin
             mov    i , al
         end; { -> asm }
 
-        if (i = 2)
-        then begin
+        if (i = 2) then
+	begin
             { Device supports LBA }
             drive_info[major, min].ide_type := drive_info[major, min].ide_type or $80;
             printk('%d', [ata_buffer.lba_capacity div 2048]);
@@ -588,14 +594,15 @@ begin
 	    drive_info[major, min].heads   := ata_buffer.cur_heads;
 	    drive_info[major, min].sectors := ata_buffer.cur_sectors;
 
-            if (ata_buffer.buf_size <> 0)
-            then begin
+            if (ata_buffer.buf_size <> 0) then
+	    begin
                 printk('w/%dk cache ', [ata_buffer.buf_size div 2]);
             end;
 
-            printk('using LBA\n', []);
+            printk('using LBA ', []);
         end { -> then }
-        else begin
+        else
+	begin
             { Device doesn't support LBA. Et ch'a ch'est balot }
 	    if (ata_buffer.cur_cyls = 0) then
 	    begin
@@ -606,7 +613,8 @@ begin
 		drive_info[major, min].heads   := ata_buffer.heads;
 		drive_info[major, min].sectors := ata_buffer.sectors;
 	    end
-	    else begin
+	    else
+	    begin
                 b := (ata_buffer.cur_cyls *
                       ata_buffer.cur_heads *
                       ata_buffer.cur_sectors)
@@ -618,41 +626,59 @@ begin
                   
             printk('%dMb', [b]);
 
-            if (ata_buffer.buf_size <> 0)
-            then begin
+            if (ata_buffer.buf_size <> 0) then
                 printk(' w/%dk cache', [ata_buffer.buf_size div 2]);
-            end;
 
-            printk(', CHS=%d/%d/%d\n', [drive_info[major, min].cyls,
+            printk(', CHS=%d/%d/%d ', [drive_info[major, min].cyls,
                                         drive_info[major, min].heads,
                                         drive_info[major, min].sectors]);
         end; { -> if.. then.. else...}
 
+        { Does it support 32bits I/O ? }
+	if (ata_buffer.dword_io <> 0) then
+	begin
+	   drive_info[major, min].dword_io := 1;
+	   printk('(32bits)\n', []);
+	end
+	else
+	begin
+	   drive_info[major, min].dword_io := 0;
+	   printk('\n', []);
+	end;
+
         partition_check(major, minor);
+
     end
-    else begin
+    else
+    begin
         {* If it is an ATAPI device, we get his type :
          * 5 : CD-ROM or DVD-ROM
          * 1 : IDE TAPE
          * 0 : IDE FLOPPY (ZIP drive) *}
 
-        {a := (ata_buffer.config shr 8) and $1F;
-
-        asm
-            mov   ax , a
-            shr   ax , 8
-            and   ax , $1F
-            mov    a , ax
-	end;} { -> asm }
-
         drive_info[major, min].ide_type := (ata_buffer.config shr 8) and $1F;
 
-        if (ata_buffer.buf_size <> 0)
-        then begin
-            printk(' w/%dk cache', [ata_buffer.buf_size div 2]);
-        end;
+	case (drive_info[major, min].ide_type) of
+	   0: printk(', FLOPPY drive ', []);
+	   1: printk(', TAPE drive ', []);
+	   5: printk(', CD/DVD-ROM drive ', []);
+	   else printk(', UNKNOW drive (type=%d) ', [drive_info[major, min].ide_type]);
+	end;
 
-        printk('\n', []);
+        if (ata_buffer.buf_size <> 0) then
+            printk('w/%dk cache ', [ata_buffer.buf_size div 2]);
+
+        { Does it support 32bits I/O ? }
+	if (ata_buffer.dword_io <> 0) then
+	begin
+	   drive_info[major, min].dword_io := 1;
+	   printk('(32bits)\n', []);
+	end
+	else
+	begin
+	   drive_info[major, min].dword_io := 0;
+	   printk('\n', []);
+	end;
     end;
 
 end; { -> procedure }
@@ -685,77 +711,77 @@ begin
    {$ENDIF}
 
    if not drive_busy(major, minor) then
+   begin
+      { Send 'ATA identify' command }
+      outb(base + CMD_REG, ATA_IDENTIFY);
+      if not drive_busy(major, minor) then
       begin
-         { Send 'ATA identify' command }
-         outb(base + CMD_REG, ATA_IDENTIFY);
-	 if not drive_busy(major, minor) then
+         if (data_ready(major, minor) and not drive_error(major, minor)) then
+	 { if (((a and $1) = 0) and ((a and $8) = 8)) then }
+	 { Data is ready, no error }
+	 begin
+	    printk(hd_str[major, min], []);
+	    printk(': ', []);
+	    { Get data }
+	    port := base;
+	    buf_addr := addr(ata_buffer);
+
+	    asm
+	       mov   edi, buf_addr
+	       mov   dx , port
+	       mov   ecx, 256     { Read 256 words (512 bytes) }
+	       cld
+
+	       @read_data_loop:
+	          in    ax , dx
+	          stosw
+	       loop @read_data_loop
+	    end;
+		     
+	    register_blkdev(major, 'hd', NIL);
+	    print_ide_info(ATA_IDENTIFY, major, minor);
+
+	 end
+	 else
+	 begin
+	    { Send 'ATAPI identify' command }
+	    outb(base + CMD_REG, ATAPI_IDENTIFY);
+	    if not drive_busy(major, minor) then
 	    begin
 	       if (data_ready(major, minor) and not drive_error(major, minor)) then
-	       { if (((a and $1) = 0) and ((a and $8) = 8)) then }
-	       { Data is ready, no error }
-	          begin
-		     printk(hd_str[major, min], []);
-		     printk(': ', []);
-		     { Get data }
-		     port := base;
-		     buf_addr := addr(ata_buffer);
+	       begin
+	          { Data is ready, no error }
+	          printk(hd_str[major, min], []);
+	          printk(': ', []);
+		  { Get data }
+		  port := base;
+		  buf_addr := addr(ata_buffer);
 
-		     asm
-		        mov   edi, buf_addr
-			mov   dx , port
-			mov   ecx, 256     { Read 256 words (512 bytes) }
-			cld
+		  asm
+		     mov   edi, buf_addr
+		     mov   dx , port
+		     mov   ecx, 256
+		     cld
 
-			@read_data_loop:
-			   in    ax , dx
-			   stosw
-			loop @read_data_loop
-		     end;
-		     
-		     register_blkdev(major, 'hd', NIL);
-		     print_ide_info(ATA_IDENTIFY, major, minor);
-
-		  end
-	       else
-	          begin
-		     { Send 'ATAPI identify' command }
-		     outb(base + CMD_REG, ATAPI_IDENTIFY);
-		     if not drive_busy(major, minor) then
-		        begin
-			   if (data_ready(major, minor) and not drive_error(major, minor)) then
-			      begin
-			         { Data is ready, no error }
-			         printk(hd_str[major, min], []);
-				 printk(': ', []);
-				 { Get data }
-				 port := base;
-				 buf_addr := addr(ata_buffer);
-
-				 asm
-				    mov   edi, buf_addr
-				    mov   dx , port
-				    mov   ecx, 256
-				    cld
-				    
-				    @read_data_loop:
-				       in    ax , dx
-				       stosw
-				    loop @read_data_loop
-				 end;
-
-				 print_ide_info(ATAPI_IDENTIFY, major, minor);
-
-			      end;
-			end;
+		     @read_data_loop:
+		        in    ax , dx
+		        stosw
+		     loop @read_data_loop
 		  end;
+
+		  print_ide_info(ATAPI_IDENTIFY, major, minor);
+
+	       end;
 	    end;
-      end
-   else
-      begin
-         {$IFDEF DEBUG}
-	    printk('dev %d:%d is busy\n', [major, minor]);
-	 {$ENDIF}
+	 end;
       end;
+   end
+   else
+   begin
+      {$IFDEF DEBUG}
+         printk('dev %d:%d is busy\n', [major, minor]);
+      {$ENDIF}
+   end;
 end;
 
 
@@ -773,10 +799,10 @@ function probe_controller (io : word) : boolean;
 begin
 
    if (io = $00) then
-       begin
-          result := FALSE;
-	  exit;
-       end;
+   begin
+      result := FALSE;
+      exit;
+   end;
 
    {$IFDEF DEBUG}
       printk('Try to find an IDE controller at %h4\n', [io]);
@@ -822,53 +848,52 @@ begin
 
    pci_devices := first_pci_device;
    for i := 1 to nb_pci_devices do
-       begin
-          if ((pci_devices^.main_class = $01) and
-	      (pci_devices^.sub_class  = $80)) then
-	      begin
-	         if (pci_devices^.vendor_id = $105A) and (pci_devices^.device_id = $4D38) then
-		 begin
-		    drive_info[maj, MASTER].IO_base := pci_devices^.io[0];
-		    drive_info[maj, MASTER].irq     := pci_devices^.irq;
-		    drive_info[maj, SLAVE].IO_base  := pci_devices^.io[0];
-		    drive_info[maj, SLAVE].irq      := pci_devices^.irq;
-		    maj += 1;
-		    drive_info[maj, MASTER].IO_base := pci_devices^.io[2];
-		    drive_info[maj, MASTER].irq     := pci_devices^.irq;
-		    drive_info[maj, SLAVE].IO_base  := pci_devices^.io[2];
-		    drive_info[maj, SLAVE].irq      := pci_devices^.irq;
-		    { Try to init pdc202xx controller. Code from Linux }
-		    {* high_16 := lo(pci_devices^.io[4]);
-		     * udma_speed_flag := inb(high_16 + $001F);
-		     * outb(high_16 + $001F, udma_speed_flag or $10);
-		     * delay;
-		     * outb(high_16 + $001F, udma_speed_flag and (not $10));
-		     * delay;
-		     * delay; *}
-		    exit;
-		 end
-		 else
-		 begin
-	         for j := 0 to 5 do
-		     begin
-		        if (probe_controller(pci_devices^.io[j])) then
-			    begin
-			       drive_info[maj, MASTER].IO_base := pci_devices^.io[j];
-			       drive_info[maj, MASTER].irq     := pci_devices^.irq;
-			       drive_info[maj, SLAVE].IO_base  := pci_devices^.io[j];
-			       drive_info[maj, SLAVE].irq      := pci_devices^.irq;
-			       exit;
-			       {maj += 1;
-			       if (maj > 6) then
-			           exit;}
-			    end;
-		     end;
+   begin
+      if ((pci_devices^.main_class = $01) and
+          (pci_devices^.sub_class  = $80)) then
+      begin
+         if (pci_devices^.vendor_id = $105A) and (pci_devices^.device_id = $4D38) then
+	 begin
+	    drive_info[maj, MASTER].IO_base := pci_devices^.io[0];
+	    drive_info[maj, MASTER].irq     := pci_devices^.irq;
+	    drive_info[maj, SLAVE].IO_base  := pci_devices^.io[0];
+	    drive_info[maj, SLAVE].irq      := pci_devices^.irq;
+	    maj += 1;
+	    drive_info[maj, MASTER].IO_base := pci_devices^.io[2];
+	    drive_info[maj, MASTER].irq     := pci_devices^.irq;
+	    drive_info[maj, SLAVE].IO_base  := pci_devices^.io[2];
+	    drive_info[maj, SLAVE].irq      := pci_devices^.irq;
+	    { Try to init pdc202xx controller. Code from Linux }
+	    {* high_16 := lo(pci_devices^.io[4]);
+	     * udma_speed_flag := inb(high_16 + $001F);
+	     * outb(high_16 + $001F, udma_speed_flag or $10);
+	     * delay;
+	     * outb(high_16 + $001F, udma_speed_flag and (not $10));
+	     * delay;
+	     * delay; *}
+	    exit;
+	 end
+	 else
+	 begin
+            for j := 0 to 5 do
+	    begin
+	       if (probe_controller(pci_devices^.io[j])) then
+	       begin
+	          drive_info[maj, MASTER].IO_base := pci_devices^.io[j];
+	          drive_info[maj, MASTER].irq     := pci_devices^.irq;
+		  drive_info[maj, SLAVE].IO_base  := pci_devices^.io[j];
+		  drive_info[maj, SLAVE].irq      := pci_devices^.irq;
 		  exit;
-		  end;
-	      end;
-	  pci_devices := pci_devices^.next;
-       end;
-
+		  {maj += 1;
+		  if (maj > 6) then
+		     exit;}
+	       end;
+	    end;
+	    exit;
+	 end;
+      end;
+      pci_devices := pci_devices^.next;
+   end;
 end;
 
 
@@ -886,88 +911,88 @@ var
 
 begin
 
-   drive_info[IDE0_MAJ, MASTER].IO_base := $1F0;
-   drive_info[IDE0_MAJ, MASTER].irq     := 14;
-   drive_info[IDE0_MAJ, SLAVE].IO_base  := $1F0;
-   drive_info[IDE0_MAJ, SLAVE].irq      := 14;
-   drive_info[IDE1_MAJ, MASTER].IO_base := $170;
-   drive_info[IDE1_MAJ, MASTER].irq     := 15;
-   drive_info[IDE1_MAJ, SLAVE].IO_base  := $170;
-   drive_info[IDE1_MAJ, SLAVE].irq      := 15;
-   drive_info[IDE2_MAJ, MASTER].IO_base := $00;
-   drive_info[IDE2_MAJ, SLAVE].IO_base  := $00;
-   drive_info[IDE3_MAJ, MASTER].IO_base := $00;
-   drive_info[IDE3_MAJ, SLAVE].IO_base  := $00;
+   ide_hd_nb_intr := 0;
+   ide_hd_nb_sect := 0;
 
-   init_pci_ide;
+   drive_info[IDE0_MAJOR, MASTER].IO_base := $1F0;
+   drive_info[IDE0_MAJOR, MASTER].irq     := 14;
+   drive_info[IDE0_MAJOR, SLAVE].IO_base  := $1F0;
+   drive_info[IDE0_MAJOR, SLAVE].irq      := 14;
+   drive_info[IDE1_MAJOR, MASTER].IO_base := $170;
+   drive_info[IDE1_MAJOR, MASTER].irq     := 15;
+   drive_info[IDE1_MAJOR, SLAVE].IO_base  := $170;
+   drive_info[IDE1_MAJOR, SLAVE].irq      := 15;
+   drive_info[IDE2_MAJOR, MASTER].IO_base := $00;
+   drive_info[IDE2_MAJOR, SLAVE].IO_base  := $00;
+   drive_info[IDE3_MAJOR, MASTER].IO_base := $00;
+   drive_info[IDE3_MAJOR, SLAVE].IO_base  := $00;
+
+   init_pci_ide();
 
    { We give all devices type FFh (no drive), it will be modified if a drive
      is detected }
 
    do_hd  := @unexpected_hd_intr;
 
-   for i := IDE0_MAJ to IDE3_MAJ do
+   for i := IDE0_MAJOR to IDE3_MAJOR do
+   begin
+      drive_info[i, MASTER].ide_type    := $FF;
+      drive_info[i, SLAVE].ide_type     := $FF;
+      drive_info[i, MASTER].ide_sem     := $01;
+      drive_info[i, SLAVE].ide_sem      := $01;
+      drive_info[i, MASTER].lba_sectors := $00;
+      drive_info[i, SLAVE].lba_sectors  := $00;
+      for j := 1 to MAX_NR_PART do
       begin
-         drive_info[i, MASTER].ide_type    := $FF;
-	 drive_info[i, SLAVE].ide_type     := $FF;
-         drive_info[i, MASTER].ide_sem     := $01;
-	 drive_info[i, SLAVE].ide_sem      := $01;
-         drive_info[i, MASTER].lba_sectors := $00;
-	 drive_info[i, SLAVE].lba_sectors  := $00;
-	 for j := 1 to MAX_NR_PART do
-	    begin
-	       drive_info[i, MASTER].part[j].p_type := $00;
-	       drive_info[i, SLAVE].part[j].p_type  := $00;
-	    end;
+         drive_info[i, MASTER].part[j].p_type := $00;
+	 drive_info[i, SLAVE].part[j].p_type  := $00;
       end;
+   end;
 
    { Check IDE interfaces 0 and 1 (standard interfaces) }
-   for i := IDE0_MAJ to IDE1_MAJ do
-       begin
-          if (probe_controller(drive_info[i, MASTER].IO_base)) then
-	      begin
-	         {$IFDEF DEBUG}
-	            printk('ide%d: controller at %h4, irq %d\n', [i - 3, drive_info[i, MASTER].IO_base, drive_info[i, MASTER].irq]);
-		 {$ENDIF}
-	         detect_drive(i, 0);
-		 detect_drive(i, 64);
-	      end;
-       end;
+   for i := IDE0_MAJOR to IDE1_MAJOR do
+   begin
+      if (probe_controller(drive_info[i, MASTER].IO_base)) then
+      begin
+         {$IFDEF DEBUG}
+            printk('ide%d: controller at %h4, irq %d\n', [i - 3, drive_info[i, MASTER].IO_base, drive_info[i, MASTER].irq]);
+	 {$ENDIF}
+         detect_drive(i, 0);
+	 detect_drive(i, 64);
+      end;
+   end;
 
    { Check IDE interfaces 2 and 3 (if PCI IDE controllers detected) }
-   for i := IDE2_MAJ to IDE3_MAJ do
-       begin
-          if (drive_info[i, MASTER].IO_base <> 0) then
-              begin
-	         {$IFDEF DEBUG}
-	            printk('ide%d: controller at %h4, irq %d\n', [i - 3, drive_info[i, MASTER].IO_base, drive_info[i, MASTER].irq]);
-		 {$ENDIF}
-                 detect_drive(i, 0);
-	         detect_drive(i, 64);
-              end;
+   for i := IDE2_MAJOR to IDE3_MAJOR do
+   begin
+      if (drive_info[i, MASTER].IO_base <> 0) then
+      begin
+         {$IFDEF DEBUG}
+            printk('ide%d: controller at %h4, irq %d\n', [i - 3, drive_info[i, MASTER].IO_base, drive_info[i, MASTER].irq]);
+	 {$ENDIF}
+         detect_drive(i, 0);
+         detect_drive(i, 64);
        end;
+    end;
 
    { Register detected devices }
 
+   memset(@hd_fops, 0, sizeof(file_operations));
    hd_fops.open  := @hd_open;
-   hd_fops.read  := NIL;
-   hd_fops.write := NIL;
-   hd_fops.seek  := NIL;
-   hd_fops.ioctl := NIL;
 
-   for i := IDE0_MAJ to IDE3_MAJ do
-       begin
-          if (drive_info[i, MASTER].ide_type <> $FF)
-	  or (drive_info[i, SLAVE].ide_type  <> $FF) then
-	      begin
-	         {$IFDEF DEBUG}
-		    printk('Registering IDE controller at %h4, irq %d\n', [drive_info[i, MASTER].IO_base, drive_info[i, MASTER].irq]);
-		 {$ENDIF}
-	         register_blkdev(i, 'hd', @hd_fops);
-		 set_intr_gate(drive_info[i, MASTER].irq + 32, @hd_intr);
-		 enable_IRQ(drive_info[i, MASTER].irq);
-	      end;
-       end;
+   for i := IDE0_MAJOR to IDE3_MAJOR do
+   begin
+      if (drive_info[i, MASTER].ide_type <> $FF)
+      or (drive_info[i, SLAVE].ide_type  <> $FF) then
+      begin
+         {$IFDEF DEBUG}
+	    printk('Registering IDE controller at %h4, irq %d\n', [drive_info[i, MASTER].IO_base, drive_info[i, MASTER].irq]);
+	 {$ENDIF}
+         register_blkdev(i, 'hd', @hd_fops);
+	 set_intr_gate(drive_info[i, MASTER].irq + 32, @hd_intr);
+	 enable_IRQ(drive_info[i, MASTER].irq);
+      end;
+   end;
 
 { May be we have to reset all the controllers (software reset). Don't know. }
 

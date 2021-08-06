@@ -39,15 +39,17 @@ INTERFACE
 
 
 { Déclaration des procédures externes }
-procedure schedule; external;
+function  buffer_dirty (bh : P_buffer_head) : boolean; external;
+function  buffer_uptodate (bh : P_buffer_head) : boolean; external;
+procedure interruptible_sleep_on (wait : PP_wait_queue); external;
+procedure interruptible_wake_up (wait : PP_wait_queue); external;
+procedure kfree_s (adr : pointer ; len : dword); external;
+function  kmalloc (len : dword) : pointer; external;
+procedure panic (reason : string); external;
 procedure printk (format : string ; args : array of const); external;
+procedure schedule; external;
 procedure sleep_on (wait : PP_wait_queue); external;
 procedure wake_up (wait : PP_wait_queue); external;
-procedure kfree_s (adr : pointer ; len : dword); external;
-procedure panic (reason : string); external;
-function  buffer_uptodate (bh : P_buffer_head) : boolean; external;
-function  buffer_dirty (bh : P_buffer_head) : boolean; external;
-function  kmalloc (len : dword) : pointer; external;
 
 
 { Variables externes }
@@ -93,16 +95,18 @@ begin
 
    { Wait for the buffer to be unlocked }
    while (bh^.state and BH_Lock) = BH_Lock do
-      sleep_on(@bh^.wait);
+      interruptible_sleep_on(@bh^.wait);
+
+   {$IFDEF DEBUG}
+      printk('lock_buffer: lock buffer\n', []);
+   {$ENDIF}
+
+   bh^.state := bh^.state or BH_Lock;
 
    asm
       popfd
    end;
 
-   {$IFDEF DEBUG}
-      printk('lock_buffer: lock buffer\n', []);
-   {$ENDIF}
-   bh^.state := bh^.state or BH_Lock;
 end;
 
 
@@ -113,16 +117,26 @@ end;
  *****************************************************************************}
 procedure unlock_buffer (bh : P_buffer_head);
 begin
+
+   asm
+      cli
+   end;
+
    if (bh^.state and BH_Lock) = 0 then
       printk('unlock_buffer: buffer not locked !!!\n', [])
    else
-      begin
-         {$IFDEF DEBUG}
-	    printk('unlock_buffer: unlock buffer and wake up processes\n', []);
-	 {$ENDIF}
-         bh^.state := bh^.state and (not BH_Lock);
-	 wake_up(@bh^.wait);
-      end;
+   begin
+      {$IFDEF DEBUG}
+	 printk('unlock_buffer: unlock buffer and wake up processes\n', []);
+      {$ENDIF}
+      bh^.state := bh^.state and (not BH_Lock);
+      interruptible_wake_up(@bh^.wait);
+   end;
+
+   asm
+      sti
+   end;
+
 end;
 
 
@@ -140,30 +154,30 @@ var
 begin
 
    if (rw <> READ) and (rw <> WRITE) then
-      begin
-         printk('make_request: bad command (%d)\n', [rw]);
-	 panic('kernel bug ???');
-      end;
+   begin
+      printk('make_request: bad command (%d)\n', [rw]);
+      panic('kernel bug ???');
+   end;
 
    lock_buffer(bh);
 
-   if ((rw = READ) and buffer_uptodate(bh)) or
-      ((rw = WRITE) and not buffer_dirty(bh)) then
-      begin
-         {$IFDEF DEBUG}
-	    printk('make_request: does not need to do anything\n', []);
-	 {$ENDIF}
-         unlock_buffer(bh);
-	 exit;
-      end;
+   if ((rw = READ) and buffer_uptodate(bh))
+   or ((rw = WRITE) and not buffer_dirty(bh)) then
+   begin
+      {$IFDEF DEBUG}
+         printk('make_request: does not need to do anything\n', []);
+      {$ENDIF}
+      unlock_buffer(bh);
+      exit;
+   end;
 
    req := kmalloc(sizeof(request));
 
    if (req = NIL) then
-      begin
-         printk('make_request: not enough memory to add a request !!!\n', []);
-	 panic('');
-      end;
+   begin
+      printk('make_request: not enough memory to add a request !!!\n', []);
+      panic('');
+   end;
 
    { Initialize req }
 
@@ -190,29 +204,29 @@ begin
    {$ENDIF}
 
    if (blk_dev[major].current_request) = NIL then
-      begin
-         {$IFDEF DEBUG}
-	    printk('make_request: no request in queue\n', []);
-	 {$ENDIF}
-         blk_dev[major].current_request := req;
-	 asm
-	    popfd   { Fin section critique }
-	 end;
-	 blk_dev[major].request_fn(major);   { Execute the request }
-      end
-   else
-      begin
-         {$IFDEF DEBUG}
-	    printk('make_request: at least one request in queue\n', []);
-	 {$ENDIF}
-         tmp := blk_dev[major].current_request;
-	 while (tmp^.next <> NIL) do
-	        tmp := tmp^.next;
-	 tmp^.next := req;
-	 asm
-	    popfd   { Fin section critique }
-	 end;
+   begin
+      {$IFDEF DEBUG}
+         printk('make_request: no request in queue\n', []);
+      {$ENDIF}
+      blk_dev[major].current_request := req;
+      asm
+        popfd   { Fin section critique }
       end;
+      blk_dev[major].request_fn(major);   { Execute the request }
+   end
+   else
+   begin
+      {$IFDEF DEBUG}
+         printk('make_request: at least one request in queue\n', []);
+      {$ENDIF}
+      tmp := blk_dev[major].current_request;
+      while (tmp^.next <> NIL) do
+	     tmp := tmp^.next;
+      tmp^.next := req;
+      asm
+         popfd   { Fin section critique }
+      end;
+   end;
 
 end;
 
@@ -234,10 +248,10 @@ begin
    major := bh^.major;
 
    if (major > MAX_NR_BLOCK_DEV) or (blk_dev[major].request_fn = NIL) then
-      begin
-         printk('ll_rw_block: Trying to read invalid block device\n', []);
-	 exit;
-      end;
+   begin
+      printk('ll_rw_block: Trying to read invalid block device (%d, %h)\n', [major, blk_dev[major].request_fn]);
+      exit;
+   end;
 
    { On finit d'initialiser l'en-tête du tampon avant d'envoyer la requête }
    bh^.rsector := bh^.blocknr * (bh^.size shr 9);
@@ -274,37 +288,37 @@ begin
    unlock_buffer(cur_req^.bh);
 
    if (uptodate = FALSE) then
-      begin
-         printk('end_request: I/O error, dev %d:%d, sector %d !!!\n', [cur_req^.major, cur_req^.minor, cur_req^.sector]);
-	 cur_req^.bh^.state := cur_req^.bh^.state and (not BH_Uptodate);
-	 {$IFDEF DEBUG}
-	    printk('end_request: buffer is NOT uptodate\n', []);
-	 {$ENDIF}
-	 blk_dev[major].current_request := cur_req^.next;
-	 asm
-	    popfd   { Fin section critique }
-	 end;
-	 kfree_s(cur_req, sizeof(request));
-   {schedule;}
-	 if (blk_dev[major].current_request <> NIL) then
-	     blk_dev[major].request_fn(major);
-      end
-   else
-      begin
-	 cur_req^.bh^.state := cur_req^.bh^.state or BH_Uptodate;
-	 {$IFDEF DEBUG}
-	    printk('end_request: buffer is now uptodate\n', []);
-	 {$ENDIF}
-	 cur_req := blk_dev[major].current_request;
-	 blk_dev[major].current_request := cur_req^.next;
-	 asm
-	    popfd   { Fin section critique }
-	 end;
-	 kfree_s(cur_req, sizeof(request));
-   {schedule;}
-	 if (blk_dev[major].current_request <> NIL) then
-	     blk_dev[major].request_fn(major);
+   begin
+      printk('end_request: I/O error, dev %d:%d, sector %d !!!\n', [cur_req^.major, cur_req^.minor, cur_req^.sector]);
+      cur_req^.bh^.state := cur_req^.bh^.state and (not BH_Uptodate);
+      {$IFDEF DEBUG}
+         printk('end_request: buffer is NOT uptodate\n', []);
+      {$ENDIF}
+      blk_dev[major].current_request := cur_req^.next;
+      asm
+         popfd   { Fin section critique }
       end;
+      kfree_s(cur_req, sizeof(request));
+{   schedule;}
+      if (blk_dev[major].current_request <> NIL) then
+	  blk_dev[major].request_fn(major);
+   end
+   else
+   begin
+      cur_req^.bh^.state := cur_req^.bh^.state or BH_Uptodate;
+      {$IFDEF DEBUG}
+         printk('end_request: buffer is now uptodate\n', []);
+      {$ENDIF}
+      cur_req := blk_dev[major].current_request;
+      blk_dev[major].current_request := cur_req^.next;
+      asm
+         popfd   { Fin section critique }
+      end;
+      kfree_s(cur_req, sizeof(request));
+{   schedule;}
+      if (blk_dev[major].current_request <> NIL) then
+	  blk_dev[major].request_fn(major);
+   end;
 
 {   wake_up(@wait_for_request); }   { Réveille les processus qui attendent une
                                       demande de reqête !!! Inutile !!!}

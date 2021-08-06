@@ -1,22 +1,18 @@
 {******************************************************************************
  *  sched.pp
  * 
- *  Gestionnaire de tache de DelphineOS
+ *  DelphineOS scheduler
  *
  *  CopyLeft 2002 GaLi
  *
- *  version 0.0.3 - 24/07/2002 -  GaLi  - Modification du scheduler
+ *  version 0.0.4 - 10/06/2003 -  GaLi  - Scheduler modification
  *
- *  version 0.0.2 - 25/06/2002 -  GaLi  - Suppression des procédures de gestion
- *                                        des processus pour les mettre dans
- *                                        process.pp
+ *  version 0.0.2 - 25/06/2002 -  GaLi  - Move process management functions in
+ *                                        src/kernel/process.pp
  *
- *  version 0.0.1 - 25/04/2002 - Bubule - Modification de la gestion du timer
- *                                        et du scheduler
+ *  version 0.0.1 - 25/04/2002 - Bubule - Scheduler and timer modification
  *
- *  version 0.0.0 - ??/01/2002 -  GaLi  - Version initiale
- *
- *  TODO : tous le reste
+ *  version 0.0.0 - ??/01/2002 -  GaLi  - Initial version
  *
  *  Je voudrais remercier Frank Cornelis qui developpe EduOS car il m'a permis
  *  de faire une commutation de tache qui fonctionne (apres toute une nuit de
@@ -45,6 +41,7 @@ INTERFACE
 
 
 {DEFINE DEBUG}
+{DEFINE DEBUG_SCHEDULE}
 
 
 {$I fs.inc}
@@ -53,21 +50,26 @@ INTERFACE
 {$I time.inc}
 
 
-{ Procédures externes }
+{ External procedures and functions }
 
+procedure add_to_runqueue (task : P_task_struct); external;
+procedure del_from_runqueue (task : P_task_struct); external;
+function  do_signal (signr : dword) : boolean; external;
+procedure dump_task; external;
+procedure enable_IRQ (irq : byte); external;
 procedure farjump (tss : word ; ofs : pointer); external;
+procedure initialise_compteur; external;
+procedure outb (port : word ; val : byte); external;
 procedure printk (format : string ; args : array of const); external;
 procedure set_intr_gate (n : dword ; addr : pointer); external;
-procedure enable_IRQ (irq : byte); external;
-procedure outb (port : word ; val : byte); external;
-procedure initialise_compteur; external;
+function  signal_pending (p : P_task_struct) : dword; external;
 
 
-{ Variables externes }
+{ External variables }
 
 var
-   current    : P_task_struct; external name 'U_PROCESS_CURRENT';
-   compteur   : dword; external name 'U_TIME_COMPTEUR';
+   compteur : dword; external name 'U_TIME_COMPTEUR';
+   current  : P_task_struct; external name 'U_PROCESS_CURRENT';
 
 
 
@@ -78,41 +80,62 @@ IMPLEMENTATION
 {******************************************************************************
  * schedule
  *
- * Gestionnaire des taches. Donne le contrôle à la tache suivante.
+ * This is probably the most simple scheduler in the world...  :-)
  *
- * REMARQUE : cette procédure doit être appelée avec les interruptions
- *            désactivées.
+ * NOTE: be REALLY careful if you change this
  *****************************************************************************}
 procedure schedule; [public, alias : 'SCHEDULE'];
 
 var
-   old_current : P_task_struct;
+   prev     : P_task_struct;
+   tmp, sig : dword;
 
 begin
 
-   { On va lancer le prochain processus dans la liste de ceux qui sont prêts }
+   asm
+      pushfd
+      cli
+   end;
 
-   old_current := current;
-   current     := current^.next_run;
+   prev    := current;
+   current := prev^.next_run;
 
-   { Si le prochain est 'init', alors on lance encore le prochain }
+   sig := signal_pending(prev);
+
+   if (prev^.state = TASK_INTERRUPTIBLE) and (sig <> 0) then
+   begin
+      printk('schedule: PID %d has received a signal\n', [prev^.pid]);
+      add_to_runqueue(prev);
+   end;
+
+   if (prev^.state <> TASK_RUNNING) then
+   begin
+      {printk('schedule: PID %d is going to sleep %d %d  |  ', [prev^.pid, current^.pid]);}
+      del_from_runqueue(prev);
+      {printk('%d %d\n', [prev^.pid, current^.pid]);}
+   end;
+
+   { If the next process ready to run is 'init', we launch the next (after 'init') }
    if (current^.pid = 1) then
        current := current^.next_run;
 
-   if (current <> old_current) then
-       begin
-{$IFDEF DEBUG}
-   printk('prev TR=%h4  CR3: %h  PID: %h4  ticks: %d\n', [old_current^.tss_entry, old_current^.tss^.cr3, old_current^.pid, old_current^.ticks]);
-   printk('ESP0: %h  ESP3: %h  EBP: %h\n', [old_current^.tss^.esp0, old_current^.tss^.esp, old_current^.tss^.ebp]);
-   
-   printk('next TR=%h4  CR3: %h  PID: %h4  ticks: %d\n', [current^.tss_entry, current^.tss^.cr3, current^.pid, current^.ticks]);
-   printk('ESP0: %h  ESP3: %h  EBP: %h\n', [current^.tss^.esp0, current^.tss^.esp, current^.tss^.ebp]);
-{$ENDIF}
+   if (current <> prev) then
+   begin
+{printk('schedule: %d -> %d (state=%d)\n', [prev^.pid, current^.pid, current^.state]);}
+      farjump(current^.tss_entry, NIL);
+   end;
 
-{printk('S(%d(%h)->%d(%h)) ', [old_current^.pid, old_current^.tss^.esp, current^.pid, current^.tss^.esp]);}
+   sig := signal_pending(current);
+   if (sig <> 0) then
+   begin
+      {printk('schedule: PID %d has received signal %d\n', [current^.pid, sig]);}
+      do_signal(sig);
+   end;
 
-          farjump(current^.tss_entry, NIL);
-       end;
+   asm
+      popfd
+   end;
+
 end;
 
 
@@ -127,20 +150,29 @@ end;
  *****************************************************************************}
 procedure timer_intr; interrupt;
 
+var
+   r_cs : dword;
+
 begin
+
+   asm
+      mov   eax, [ebp + 40]   { Get CS register value }
+      mov   r_cs, eax
+   end;
+
+   { Incrémente le compteur système }
+   compteur += INTERVAL;
+   current^.ticks += 1;  { Mise à jour du temps CPU utilisé par le processus }
 
    asm
       mov   al , $20
       out   $20, al
    end;
 
-   { Incrémente le compteur système }
-   compteur := compteur + INTERVAL;
-   current^.ticks += 1;  { Mise à jour du temps CPU utilisé par le processus }
+   { We call the scheduler every 200 ms and only if we are in user mode }
+   if ((compteur mod 200) = 0) and (r_cs = $23) then
+        schedule();
 
-   { On lance le scheduler à intervalles réguliers }
-   if ((compteur mod 200) = 0) or (current^.pid = 1) then 
-       schedule;
 end;
 
 
@@ -158,7 +190,7 @@ begin
    {* On va reprogrammer le PIT pour qu'il déclenche une interruption toutes
     * les 10ms (environ) *}
 
-   initialise_compteur;
+   initialise_compteur();
 
    set_intr_gate(32, @timer_intr);
    enable_IRQ(0);

@@ -1,7 +1,8 @@
 
 BITS 32
 
-; Ce fichier définit juste le point d'entré du noyau.
+; Ce fichier définit le point d'entrée du noyau ainsi que la procédure
+; qui permet d'effectuer le changement de tache.
 
 EXTERN PASCALMAIN
 
@@ -24,6 +25,7 @@ _start:
     mov   ebp, eax
 
     jmp PASCALMAIN
+
 
 FARJUMP:
     push   ebp

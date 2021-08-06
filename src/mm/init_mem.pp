@@ -56,6 +56,7 @@ var
    mem_map        : P_page;  external name 'U_MEM_MEM_MAP';
    total_memory   : dword;   external name 'U_MEM_TOTAL_MEMORY'; { RAM size in bytes }
    free_memory    : dword;   external name 'U_MEM_FREE_MEMORY';
+   shared_pages   : dword;   external name 'U_MEM_SHARED_PAGES';
    debut_pile     : pointer; external name 'U_MEM_DEBUT_PILE';
    fin_pile       : pointer; external name 'U_MEM_FIN_PILE';
    debut_pile_dma : pointer; external name 'U_MEM_DEBUT_PILE_DMA';
@@ -99,6 +100,7 @@ var
 begin
 
    free_memory  := 0;
+   shared_pages := 0;
    nb_free      := 0;
    nb_dma_pages := 0;
 
@@ -131,28 +133,28 @@ begin
    end;
 
    if (bios_map_entries <> 0) then
-       begin
-          bios_map := $10000 + 24;
-	  size     := 0;
-          for i := 1 to bios_map_entries do
-	      begin
-	         {$IFDEF DEBUG}
-	            printk('%h -> %h (%d)\n', [bios_map^.addr_low, bios_map^.addr_low + bios_map^.length_low, bios_map^.mem_type]);
-		 {$ENDIF}
-		 bios_map += 1;
-	      end;
-       end;
+   begin
+      bios_map := $10000 + 24;
+      size     := 0;
+      for i := 1 to bios_map_entries do
+      begin
+         {$IFDEF DEBUG}
+            printk('%h -> %h (%d)\n', [bios_map^.addr_low, bios_map^.addr_low + bios_map^.length_low, bios_map^.mem_type]);
+	 {$ENDIF}
+	 bios_map += 1;
+      end;
+   end;
 
    { Really important variables initialization !!! }
    end_kernel := $12000 + txt_section + data_section + bss_section;
    
    { Align end_kernel on a 4096 bytes boundary (1 page) }
    if ((end_kernel mod 4096) <> 0) then
-      end_kernel := (end_kernel and $FFFFF000) + 4096;
+        end_kernel := (end_kernel and $FFFFF000) + 4096;
 
-   nb_pages      := total_memory div 4;
-   mem_map       := $101000;   { mem_map address }
-   size_mem_map  := nb_pages * sizeof(T_page);
+   nb_pages     := total_memory div 4;
+   mem_map      := $101000;   { mem_map address }
+   size_mem_map := nb_pages * sizeof(T_page);
 
    {* We use assembly here because all variables haven't the same type *}
 
@@ -168,7 +170,7 @@ begin
 
    { Align start_mem on a 4096 bytes boundary (1 page) }
    if ((start_mem mod 4096) <> 0) then
-      start_mem := (start_mem and $FFFFF000) + 4096;
+        start_mem := (start_mem and $FFFFF000) + 4096;
 
 {*
  * Standard memory map (if BIOS function E820h is not supported) :
@@ -195,47 +197,47 @@ begin
 
 
    {$IFDEF DEBUG}
-       printk('\nMemory map:\n', []);
-       printk('end_kernel    : %h\n', [end_kernel]);
-       printk('i386_endbase  : %h\n', [i386_endbase]);
-       printk('total_memory  : %h\n', [total_memory]);
-       printk('start mem_map : %h\n', [mem_map]);
-       printk('mem_map has %d entries\n', [nb_pages]);
-       printk('mem_map is %d bytes long\n', [size_mem_map]);
-       printk('start_mem     : %h\n\n', [start_mem]);
+      printk('\nMemory map:\n', []);
+      printk('end_kernel    : %h\n', [end_kernel]);
+      printk('i386_endbase  : %h\n', [i386_endbase]);
+      printk('total_memory  : %h\n', [total_memory]);
+      printk('start mem_map : %h\n', [mem_map]);
+      printk('mem_map has %d entries\n', [nb_pages]);
+      printk('mem_map is %d bytes long\n', [size_mem_map]);
+      printk('start_mem     : %h\n\n', [start_mem]);
    {$ENDIF}
 
    {* Set pages descriptors as reserved and usable for DMA *}
    for i := 0 to ((nb_pages) - 1) do
-      begin
-         mem_map[i].count := 1;
-	 mem_map[i].flags := $C0000000; { PG_DMA flag set to 1 }
-      end;
+   begin
+      mem_map[i].count := 1;
+      mem_map[i].flags := $C0000000; { PG_DMA flag set to 1 }
+   end;
 
    {* Set the PG_reserved bit to 0 for pages in the 1st dynamic memory zone *}
    i := end_kernel;
    while (i < i386_endbase) do
-      begin
-         unset_bit(PG_reserved, @mem_map[i shr 12].flags);
-	 nb_free      += 1;
-	 nb_dma_pages += 1;
-	 i += 4096;
-      end;
+   begin
+      unset_bit(PG_reserved, @mem_map[i shr 12].flags);
+      nb_free      += 1;
+      nb_dma_pages += 1;
+      i += 4096;
+   end;
 
    {* Set the PG_reserved bit to 0 for pages in the 2nd dynamic memory zone *}
    i := start_mem;
    while (i < total_memory * 1024) do
+   begin
+      unset_bit(PG_reserved, @mem_map[i shr 12].flags);
+      nb_free      += 1;
+      nb_dma_pages += 1;
+      if (i >= $1000000) then { The page can't be used for DMA ( >16Mb) }
       begin
-         unset_bit(PG_reserved, @mem_map[i shr 12].flags);
-	 nb_free      += 1;
-	 nb_dma_pages += 1;
-	 if (i >= $1000000) then { The page can't be used for DMA ( >16Mb) }
-	     begin
-	         mem_map[i shr 12].flags := 0;
-		 nb_dma_pages -= 1;
-	     end;
-	 i += 4096;
+         mem_map[i shr 12].flags := 0;
+	 nb_dma_pages -= 1;
       end;
+      i += 4096;
+   end;
 
    {* We now know how many pages are free. So, we have to mark pages which
     * contain free pages addresses as NOT FREE !!! We also redefine
@@ -250,17 +252,17 @@ begin
         start_mem := (start_mem and $FFFFF000) + 4096;
 
    while (j < start_mem) do
-      begin
-         set_bit(PG_reserved, @mem_map[j shr 12].flags);
-	 nb_free      -= 1;
-	 nb_dma_pages -= 1; {* Because pages used for pages stacks are in the
-	                     * DMA zone *}
-         j += 4096;
-      end;
+   begin
+      set_bit(PG_reserved, @mem_map[j shr 12].flags);
+      nb_free      -= 1;
+      nb_dma_pages -= 1; {* Because pages used for pages stacks are in the
+	                  * DMA zone *}
+      j += 4096;
+   end;
 
    {* Now, we make 2 stacks which contain free pages physical addresses.
     * One stack is used for pages usable for DMA (addr < 0x1000000), the other
-    * for all other pages *}
+    * for all the other pages *}
 
    i := 0;
    reserved_pages := 0;
@@ -272,48 +274,44 @@ begin
    end;
 
    while (i < total_memory * 1024) do
-      begin
-         if (PageReserved(i)) then
-	    begin
-	       reserved_pages := reserved_pages + 1;
-	    end
-	 else
-	    begin
-	       {* Note : push_page() updates debut_pile, fin_pile,
-	        * debut_pile_dma and fin_pile_dma pointers as well as
-		* nb_free_pages and free_memory variables (see mm/mem.pp) *}
-	       push_page(i);
-	    end;
+   begin
+      if (PageReserved(i)) then
+          reserved_pages := reserved_pages + 1
+      else
+          {* Note : push_page() updates debut_pile, fin_pile,
+	   * debut_pile_dma and fin_pile_dma pointers as well as
+	   * nb_free_pages and free_memory variables (see mm/mem.pp) *}
+	  push_page(i);
 
-	 i += 4096;
+      i += 4096;
 
-      end;
+   end;
 
    {$IFDEF DEBUG}
-       printk('Nb free pages  : %d\n', [nb_free]);
-       printk('Reserved pages : %d\n', [reserved_pages]);
-       printk('dma_pages      : %d\n', [nb_dma_pages]);
-       printk('start_mem      : %h\n', [start_mem]);
-       printk('debut_pile_dma : %h\n', [debut_pile_dma]);
-       printk('fin_pile_dma   : %h\n', [fin_pile_dma]);
-       printk('debut_pile     : %h\n', [debut_pile]);
-       printk('fin_pile       : %h\n\n', [fin_pile]);
+      printk('Nb free pages  : %d\n', [nb_free]);
+      printk('Reserved pages : %d\n', [reserved_pages]);
+      printk('dma_pages      : %d\n', [nb_dma_pages]);
+      printk('start_mem      : %h\n', [start_mem]);
+      printk('debut_pile_dma : %h\n', [debut_pile_dma]);
+      printk('fin_pile_dma   : %h\n', [fin_pile_dma]);
+      printk('debut_pile     : %h\n', [debut_pile]);
+      printk('fin_pile       : %h\n\n', [fin_pile]);
    {$ENDIF}
 
-   init_paging;
+   init_paging();
 
    { Initialize kernel 'size_dir' }
 
    size := 16;
 
-   for i:=1 to 9 do
-      begin
-         size_dir[i].size := size;
-	 size_dir[i].full_list := NIL;
-	 size_dir[i].free_list := NIL;
-	 size_dir[i].full_free_list := NIL;
-	 size := size * 2;
-      end;
+   for i := 1 to 9 do
+   begin
+      size_dir[i].size := size;
+      size_dir[i].full_list := NIL;
+      size_dir[i].free_list := NIL;
+      size_dir[i].full_free_list := NIL;
+      size := size * 2;
+   end;
 
    { Print info for user }
 
@@ -358,7 +356,8 @@ var
 begin
 
    adr   := 0;
-   cr3_k := get_free_page;     { Adresse du répertoire global de pages }
+   cr3_k := get_free_page();     { Adresse du répertoire global de pages }
+   memset(cr3_k, 0, 4096);
 
    {* cmpt correspond au nombre d'entrées à remplir dans le répertoire global
     * des pages. 1 entrée de ce répertoire global indexe 1024 pages et permet
@@ -369,33 +368,31 @@ begin
    if (nb_pages mod 1024 <> 0) then cmpt := cmpt + 1;
 
    for i := 0 to (cmpt - 1) do
-      begin
-         tmp := get_free_page;
-	 asm
-	    mov   edi, cr3_k
-	    mov   eax, i
-	    shl   eax, 2     { EAX = EAX * 4 }
-	    add   edi, eax
-	    mov   eax, tmp
-	    or    eax, 1     { Droits }
+   begin
+      tmp := get_free_page();
+      asm
+         mov   edi, cr3_k
+	 mov   eax, i
+	 shl   eax, 2     { EAX = EAX * 4 }
+	 add   edi, eax
+	 mov   eax, tmp
+	 or    eax, 1     { Droits }
+	 mov   [edi], eax
+
+	 mov   edi, tmp
+	 mov   eax, adr
+	 mov   ecx, 1024
+	 @loop:
+	    or    eax, 1  { Droits }
 	    mov   [edi], eax
+	    add   edi, 4
+	    add   eax, $1000
+	 loop @loop
 
-	    mov   edi, tmp
-	    mov   eax, adr
-	    mov   ecx, 1024
-	    @loop:
-	       or    eax, 1  { Droits }
-	       mov   [edi], eax
-	       add   edi, 4
-	       add   eax, $1000
-	    loop @loop
+	 mov   adr, eax
 
-	    mov   adr, eax
-
-	 end;
       end;
-
-{printk('adr: %h\n', [adr]);}
+   end;
 
    asm
       mov   eax, cr3_k       { Adr physique du répertoire global de pages }
@@ -410,7 +407,7 @@ begin
    @FLUSH1:
    end;
 
-   flush_tlb;                { 3rd flush (on est jamais trop prudent) }
+   flush_tlb();              { 3rd flush (on est jamais trop prudent) }
 
 end;
 

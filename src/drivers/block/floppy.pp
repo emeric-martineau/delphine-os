@@ -56,20 +56,24 @@ INTERFACE
 {$I blk.inc}
 {$I fs.inc}
 {$I floppy.inc}
+{$I major.inc}
+
+
+function  btod (nb : byte) : dword; external;
+procedure enable_IRQ (n : byte); external;
+function  get_value_counter : dword; external;
+function  inb (port : word) : byte; external;
+procedure IO_delay; external;
+procedure memset (adr : pointer ; c : byte ; size : dword); external;
+procedure outb (port : word ; val : byte); external;
+procedure printk (format : string ; args : array of const); external;
+procedure register_blkdev (nb : byte ; name : string[20] ; fops : P_file_operations); external;
+procedure set_intr_gate (n : dword ; addr : pointer); external;
 
 
 procedure do_fd_request (major : byte);
 function  fd_get_command_status : byte;
 
-procedure printk (format : string ; args : array of const); external;
-procedure outb (port : word ; val : byte); external;
-procedure register_blkdev (nb : byte ; name : string[20] ; fops : P_file_operations); external;
-function  inb (port : word) : byte; external;
-function  btod (nb : byte) : dword; external;
-procedure set_intr_gate (n : dword ; addr : pointer); external;
-procedure enable_IRQ (n : byte); external;
-procedure IO_delay; external;
-function  get_value_counter : dword; external;
 
 
 IMPLEMENTATION
@@ -167,17 +171,13 @@ begin
 
     repeat
         r := (inb(FD_MSR) and (FD_MSR_REG_DATA_READY or FD_MSR_IO_DIR));
-
         { Périphérique prêt }
-        if (r = FD_MSR_REG_DATA_READY)
-        then
+        if (r = FD_MSR_REG_DATA_READY) then
             break;
-
         c := c - 1;
     until (c = 0);
 
-    if (c = 0)
-    then
+    if (c = 0) then
         printk('\nfd_get_byte: timeout\n', [])
     else
         outb(FD_CSR, val);
@@ -212,11 +212,10 @@ begin
         c := c - 1;
     until (c = 0);
 
-    if (c = 0)
-    then
-        Result := 0
+    if (c = 0) then
+        result := 0
     else
-        Result := inb(FD_CSR);
+        result := inb(FD_CSR);
 end;
 
 
@@ -249,15 +248,15 @@ begin
     fd_log_to_chs(log); { Initialise les variables piste, face et secteur }
    
     outb(FD_DOR, (FD_DOR_MOTOR_FLOPPY_1 or FD_DOR_DMA_IO or FD_DOR_RESET));
-    outb($3F5, $46);
-    outb($3F5, $00);
-    outb($3F5, piste);   { Piste }
-    outb($3F5, face);    { Tête }
-    outb($3F5, secteur); { Secteur }
-    outb($3F5, $02);
-    outb($3F5, 18);
-    outb($3F5, $2A);
-    outb($3F5, $00);
+    outb(FD_DATA_REGISTER, $46);
+    outb(FD_DATA_REGISTER, $00);
+    outb(FD_DATA_REGISTER, piste);   { Piste }
+    outb(FD_DATA_REGISTER, face);    { Tête }
+    outb(FD_DATA_REGISTER, secteur); { Secteur }
+    outb(FD_DATA_REGISTER, $02);
+    outb(FD_DATA_REGISTER, 18);
+    outb(FD_DATA_REGISTER, $2A);
+    outb(FD_DATA_REGISTER, $00);
    
     outb(FD_DOR, 00);
 
@@ -267,7 +266,7 @@ begin
      *     2002, on dit de quelqu'un qui est IN, quelqu'un qui est dans le
      *     coup. Quelqu'un qu'on dira ringard les années suivantes. *}
 
-    Result := 1 ;
+    result := 1 ;
 end;
 
 
@@ -279,7 +278,7 @@ end;
  *****************************************************************************}
 procedure unexpected_fd_intr;
 begin
-   printk('FD: unexpected interrupt !!!\n', []);
+   printk('FD: unexpected interrupt\n', []);
 end;
 
 
@@ -341,14 +340,16 @@ end ;
  * Attend qu'il n'y ait plus d'opération en cours. ATTENTION ! Attente active
  *****************************************************************************}
 function fd_wait : boolean ;
+
 var
     ancien_compteur : dword ;
+
 begin
-    ancien_compteur := get_value_counter ;
+    ancien_compteur := get_value_counter();
 
     while (operation_en_cours and ((ancien_compteur + FD_WAIT_DELAY) > get_value_counter)) do ;
 
-    Result := not operation_en_cours ;
+    result := not operation_en_cours;
 end ;
 
 
@@ -361,9 +362,9 @@ end ;
 procedure do_fd_request (major : byte);
 begin
 
-   if (major <> 2) then
+   if (major <> FLOPPY_MAJOR) then
    begin
-      printk('FLOPPY: bad major number\n', [major]);
+      printk('do_fd_request: bad major number\n', [major]);
       exit;
    end;
 
@@ -397,20 +398,15 @@ var
     cmos_type : byte;
     fd_type   : byte;
     dec       : byte;
-    nb_floppy_disk : integer ;
-    i : integer ;
+    nb_floppy_disk, i : integer ;
 
 begin
+
     set_intr_gate(38, @fd_intr);
     enable_IRQ(6);
     do_fd := @unexpected_fd_intr;
-    fd_fops.open  := NIL;
-    fd_fops.read  := NIL;
-    fd_fops.write := NIL;
-    fd_fops.seek  := NIL;
-    fd_fops.ioctl := NIL;
 
-    register_blkdev(2, 'fd', @fd_fops);
+    memset(@fd_fops, 0, sizeof(file_operations));
 
     { Regarde s'il y a au moins un lecteur present }
     outb(RTCSEL, RTCSEL_EQUIPMENT) ;
@@ -419,64 +415,64 @@ begin
     version := inb(RTCDATA) ;
 
     { Si il y a un contrôleur de disquette }
-    if ((version and RTCSEL_EQUIPMENT_DISKETTE) <> 0)
-    then begin
-        { 0 -> 1 lecteur, 1 -> 2 lecteurs. Les autres valeurs sont reservées }
-        nb_floppy_disk := ((version and RTCSEL_EQUIPMENT_NB_DSKT) shr 6);
+    if ((version and RTCSEL_EQUIPMENT_DISKETTE) <> 0) then
+    begin
+       { 0 -> 1 lecteur, 1 -> 2 lecteurs. Les autres valeurs sont reservées }
+       nb_floppy_disk := ((version and RTCSEL_EQUIPMENT_NB_DSKT) shr 6);
 
-        printk('FDC: ', []) ;
+       printk('FDC: ', []) ;
 
-        { Affiche le contrôleur }
-        fd_reset;
-        fd_send_byte(FD_CSR_0_EQUIPMENT);
-        version := fd_get_byte;
+       { Affiche le contrôleur }
+       fd_reset();
+       fd_send_byte(FD_CSR_0_EQUIPMENT);
+       version := fd_get_byte();
 
-        case (version) of
-            $00: printk('** WARNING ** TIMEOUT, CHECK YOUR CONTROLER.\n', []);
-            $80: printk('Nec765A compatible controller\n', []);
-            $90: printk('Nec765B compatible controller\n', []);
-            else printk('unknown controller\n', []);
-        end;
+       case (version) of
+          $00: printk('** WARNING ** TIMEOUT, CHECK YOUR CONTROLER.\n', []);
+          $80: printk('Nec765A compatible controller\n', []);
+          $90: printk('Nec765B compatible controller\n', []);
+          else printk('unknown controller\n', []);
+       end;
 
-        if (version <> 0)
-        then begin
-            {* Lire les caractéristiques pour chaque lecteur - Seul 2 lecteurs
-	     * sont supportés avec le PC/AT (i386 oblige) *}
-            for i := 0 to nb_floppy_disk do
-            begin
+       if (version <> 0) then
+       begin
+          {* Lire les caractéristiques pour chaque lecteur - Seul 2 lecteurs
+	   * sont supportés avec le PC/AT (i386 oblige) *}
+          for i := 0 to nb_floppy_disk do
+          begin
+             printk('fd%d: ', [i]) ;
+             { Regarde de quel type de lecteur il s'agit }
+             outb(RTCSEL, RTCSEL_DISKETTE_TYPE) ;
+             cmos_type := inb(RTCDATA) ;
 
-                printk('fd%d: ', [i]) ;
-                { Regarde de quel type de lecteur il s'agit }
-                outb(RTCSEL, RTCSEL_DISKETTE_TYPE) ;
-                cmos_type := inb(RTCDATA) ;
+             asm
+                mov   al , cmos_type
+                mov   cl , dec
+                shr   al , cl
+                and   al , $F
+                mov   fd_type, al
+             end;
 
-                asm
-                    mov   al , cmos_type
-                    mov   cl , dec
-                    shr   al , cl
-                    and   al , $F
-                    mov   fd_type, al
-                end;
+             cmos_type := (cmos_type shr ((1 - i)*4)) and $0F ;
 
-                cmos_type := (cmos_type shr ((1 - i)*4)) and $0F ;
-
-                case (cmos_type) of
-                    $00 : printk('no floppy drive connected\n', []) ;
-                    $01 : printk('360Kb\n', []) ;
-                    $02 : printk('1.2Mb\n', []) ;
-                    $03 : printk('720Kb\n', []) ;
-                    $04 : printk('1.44Mb\n', []) ;
-                    {* Quelqu'un sur terre a-t-il un lecteur de disquette 
-		     * 2.88 ? *}
-                    $05 : printk('2.88Mo (AMI BIOS ?)\n', []) ;
-                    $06 : printk('2.88Mo\n', []);
-                    else  printk('your floppy drive is too old or too new !!!\n', []) ;
-                end ;
-            end ;
-        end
-        else
-            printk('** WARNING ** NO FLOPPY CONTROLER FOUND !\n', []);
-    end ;
+             case (cmos_type) of
+                $00 : printk('no floppy drive connected\n', []) ;
+                $01 : printk('360Kb\n', []) ;
+                $02 : printk('1.2Mb\n', []) ;
+                $03 : printk('720Kb\n', []) ;
+                $04 : printk('1.44Mb\n', []) ;
+                {* Quelqu'un sur terre a-t-il un lecteur de disquette 
+		 * 2.88 ? *}
+                $05 : printk('2.88Mo (AMI BIOS ?)\n', []) ;
+                $06 : printk('2.88Mo\n', []);
+                else  printk('your floppy drive is unknown\n', []) ;
+             end;
+          end;
+	  register_blkdev(FLOPPY_MAJOR, 'fd', @fd_fops);
+       end
+       else
+          printk('** WARNING ** NO FLOPPY CONTROLER FOUND !\n', []);
+    end;
 end;
 
 

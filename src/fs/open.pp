@@ -1,11 +1,16 @@
 {******************************************************************************
  *  open.pp
  *
- *  open() system call implementation
+ *  open(), access(), chdir() and close() system calls implementation
  *
  *  Copyleft 2002 GaLi
  *
- *  version 0.2 - 02/10/2002 - GaLi - Add function namei()
+ *  version 0.4 - 14/09/2003 - GaLi - move namei() in src/fs/namei.pp
+ *
+ *  version 0.3 - 15/05/2003 - GaLi - Open() can now open directories.
+ *                                    Add sys_chdir().
+ *
+ *  version 0.2 - 02/10/2002 - GaLi - Add namei()
  *
  *  version 0.1 - 24/09/2002 - GaLi - Correct a few bugs and check access
  *                                    rigths
@@ -33,18 +38,31 @@ unit _open;
 
 INTERFACE
 
+
 {DEFINE DEBUG}
+{DEFINE DEBUG_SYS_OPEN}
+{DEFINE DEBUG_SYS_CLOSE}
+{DEFINE DEBUG_ACCESS}
+{DEFINE ACCESS_WARNING}
+{DEFINE OPEN_WARNING}
+{DEFINE CLOSE_WARNING}
+{DEFINE CHDIR_WARNING}
+
 
 {$I errno.inc}
 {$I fs.inc}
 {$I process.inc}
+{$I time.inc}
 
 
 {* External procedures and functions definition *}
 function  access_rights_ok (flags : dword ; inode : P_inode_t) : boolean; external;
+procedure free_inode (inode : P_inode_t); external;
+procedure interruptible_wake_up (p : PP_wait_queue); external;
 function  IS_DIR (inode : P_inode_t) : boolean; external;
 procedure kfree_s (adr : pointer ; len : dword); external;
 function  kmalloc (len : dword) : pointer; external;
+function  namei (path : pchar) : P_inode_t; external;
 procedure printk (format : string ; args : array of const); external;
 
 
@@ -57,8 +75,13 @@ var
 
 
 {* Unit procedures and functions definition *}
-function  namei (path : pchar) : P_inode_t;
+function  create_file (path : pchar ; fd, flags, mode : dword) : P_inode_t;
+function  sys_access (filename : pchar ; mode : dword) : dword; cdecl;
+function  sys_chdir (filename : pchar) : dword; cdecl;
+function  sys_close (fd : dword) : dword; cdecl;
+function  sys_fchdir (fd : dword) : dword; cdecl;
 function  sys_open (path : pchar ; flags, mode : dword) : dword; cdecl;
+function  sys_utime (path : pchar ; times : P_utimbuf) : dword; cdecl;
 
 
 IMPLEMENTATION
@@ -75,209 +98,25 @@ IMPLEMENTATION
 
 
 {******************************************************************************
- * lookup
- *
- * Input  : directory inode, file we look for, size of 'name', inode to fill
- *
- * Output : TRUE or FALSE
- *
- * lookup() is not file system dependent. If everything is ok, 'res_inode'
- * is fill with 'name' inode info
- *****************************************************************************}
-function lookup (dir : P_inode_t ; name : pchar ; len : dword ; res_inode : P_inode_t) : boolean;
-begin
-
-   {$IFDEF DEBUG}
-      printk('looking up %c%s\n', [name[0], name]);
-   {$ENDIF}
-
-   if (dir^.op^.lookup <> NIL) then
-       result := dir^.op^.lookup(dir, name, len, res_inode)
-   else
-       begin
-          printk('VFS: lookup is not defined for %c%s\n', [name[0], name]);
-          result := FALSE;
-       end;
-end;
-
-
-
-{******************************************************************************
- * namei
- *
- * Input  : pointer to string
- *
- * Output : Pointer to inode or an error code
- *
- * Converts a pathname to an inode if the file is found.
- *
- * FIXME: for the moment, namei() doesn't check directories access rights
- *****************************************************************************}
-function namei (path : pchar) : P_inode_t; [public, alias : 'NAMEI'];
-
-var
-   tmp                 : pchar;
-   filename, basename  : string;
-   base, inode         : P_inode_t;
-   i, index, nb_dir, j : dword;
-   str_len            : dword;
-
-begin
-
-   { Check if path is not a null string }
-
-   if (path[0] = #0) then
-       begin
-          printk('VFS (namei): file name is a null string\n', []);
-	  result := -EINVAL;
-	  exit;
-       end;
-
-   tmp := path;
-
-   { 'filename' initialization }
-
-   i := 0;
-   while (tmp^ <> #0) do
-   begin
-      filename[i] := tmp^;
-      tmp += 1;
-      i   += 1;
-   end;
-   filename[i] := #0;
-
-   if (filename[0] = '/') then
-       begin
-          base := current^.root;
-	  { Remove the first character ('/') }
-	  i := 0;
-	  while (filename[i] <> #0) do
-	  begin
-	     filename[i] := filename[i + 1];
-	     i += 1;
-	  end;
-	  filename[i] := #0;
-       end
-   else
-       base := current^.pwd;
-
-   {* We are going to call lookup() for each directory in the path. So we
-    * calculate how many directories there are *}
-
-   nb_dir := 0;
-   index  := 0;
-
-   i := 0;
-   while (filename[i] <> #0) do
-   begin
-      if (filename[i] = '/') then 
-          nb_dir += 1;
-      i += 1;
-   end;
-
-   inode := kmalloc(sizeof(inode_t));
-   if (inode = NIL) then
-       begin
-          printk('VFS (namei): not enough memory to look for %c%s\n', [path[0], path]);
-	  result := -ENOMEM;
-	  exit;
-       end;
-
-   if (nb_dir = 0) then
-       basename := filename
-   else
-       for i := 1 to nb_dir do
-       begin
-	   j := 0;
-	   str_len := 0;
-	   while (filename[index] <> '/') do
-	   begin
-	      basename[j] := filename[index];
-	      str_len += 1;
-	      index   += 1;
-	      j       += 1;
-	   end;
-	   basename[j] := #0;   { A string MUST end with this character }
-
-	   if not lookup(base, @basename, str_len, inode) then
-	   begin
-	      { One of the directory in the path has not been found !!! }
-	      kfree_s(inode, sizeof(inode_t));
-	      printk('VFS (namei): cannot find directory %c%s (in %c%s)\n', [basename[0], basename, path[0], path]);
-	      result := -ENOENT;
-	      exit;
-	   end;
-
-	   { Check if 'inode' is really a directory }
-	   if not IS_DIR(inode) then
-	      begin
-		 kfree_s(inode, sizeof(inode_t));
-		 printk('VFS(namei): %c%s is not a directory\n', [basename[0], basename]);
-		 result := -ENOTDIR;
-		 exit;
-	      end;
-
-           base  := inode;   { Next directory }
-	   index += 1;
-       end;
-
-   { Look for the file }
-   j       := 0;
-   str_len := 0;
-   while (filename[index] <> #0) do
-      begin
-	 basename[j] := filename[index];
-	 str_len     += 1;
-	 index       += 1;
-	 j           += 1;
-      end;
-   basename[j] := #0;
-
-   if not lookup(base, @basename, str_len, inode) then
-      begin
-         { File has not been found !!! }
-	 kfree_s(inode, sizeof(inode_t));
-	 {$IFDEF DEBUG}
-	    printk('VFS (namei): cannot find file %c%s (in %c%s)\n', [basename[0], basename, path[0], path]);
-	 {$ENDIF}
-	 result := -ENOENT;
-	 exit;
-      end
-   else
-      begin
-         if IS_DIR(inode) then
-	    begin
-	       kfree_s(inode, sizeof(inode_t));
-	       printk('VFS (namei): %c%s is a directory\n', [path[0], path]);
-	       result := -EISDIR;
-	       exit;
-	    end
-	 else
-	    result := inode;
-      end;
-
-end;
-
-
-
-{******************************************************************************
  * sys_open
  *
  * Input : pointer to pathname, flags, mode (if file has to be created).
  *
- * Output : file descriptor or -1
+ * Output : file descriptor or error code
+ *
+ * FIXME: care about flags...
  *****************************************************************************}
 function sys_open (path : pchar ; flags, mode : dword) : dword; cdecl; [public, alias : 'SYS_OPEN'];
 
 var
-   fd      : dword;
+   fd, res : dword;
    fichier : P_file_t;
    inode   : P_inode_t;
 
 begin
 
-   {$IFDEF DEBUG}
-      printk('Welcome in sys_open (%c%s)\n', [path[0], path]);
+   {$IFDEF DEBUG_SYS_OPEN}
+      printk('Welcome in sys_open (%s) flags=%h mode=%h\n', [path, flags, mode]);
    {$ENDIF}
 
    asm
@@ -295,44 +134,82 @@ begin
 
       fichier := kmalloc(sizeof(file_t));
       if (fichier = NIL) then
-          begin
-	     printk('VFS (open): not enough memory to open %c%s\n', [path[0], path]);
-	     result := -ENOMEM;
-	     exit;
-	  end;
-
-      inode := namei(path);
-
-      if (longint(inode) < 0) then
-      {* namei() returned an error code, not a valid pointer.
-       * It means that the file hasn't been found and that wa have to
-       * create it (not implemented) *}
       begin
-         printk('VFS (open): no inode returned by namei()\n', []);
-	 kfree_s(fichier, sizeof(file_t));
-	 result := longint(inode);
+	 printk('sys_open: not enough memory to open %s\n', [path]);
+	 result := -ENOMEM;
 	 exit;
       end;
 
-      {$IFDEF DEBUG}
-         printk('open(): %c%s has inode number %d\n', [path[0], path, inode^.ino]);
+      {$IFDEF DEBUG_SYS_OPEN}
+         printk('sys_open (%d): going to call namei(path)...', [current^.pid]);
       {$ENDIF}
 
-      if not (access_rights_ok(flags, inode)) then
-         begin
-	    printk('VFS (open): permission denied\n', []);
+      inode := namei(path);
+
+      {$IFDEF DEBUG_SYS_OPEN}
+         printk('   OK\n', []);
+      {$ENDIF}
+
+      if (longint(inode) < 0) then
+      {* namei() returned an error code, not a valid pointer.
+       * It means that the file hasn't been found and that we have to
+       * create it *}
+      begin
+         {$IFDEF OPEN_WARNING}
+            printk('sys_open (%d): no inode returned by namei (%d)\n', [current^.pid, inode]);
+	 {$ENDIF}
+	 {$IFDEF DEBUG_SYS_OPEN}
+	    printk('sys_open (%d): no inode returned by namei (%d)\n', [current^.pid, inode]);
+	 {$ENDIF}
+	 if (flags and O_CREAT) = O_CREAT then
+	 begin
+	    inode := create_file(path, fd, flags, mode);
+	    if (longint(inode) <> 0) then
+	    begin
+	       kfree_s(fichier, sizeof(file_t));
+	       result := longint(inode);
+	       exit;
+	    end;
+	 end
+	 else
+	 begin
 	    kfree_s(fichier, sizeof(file_t));
-	    kfree_s(inode, sizeof(inode_t));
-	    result := -EACCES;
+	    result := longint(inode);
 	    exit;
 	 end;
+      end;
+
+      {$IFDEF DEBUG_SYS_OPEN}
+         printk('sys_open: %s has inode number %d (flags=%h)\n', [path, inode^.ino, flags]);
+      {$ENDIF}
+
+      { Check if "inode" is not a directory }
+{      if IS_DIR(inode) and ((flags and O_DIRECTORY) <> O_DIRECTORY) then
+      begin
+         printk('sys_open: trying to open a directory without O_DIRECTORY flag\n', []);
+         kfree_s(fichier, sizeof(file_t));
+	 free_inode(inode);
+         result := -EISDIR;
+	 exit;
+      end;}
+
+      if not (access_rights_ok(flags, inode)) then
+      begin
+	 printk('sys_open: permission denied\n', []);
+	 kfree_s(fichier, sizeof(file_t));
+	 free_inode(inode);
+	 result := -EACCES;
+	 exit;
+      end;
 
       { Access rights are ok, we fill 'fichier' }
       fichier^.inode := inode;
+      fichier^.count := 1;
       fichier^.pos   := 0;
       fichier^.uid   := current^.uid;
       fichier^.gid   := current^.gid;
-      fichier^.mode  := flags;
+      fichier^.mode  := 0;   { FIXME: don't know what to put here (when you don't create the file) }
+      fichier^.flags := flags;
       fichier^.op    := inode^.op^.default_file_ops;
       
       { Can we call file-specific open() function ? }
@@ -340,15 +217,19 @@ begin
            fichier^.op^.open(inode, fichier);
 
       current^.file_desc[fd] := fichier;
+      
+      if (fd = 1) and (inode^.rdev_maj = 4) then   { FIXME: do this in drivers/char/tty.pp }
+          current^.tty := inode^.rdev_min;
+      
       result := fd;  { OK, stop here (that was not funny) }
-      {$IFDEF DEBUG}
-         printk('VFS (open): fd %d is opened (%c%s)\n', [fd, path[0], path]);
+      {$IFDEF DEBUG_SYS_OPEN}
+         printk('sys_open (%d): fd %d (%h) is opened (%s)\n', [current^.pid, fd, current^.file_desc[fd], path]);
       {$ENDIF}
    end
    else
    { No more free file descriptors }
    begin
-      printk('VFS: cannot open %c%s (no file descriptor)\n', [path[0], path]);
+      printk('sys_open: cannot open %s (no file descriptor)\n', [path]);
       result := -EMFILE;
    end;
 
@@ -357,40 +238,242 @@ end;
 
 
 {******************************************************************************
- * dup
+ * sys_close
  *
- * Duplicates an open file descriptor
  *****************************************************************************}
-function sys_dup (fildes : dword) : dword; cdecl; [public, alias : 'SYS_DUP'];
+function sys_close (fd : dword) : dword; cdecl; [public, alias : 'SYS_CLOSE'];
 
 var
-   fd : dword;
+   fichier : P_file_t;
 
 begin
 
-   { Look for a free file descriptor }
-   fd := 0;
-   while (current^.file_desc[fd] <> NIL) and (fd < OPEN_MAX) do
-          fd += 1;
+   {$IFDEF DEBUG_SYS_CLOSE}
+      printk('sys_close (%d): fd=%d (%h) ', [current^.pid, fd, current^.file_desc[fd]]);
+   {$ENDIF}
 
-   if (current^.file_desc[fd] = NIL) then
-       { There is at least one free file descriptor }
-       begin
-          {$IFDEF DEBUG}
-	     printk('dup: %d->%d\n', [fildes, fd]);
-	  {$ENDIF}
-          current^.file_desc[fd] := current^.file_desc[fildes];
-	  result := fd;
-       end
-   else
-       begin
-          printk('dup: file descrptor is too big (%d)\n', [fildes]);
-	  result := -1;
-       end;
+   asm
+      sti
+   end;
+
+   fichier := current^.file_desc[fd];
+
+   if ((fichier = NIL) or (fd >= OPEN_MAX)) then
+   begin
+      {$IFDEF DEBUG_SYS_CLOSE}
+         printk('\nsys_close: fd #%d is not opened. Can''t close it  :-)\n', [fd]);
+      {$ENDIF}
+      result := -EBADF;
+      exit;
+   end;
+
+   {$IFDEF DEBUG_SYS_CLOSE}
+      printk(' f_count: %d  i_count: %d\n', [fichier^.count, fichier^.inode^.count]);
+   {$ENDIF}
+
+   free_inode(fichier^.inode);
+
+   fichier^.count -= 1;
+
+   if (fichier^.count = 0) then
+   begin
+      {$IFDEF DEBUG_SYS_CLOSE}
+         printk('sys_close (%d): freeing fichier\n', [current^.pid]);
+      {$ENDIF}
+      if ((fichier^.op <> NIL) and (fichier^.op^.close <> NIL)) then
+      begin
+	 {$IFDEF DEBUG_SYS_CLOSE}
+	    printk('sys_close (%d): calling specific close() function\n', [current^.pid]);
+	 {$ENDIF}
+         result := fichier^.op^.close(fichier);
+      end
+      else
+      begin
+         {$IFDEF DEBUG_SYS_CLOSE}
+	    printk('sys_close (%d): ''close'' operation is not defined for fd #%d.\n', [current^.pid, fd]);
+	 {$ENDIF}
+	 result := 0;
+      end;
+      kfree_s(fichier, sizeof(file_t));
+   end;
+
+   current^.file_desc[fd] := NIL;
+
+   if (fd = 1) then   { FIXME: do this in drcivers/char/tty.pp }
+       current^.tty := $FF;
 
 end;
 
 
 
+{******************************************************************************
+ * sys_utime
+ *
+ * FIXME: does nothing   :-)
+ *****************************************************************************}
+function sys_utime (path : pchar ; times : P_utimbuf) : dword; cdecl; [public, alias : 'SYS_UTIME'];
 begin
+
+   printk('Welcome in sys_utime: %c%s  %h\n', [path[0], path, times]);
+
+   result := -ENOTSUP;
+
+end;
+
+
+
+{******************************************************************************
+ * sys_chdir
+ *
+ *****************************************************************************}
+function sys_chdir (filename : pchar) : dword; cdecl; [public, alias : 'SYS_CHDIR'];
+
+var
+   inode : P_inode_t;
+
+begin
+
+   asm
+      sti
+   end;
+
+   inode := namei(filename);
+
+   if (longint(inode) < 0) then
+   {* namei() returned an error code, not a valid pointer.
+    * It means that the directory hasn't been found. *}
+   begin
+      {$IFDEF CHDIR_WARNING}
+         printk('VFS (chdir): no inode returned by namei()\n', []);
+      {$ENDIF}
+      result := -ENOENT;
+      exit;
+   end;
+
+   if not IS_DIR(inode) then
+   begin
+      free_inode(inode);
+      result := -ENOTDIR;
+   end;
+
+   free_inode(current^.pwd);
+   current^.pwd := inode;
+
+   {FIXME: We have to update current^.cwd}
+
+   result := 0;
+
+end;
+
+
+
+{******************************************************************************
+ * sys_fchdir
+ *
+ *****************************************************************************}
+function sys_fchdir (fd : dword) : dword; cdecl; [public, alias : 'SYS_FCHDIR'];
+begin
+
+   asm
+      sti
+   end;
+
+   if (fd >= OPEN_MAX) or (current^.file_desc[fd] = NIL) then
+   begin
+      printk('sys_fchdir: fd %d is not a valid fd\n', [fd]);
+      result := -EBADF;
+      exit;
+   end;
+
+   if (not IS_DIR(current^.file_desc[fd]^.inode)) then
+   begin
+      printk('sys_fchdir: fd %d is not a directory\n', [fd]);
+      result := -ENOTDIR;
+      exit;
+   end;
+
+   if (current^.pwd <> current^.root) then
+       free_inode(current^.pwd);
+
+   current^.pwd := current^.file_desc[fd]^.inode;
+
+   {FIXME: il faut updater current^.cwd}
+
+   result := 0;
+
+end;
+
+
+
+{******************************************************************************
+ * sys_access
+ *
+ * FIXME: sys_access always succeed if the file exists.
+ *****************************************************************************}
+function sys_access (filename : pchar ; mode : dword) : dword; cdecl; [public, alias : 'SYS_ACCESS'];
+
+var
+   inode : P_inode_t;
+
+begin
+
+   {$IFDEF DEBUG_ACCESS}
+      printk('Welcome in sys_access (%s, %h)\n', [filename, mode]);
+   {$ENDIF}
+
+   asm
+     sti
+   end;
+
+   if (mode and (not 7)) <> 0 then
+   begin
+      result := -EINVAL;
+      exit;
+   end;
+
+   inode := namei(filename);
+
+   if (longint(inode) < 0) then
+   {* namei() returned an error code, not a valid pointer.
+    * It means that the file hasn't been found and that we have to
+    * create it (FIXME: not implemented) *}
+   begin
+      {$IFDEF DEBUG_ACCESS}
+         printk('sys_access: no inode returned by namei()\n', []);
+      {$ENDIF}
+      result := longint(inode);
+      exit;
+   end;
+
+   {$IFDEF ACCESS_WARNING}
+      printk('WARNING: sys_access %s (mode=%h)\n', [filename, mode]);
+   {$ENDIF}
+
+   free_inode(inode);
+
+   result := 0;
+
+end;
+
+
+
+{******************************************************************************
+ * create_file
+ *
+ * This function is called by sys_open() when a file does not exist and the
+ * O_CREATE flag is set.
+ *
+ * Output : pointer to the newly created inode or an error code
+ *****************************************************************************}
+function create_file (path : pchar ; fd, flags, mode : dword) : P_inode_t;
+begin
+
+   printk('create_file (%d): %s (fd=%d, flags=%h, mode=%h\n', [current^.pid, path, fd, flags, mode]);
+
+   result := -EPERM;
+
+end;
+
+
+
 end.

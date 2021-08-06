@@ -34,24 +34,31 @@ INTERFACE
 
 {$I fs.inc}
 {$I process.inc}
+{$I sched.inc}
 
 
 procedure disable_IRQ (irq : byte); external;
 function  get_free_mem : dword; external;
 function  get_total_mem : dword; external;
 procedure printk (format : string ; args : array of const); external;
-procedure putc (car : char ; tty : byte); external;
+procedure putc (car : char ; ontty : byte); external;
 procedure putchar (car : char); external;
+procedure schedule; external;
 
 
 var
-   chrdevs     : array[0..MAX_NR_CHAR_DEV] of device_struct; external name 'U_VFS_CHRDEVS';
-   blkdevs     : array[0..MAX_NR_BLOCK_DEV] of device_struct; external name 'U_VFS_BLKDEVS';
-   current_tty : byte; external name 'U_TTY__CURRENT_TTY';
-   first_task  : P_task_struct; external name 'U_PROCESS_FIRST_TASK';
-   current     : P_task_struct; external name 'U_PROCESS_CURRENT';
-   nr_tasks    : dword; external name 'U_PROCESS_NR_TASKS';
-   nr_running  : dword; external name 'U_PROCESS_NR_RUNNING';
+   chrdevs        : array[0..MAX_NR_CHAR_DEV] of device_struct; external name 'U_VFS_CHRDEVS';
+   blkdevs        : array[0..MAX_NR_BLOCK_DEV] of device_struct; external name 'U_VFS_BLKDEVS';
+   current_tty    : byte; external name 'U_TTY__CURRENT_TTY';
+   first_task     : P_task_struct; external name 'U_PROCESS_FIRST_TASK';
+   current        : P_task_struct; external name 'U_PROCESS_CURRENT';
+   nr_tasks       : dword; external name 'U_PROCESS_NR_TASKS';
+   nr_buffer      : dword; external name 'U_BUFFER_NR_BUFFER_HEAD';
+   nr_running     : dword; external name 'U_PROCESS_NR_RUNNING';
+   shared_pages   : dword; external name 'U_MEM_SHARED_PAGES';
+   ide_hd_nb_intr : dword; external name 'U_IDE_HD_IDE_HD_NB_INTR';
+   ide_hd_nb_sect : dword; external name 'U_IDE_HD_IDE_HD_NB_SECT';
+   lookup_cache_entries : dword; external name 'U__NAMEI_LOOKUP_CACHE_ENTRIES';
 
 
 
@@ -61,6 +68,8 @@ procedure dump_mem;
 procedure dump_task;
 procedure panic (reason : string);
 procedure print_byte (nb : byte);
+procedure print_byte_s (nb : byte);
+procedure print_port (nb : word);
 procedure print_word (nb : word);
 procedure print_dword (nb : dword);
 procedure print_dec_byte (nb : byte);
@@ -178,6 +187,44 @@ end;
 
 
 {******************************************************************************
+ * print_port
+ *
+ * Print a I/O port in hexa (3 digits)
+ *****************************************************************************}
+procedure print_port (nb : word); [public, alias : 'PRINT_PORT'];
+
+var
+   car : char;
+   i, decalage, tmp : byte;
+
+begin
+
+   putchar('0');putchar('x');
+
+   for i := 2 downto 0 do
+
+   begin
+
+      decalage := i*4;
+
+      asm
+         mov   ax , nb
+         mov   cl , decalage
+	 shr   ax , cl
+	 and   al , 0Fh
+	 mov   tmp, al
+      end;
+
+      car := hex_char[tmp];
+
+      putc(car, current_tty);
+
+   end;
+end;
+
+
+
+{******************************************************************************
  * print_byte
  *
  * Print a byte in hexa
@@ -192,11 +239,47 @@ begin
 
    putchar('0'); putchar('x');
 
-   for i:=1 downto 0 do
+   for i := 1 downto 0 do
 
    begin
 
-      decalage := i*4;
+      decalage := i * 4;
+
+      asm
+         mov   al , nb
+         mov   cl , decalage
+	 shr   al , cl
+	 and   al , 0Fh
+	 mov   tmp, al
+      end;
+
+      car := hex_char[tmp];
+
+      putc(car, current_tty);
+
+   end;
+end;
+
+
+
+{******************************************************************************
+ * print_byte
+ *
+ * Print a byte in hexa (without printing '0x')
+ *****************************************************************************}
+procedure print_byte_s (nb : byte); [public, alias : 'PRINT_BYTE_S'];
+
+var
+   car : char;
+   i, decalage, tmp : byte;
+
+begin
+
+   for i := 1 downto 0 do
+
+   begin
+
+      decalage := i * 4;
 
       asm
          mov   al , nb
@@ -271,10 +354,8 @@ begin
                dec_str[0] := chr(10);
             end;
 
-         for i:=1 to ord(dec_str[0]) do
-            begin
-               putchar(dec_str[i]);
-            end;
+         for i := 1 to ord(dec_str[0]) do
+             putchar(dec_str[i]);
       end;
 end;
 
@@ -423,33 +504,60 @@ end;
 procedure dump_task; [public, alias : 'DUMP_TASK'];
 var
    task, first : P_task_struct;
+   toto, save  : P_mmap_req;
+   i : dword;
 
 begin
+
+   asm
+      pushfd
+      cli
+   end;
 
    printk('Running tasks: %d/%d\n', [nr_running, nr_tasks]);
 
    printk('Current: TSS=%h4  PID=%d\n', [current^.tss_entry, current^.pid]);
 
-   printk('\n  PID TSS   TTY   MEM  STATE  TIME\n',[]);
+   printk('\n  PID PPID TSS   TTY   PAGES     BRK      STATE    TIME\n',[]);
 
    task  := first_task;
    first := first_task;
 
    repeat
-      printk('  %d   %h2   %d      %d', [task^.pid, task^.tss_entry, task^.tty, task^.size]);
+      i := 0;
+      printk('  %d    %d   %h2   %d      %d   %h  ',
+             [task^.pid, task^.ppid, task^.tss_entry, task^.tty, task^.size, task^.brk]);
+	      
       case (task^.state) of
-         $1: printk('    R', []);
-	 $2: printk('    S', []);
-	 $3: printk('    S', []);
-	 $4: printk('    s', []);
-	 $5: printk('    Z', []);
+         TASK_RUNNING:         printk('    R', []);
+	 TASK_INTERRUPTIBLE:   printk('    S', []);
+	 TASK_UNINTERRUPTIBLE: printk('    SU', []);
+	 TASK_STOPPED:         printk('    s', []);
+	 TASK_ZOMBIE:          printk('    Z', []);
       end;
-      printk('    %d', [task^.ticks]);
-      printk('\n', []);
+      printk('      %d\n', [task^.ticks]);
+
+
+{      toto := task^.mmap;
+      save := toto;
+      if (save <> NIL) then
+      begin
+         repeat
+            {printk('%h -> %h -> %h\n', [toto^.prev^.addr, toto^.addr, toto^.next^.addr]);}
+	    i += 1;
+	    toto := toto^.next;
+         until (toto = save);
+      end;
+
+      printk('  %d mmap requests\n\n', [i]);		}
       task := task^.next_task;
    until (task = first);
 
    printk('\n', []);
+
+   asm
+      popfd
+   end;
 
 end;
 
@@ -463,7 +571,21 @@ end;
  ******************************************************************************}
 procedure dump_mem;  [public, alias : 'DUMP_MEM'];
 begin
- printk('\nMemory: %dk/%dk\n',[get_free_mem div 1024, get_total_mem div 1024]);
+
+   asm
+      pushfd
+      cli
+   end;
+
+   printk('Memory: %dk/%dk - ',[get_free_mem div 1024, get_total_mem div 1024]);
+   printk('%d shared pages (%d bytes)\n', [shared_pages, shared_pages * 4096]);
+   printk('ide-hd: %d sectors read in %d times (%d buffers)\n',
+          [ide_hd_nb_sect, ide_hd_nb_intr, nr_buffer]);
+   printk('%d entries used in lookup_cache\n\n', [lookup_cache_entries]);
+   asm
+      popfd
+   end;
+
 end;
 
 
@@ -479,21 +601,27 @@ var
    i : dword;
 
 begin
+
+   asm
+      pushfd
+      cli
+   end;
+
    printk('\n- Char Devices:\n',[]);
    for i := 0 to MAX_NR_CHAR_DEV do
       if chrdevs[i].name<>'' then
          begin
-            printk('   %d : %s ( ',[i,chrdevs[i].name]);
+            printk('   %d : %s ( ',[i, @chrdevs[i].name[1]]);
             if chrdevs[i].fops^.open <> NIL then
-               printk('Open ',[]);
+               printk('open ',[]);
             if chrdevs[i].fops^.read <> NIL then
-               printk('Read ',[]);
+               printk('read ',[]);
             if chrdevs[i].fops^.write <> NIL then
-               printk('Write ',[]);
+               printk('write ',[]);
             if chrdevs[i].fops^.seek <> NIL then
-               printk('Seek ',[]);
+               printk('seek ',[]);
             if chrdevs[i].fops^.ioctl <> NIL then
-               printk('Ioctl ',[]);
+               printk('ioctl ',[]);
             printk(')\n',[]);
          end;
 
@@ -501,21 +629,25 @@ begin
    for i := 0 to MAX_NR_BLOCK_DEV do
       if blkdevs[i].name<>'' then
          begin
-            printk('   %d : %s ( ',[i,blkdevs[i].name]);
+            printk('   %d : %s ( ',[i, @blkdevs[i].name[1]]);
             if blkdevs[i].fops^.open <> NIL then
-               printk('Open ',[]);
+               printk('open ',[]);
             if blkdevs[i].fops^.read <> NIL then
-               printk('Read ',[]);
+               printk('read ',[]);
             if blkdevs[i].fops^.write <> NIL then
-               printk('Write ',[]);
+               printk('write ',[]);
             if blkdevs[i].fops^.seek <> NIL then
-               printk('Seek ',[]);
+               printk('seek ',[]);
             if blkdevs[i].fops^.ioctl <> NIL then
-               printk('Ioctl ',[]);
+               printk('ioctl ',[]);
             printk(')\n',[]);
          end;
 
    printk('\n', []);
+
+   asm
+      popfd
+   end;
 
 end;
 
@@ -532,11 +664,15 @@ begin
    asm
       cli
    end;
-   printk('\nSystem halted (%s)', [reason]);
-   disable_IRQ(0);
+   printk('\nSystem halted (%s)', [@reason[1]]);
+   disable_IRQ(0);   { Stop timer }
    asm
       sti
       @stop:
+         nop
+	 nop
+	 nop
+	 nop
          hlt
       jmp @stop
    end;

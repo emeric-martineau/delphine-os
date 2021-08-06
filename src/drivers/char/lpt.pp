@@ -56,12 +56,10 @@ begin
 
    memcpy($408,addr(lpt_IO),4);
 
-   for i:=1 to 2 do
+   for i := 1 to 2 do
    begin
-       if (lpt_IO[i] <> 0)
-       then begin
-           printk('lpt%d at %h4\n', [i, lpt_IO[i]]);
-       end; { -> if }
+      if (lpt_IO[i] <> 0) then
+          printk('lpt%d at %h3\n', [i, lpt_IO[i]]);
    end; { -> for }
 end; { -> procedure }
 

@@ -1,0 +1,56 @@
+
+   - Synchronisation du noyau (revoir le scheduler)
+
+   - Sémaphores
+
+   - Meilleure gestion des signaux (j'ai commencé mais c'est un peu nawak
+     pour l'instant).
+
+   - Vérifier plus souvent si il y a des signaux recus (pour l'instant, on
+     effectue cette vérification quand on appelle le scheduler mais il
+     faudrait vérifier à chaque passage du mode noyau au mode utilisateur
+     (notamment après chaque interruption, exception ou appel système)
+
+   - Complèter le gestionnaire du clavier (clavier américain, Ctrl-C,
+     Ctrl-Z, ...)
+
+   - Revoir sys_chdir() (pour updater current^.cwd)
+
+   - Revoir sys_exec() pour faire de la pagination à la demande. (on ne charge
+     pas toutes les pages d'un nouveau processus d'un seul coup, on laisse
+     l'exception 14 s'en charger)
+
+   - Simplifier sys_exec() (faire plus de fonctions)
+
+   - Ouverture/fermeture de lecteurs de CD-ROM avec les touches F9, F10, ...
+
+   - Démarrer DelphineOS avec GRUB
+
+   - Gestion du périphérique TTYAUX_MAJOR (terminal de controle)
+
+   - Leds du clavier
+
+   - Vérifier le fonctionnement du flag close_on_exec.
+
+   - Utiliser page_align (mm/mem.pp) le plus possible
+
+*  - Ecrire un programme pour tester les fonctions mmap(), munmap() et mremap()
+
+   - Ecrire un programme pour tester les signaux (sigsuspend(), ...)
+
+   - Ecrire un programme pour la création/l'écriture de fichiers
+
+   - Ecrire une fonction pour vérifier que les adresses passer aux appels
+     système sont dans l'espace d'adressage du processus
+
+*  - Vérifier chaque appel à get_free_page(). (Les données dans les pages
+     allouées sont aléatoires)
+
+   - Faire gaffe au champ "count" pour les objets inode_t et file_t (open,
+     close, fork, exec, exit, ...)
+
+   - Essayer de ne pas définir le symbole USE_MEMSET dans mem.pp
+
+   - Problème avec le return -1 : "tty_ioctl : unknown request (0x5403)"
+
+   - Mettre en place des locks sur les objets fichiers.

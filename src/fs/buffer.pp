@@ -36,21 +36,35 @@ INTERFACE
 {$I process.inc}
 
 {DEFINE DEBUG}
+{DEFINE DEBUG_BREAD}
+{DEFINE DEBUG_WAIT_ON_BUFFER}
 
 
-procedure printk (format : string ; args : array of const); external;
-procedure ll_rw_block (rw : dword ; bh : P_buffer_head); external;
-procedure sleep_on (p : PP_wait_queue); external;
-procedure wake_up (p : PP_wait_queue); external;
-procedure panic (reason : string); external;
+procedure interruptible_sleep_on (p : PP_wait_queue); external;
 procedure kfree_s (adr : pointer ; size : dword); external;
 function  kmalloc (len : dword) : pointer; external;
+procedure ll_rw_block (rw : dword ; bh : P_buffer_head); external;
+procedure panic (reason : string); external;
+procedure printk (format : string ; args : array of const); external;
 
+
+function  bread (major, minor : byte ; block, size : dword) : P_buffer_head;
+function  buffer_dirty (bh : P_buffer_head) : boolean;
+function  buffer_lock (bh : P_buffer_head) : boolean;
+function  buffer_req (bh : P_buffer_head) : boolean;
+function  buffer_uptodate (bh : P_buffer_head) : boolean;
+function  find_buffer (major, minor : byte ; block, size : dword) : P_buffer_head;
+function  getblk (major, minor : byte ; block, size : dword) : P_buffer_head;
+procedure insert_buffer_head (bh : P_buffer_head);
+procedure wait_on_buffer (bh : P_buffer_head);
 
 
 var
+   current : P_task_struct; external name 'U_PROCESS_CURRENT';
+
    buffer_head_list : array [1..1024] of P_buffer_head;
    nr_buffer_head   : dword;
+
 
 
 IMPLEMENTATION
@@ -140,8 +154,8 @@ end;
  *
  * Insert bh in buffer_head_list
  *
- * FIXME: For the moment, we can only insert 1024 buffer. It could be great if
- *        we used a hash table
+ * FIXME: For the moment, we can only insert 1024 buffers. It could be great if
+ *        we used a hash table.
  *****************************************************************************}
 procedure insert_buffer_head (bh : P_buffer_head);
 
@@ -152,19 +166,11 @@ begin
 
    i := 1;
 
-   asm
-      pushfd
-      cli   { Section critique }
-   end;
-
    if (nr_buffer_head = 1024) then
-      begin
-         asm
-	    popfd   { Fin section critique }
-	 end;
-         printk('VFS: buffer_head_list is full !!!', []);
-	 panic('');
-      end;
+   begin
+      printk('VFS: buffer_head_list is full !!!', []);
+      panic('');
+   end;
 
    while ((buffer_head_list[i] <> NIL) and (i <= 1024)) do
            i := i + 1;
@@ -174,9 +180,6 @@ begin
    {$ENDIF}
    buffer_head_list[i] := bh;
    nr_buffer_head += 1;
-   asm
-      popfd   { Fin section critique }
-   end;
 
 end;
 
@@ -201,39 +204,35 @@ end;
 function find_buffer (major, minor : byte ; block, size : dword) : P_buffer_head;
 
 var
-   i   : dword;
+   i, i_max : dword;
    tmp : P_buffer_head;
 
 begin
 
    result := NIL;
-
-   asm
-      pushfd
-      cli   { Section critique }
-   end;
+   i_max  := nr_buffer_head;
 
    for i := 1 to 1024 do
+   begin
+      tmp := buffer_head_list[i];
+      if (tmp <> NIL) then
       begin
-         tmp := buffer_head_list[i];
-         if (tmp <> NIL) then
-	    begin
-	       if (tmp^.major = major) and (tmp^.minor = minor) and 
-	          (tmp^.blocknr = block) and (tmp^.size = size) then
-	          begin
-	             result := tmp;
-		     {$IFDEF DEBUG}
-		        printk('find_buffer: buffer found at position %d\n', [i]);
-		     {$ENDIF}
-		     exit;
-		  end;
-	    end;
+         if (tmp^.major = major) and (tmp^.minor = minor) and 
+            (tmp^.blocknr = block) and (tmp^.size = size) then
+	 begin
+	    result := tmp;
+	    {$IFDEF DEBUG}
+	       printk('find_buffer: buffer found at position %d\n', [i]);
+	    {$ENDIF}
+	    exit;
+         end
+	 else
+	 begin
+	    i_max -= 1;
+	    if (longint(i_max) <= 0) then break;
+	 end;
       end;
-
-   asm
-      popfd   { Fin section critique }
    end;
-
 end;
 
 
@@ -254,36 +253,36 @@ begin
    tmp := find_buffer(major, minor, block, size);
 
    if (tmp <> NIL) then
-      begin
-          {$IFDEF DEBUG}
-	     printk('getblk: Buffer found in cache (%h)\n', [tmp]);
-	  {$ENDIF}
-          result := tmp;
-	  exit;
-      end
+   begin
+      {$IFDEF DEBUG}
+         printk('getblk: Buffer found in cache (%h)\n', [tmp]);
+      {$ENDIF}
+      result := tmp;
+      exit;
+   end
    else
+   begin
+      {$IFDEF DEBUG}
+         printk('getblk: buffer not found in cache\n', []);
+      {$ENDIF}
+      tmp := kmalloc(sizeof(buffer_head));
+      tmp^.blocknr := block;
+      tmp^.size    := size;
+      tmp^.major   := major;
+      tmp^.minor   := minor;
+      tmp^.state   := 0;
+      tmp^.rsector := 0;
+      tmp^.data    := kmalloc(size);
+      if ((tmp = NIL) or (tmp^.data = NIL)) then
       begin
-         {$IFDEF DEBUG}
-	    printk('getblk: buffer not found in cache\n', []);
-	 {$ENDIF}
-         tmp := kmalloc(sizeof(buffer_head));
-	 tmp^.blocknr := block;
-	 tmp^.size    := size;
-	 tmp^.major   := major;
-	 tmp^.minor   := minor;
-	 tmp^.state   := 0;
-	 tmp^.rsector := 0;
-	 tmp^.data    := kmalloc(size);
-	 if ((tmp = NIL) or (tmp^.data = NIL)) then
-	    begin
-	       printk('getblk: not enough memory for buffer !!!\n', []);
-	       result := NIL;
-	       exit;
-	    end;
-	 tmp^.wait    := NIL;
-         insert_buffer_head(tmp);
-	 result := tmp;
+         printk('getblk (%d): not enough memory for buffer !!!\n', [current^.pid]);
+         result := NIL;
+         exit;
       end;
+      tmp^.wait := NIL;
+      insert_buffer_head(tmp);
+      result := tmp;
+   end;
 end;
 
 
@@ -295,18 +294,26 @@ end;
 procedure wait_on_buffer (bh : P_buffer_head);
 begin
 
-   {$IFDEF DEBUG}
-      printk('wait_on_buffer: buffer state=%d (BH_Lock=%d)\n', [bh^.state, BH_Lock]);
-   {$ENDIF}
    asm
-      pushfd
       cli
    end;
+
+   {$IFDEF DEBUG_WAIT_ON_BUFFER}
+      printk('wait_on_buffer (%d): buffer state=%d (BH_Lock=%d)\n', [current^.pid, bh^.state, BH_Lock]);
+   {$ENDIF}
+
    while (bh^.state and BH_Lock) = BH_Lock do
-          sleep_on(@bh^.wait);
-   asm
-      popfd
+   begin
+      interruptible_sleep_on(@bh^.wait);
+      {$IFDEF DEBUG_WAIT_ON_BUFFER}
+         printk('wait_on_buffer (%d): buffer still locked\n', [current^.pid]);
+      {$ENDIF}
    end;
+
+   asm
+      sti
+   end;
+
 end;
 
 
@@ -349,42 +356,42 @@ begin
       sti
    end;
 
-   {$IFDEF DEBUG}
-      printk('bread: dev %d:%d block %d size %d\n', [major, minor, block, size]);
+   {$IFDEF DEBUG_BREAD}
+      printk('bread (%d): dev %d:%d block %d size %d\n', [current^.pid, major, minor, block, size]);
    {$ENDIF}
 
    bh := getblk(major, minor, block, size);
 
    if (bh = NIL) then
-      begin
-         printk('bread: getblk returned NIL\n', []);
-	 result := NIL;
-	 exit;
-      end;
+   begin
+      printk('bread (%d): getblk returned NIL\n', [current^.pid]);
+      result := NIL;
+      exit;
+   end;
 
    if buffer_uptodate(bh) then
-      begin
-         {$IFDEF DEBUG}
-	    printk('bread: Buffer is uptodate\n', []);
-	 {$ENDIF}
-         result := bh;
-      end
+   begin
+      {$IFDEF DEBUG_BREAD}
+         printk('bread (%d): Buffer is uptodate\n', [current^.pid]);
+      {$ENDIF}
+      result := bh;
+   end
    else
-      begin
-         {$IFDEF DEBUG}
-	    printk('bread: going to read block (%d) -> %h\n', [bh^.blocknr, bh^.data]);
-	 {$ENDIF}
-         ll_rw_block(READ, bh);
-         wait_on_buffer(bh);
+   begin
+      {$IFDEF DEBUG_BREAD}
+         printk('bread (%d): going to read block (%d) -> %h\n', [current^.pid, bh^.blocknr, bh^.data]);
+      {$ENDIF}
+      ll_rw_block(READ, bh);
+      wait_on_buffer(bh);
 
-	 if (buffer_uptodate(bh)) then
-             result := bh
-	 else
-             result := NIL;
-      end;
+      if (buffer_uptodate(bh)) then
+          result := bh
+      else
+          result := NIL;
+   end;
 
-   {$IFDEF DEBUG}
-      printk('bread: exiting\n', []);
+   {$IFDEF DEBUG_BREAD}
+      printk('bread (%d): exiting\n', [current^.pid]);
    {$ENDIF}
 
 end;

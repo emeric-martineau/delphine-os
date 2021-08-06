@@ -32,7 +32,9 @@ unit ext2_super;
 INTERFACE
 
 
+{DEFINE DEBUG_EXT2_READ_SUPER}
 {DEFINE DEBUG}
+{DEFINE REVISION_WARNING}
 
 
 {$I buffer.inc}
@@ -40,13 +42,16 @@ INTERFACE
 {$I fs.inc}
 
 
-procedure register_filesystem (fs : P_file_system_type); external;
-procedure printk (format : string ; args : array of const); external;
+function  bread (major, minor : byte ; block, size : dword) : P_buffer_head; external;
 function  ext2_file_read (fichier : P_file_t ; buffer : pointer ; count : dword) : dword; external;
-function  ext2_lookup (dir : P_inode_t ; name : pchar ; len : dword ; res_inode : P_inode_t) : boolean; external;
+function  ext2_lookup (dir : P_inode_t ; name : pchar ; len : dword ; res_inode : PP_inode_t) : boolean; external;
+function  ext2_readdir (fichier : P_file_t ; buffer : pointer ; count : dword) : dword; external;
 procedure ext2_read_inode (inode : P_inode_t); external;
 function  kmalloc (len : dword) : pointer; external;
-function  bread (major, minor : byte ; block, size : dword) : P_buffer_head; external;
+procedure memset (adr : pointer ; c : byte ; size : dword); external;
+procedure printk (format : string ; args : array of const); external;
+procedure register_filesystem (fs : P_file_system_type); external;
+
 
 
 var
@@ -100,101 +105,114 @@ begin
    minor := sb^.dev_minor;
    logic_sb_block := 1;
 
+   {$IFDEF DEBUG_EXT2_READ_SUPER}
+      printk('ext2_read_super: calling bread()...   ', []);
+   {$ENDIF}
+
    bh := bread(major, minor, logic_sb_block, 1024);
 
+   {$IFDEF DEBUG_EXT2_READ_SUPER}
+      printk('OK\n', []);
+   {$ENDIF}
+
    if (bh = NIL) then
+   begin
+      printk('EXT2-fs: unable to read superblock\n', []);
+      result := NIL;
+      exit;
+   end
+   else
+   begin
+      super := bh^.data;
+      { Check if superblock is valid }
+      if (super^.magic <> $EF53) then
       begin
-         printk('EXT2-fs: unable to read superblock\n', []);
+         printk('EXT2-fs: bad magic number on superbloc (%h4)\n', [super^.magic]);
+         result := NIL;
+	 exit;
+      end
+      else if (super^.log_block_size > 2) then
+      begin
+	 printk('EXT2-fs: logical block size is invalid (%d)\n', [super^.log_block_size]);
 	 result := NIL;
 	 exit;
       end
-   else
+      else if (super^.free_blocks_count > super^.blocks_count) then
       begin
-         super := bh^.data;
-	 { Check if superblock is valid }
-         if (super^.magic <> $EF53) then
-	     begin
-	        printk('EXT2-fs: bad magic number on superbloc (%h4) !!!\n', [super^.magic]);
-	        result := NIL;
-		exit;
-	     end
-	 else if (super^.log_block_size > 2) then
-	     begin
-	        printk('EXT2-fs: logical block size is invalid (%d) !!!\n', [super^.log_block_size]);
-	        result := NIL;
-		exit;
-	     end
-	 else if (super^.free_blocks_count > super^.blocks_count) then
-	     begin
-	        printk('EXT2-fs: free blocks count > blocks count !!!\n', []);
-		result := NIL;
-		exit;
-	     end
-	 else
-	     {* Superblock seems to be valid, we are going to fill sb (passed
-	      * as parameter) *}
-	      
-	     if (super^.rev_level > 0) then
-	         printk('EXT2-fs: superblock has revision level > 0 (%d), I may not read it correctly !!!\n', [super^.rev_level]);
+         printk('EXT2-fs: free blocks count > blocks count\n', []);
+	 result := NIL;
+	 exit;
+      end
+      else
+	 {* Superblock seems to be valid, we are going to fill sb (passed
+	  * as parameter) *}
 
-	     case (super^.log_block_size) of
-	        0: blk_size := 1024;
-		1: blk_size := 2048;
-		2: blk_size := 4096;
-	     end;
+	 {$IFDEF REVISION_WARNING}
+	    if (super^.rev_level > 0) then
+	        printk('WARNING: EXT2-fs: superblock has revision level > 0 (%d)\n', [super^.rev_level]);
+	 {$ENDIF}
 
-	     logic_sb_block := super^.first_data_block;
-	     sb^.dirty := 0;
-	     sb^.blocksize := blk_size;
-	     sb^.fs_type := @ext2_fs_type;
+	 if (super^.state and EXT2_ERROR_FS) = EXT2_ERROR_FS then
+	     printk('EXT2-fs: not cleanly unmounted (dev %d:%d)\n', [major, minor]);
+
+         case (super^.log_block_size) of
+	    0: blk_size := 1024;
+	    1: blk_size := 2048;
+	    2: blk_size := 4096;
+	 end;
+
+         logic_sb_block := super^.first_data_block;
+         sb^.dirty := 0;
+         sb^.blocksize := blk_size;
+         sb^.fs_type := @ext2_fs_type;
 	     
-	     { Ext2 filesystem specific information }
-	     sb^.ext2_sb.log_block_size   := super^.log_block_size;
-	     sb^.ext2_sb.inodes_per_block := blk_size div sizeof(ext2_inode);
-	     sb^.ext2_sb.blocks_per_group := super^.blocks_per_group;
-	     sb^.ext2_sb.inodes_per_group := super^.inodes_per_group;
-	     sb^.ext2_sb.inodes_count     := super^.inodes_count;
-	     sb^.ext2_sb.blocks_count     := super^.blocks_count;
-	     sb^.ext2_sb.groups_count     := (super^.blocks_count -
-	                                      super^.first_data_block +
-					      super^.blocks_per_group - 1) div
-					      super^.blocks_per_group;
-	     sb^.ext2_sb.desc_per_block   := blk_size div
-	                                     sizeof(ext2_group_desc);
-	     db_count := (sb^.ext2_sb.groups_count +
-	                  sb^.ext2_sb.desc_per_block - 1) div
-			  sb^.ext2_sb.desc_per_block;
+	 { Ext2 filesystem specific information }
+	 sb^.ext2_sb.log_block_size   := super^.log_block_size;
+	 sb^.ext2_sb.inodes_per_block := blk_size div sizeof(ext2_inode);
+	 sb^.ext2_sb.blocks_per_group := super^.blocks_per_group;
+	 sb^.ext2_sb.inodes_per_group := super^.inodes_per_group;
+	 sb^.ext2_sb.inodes_count     := super^.inodes_count;
+	 sb^.ext2_sb.blocks_count     := super^.blocks_count;
+	 sb^.ext2_sb.groups_count     := (super^.blocks_count -
+	                                  super^.first_data_block +
+	  			          super^.blocks_per_group - 1) div
+					  super^.blocks_per_group;
+         sb^.ext2_sb.desc_per_block   := blk_size div
+	                                 sizeof(ext2_group_desc);
+         db_count := (sb^.ext2_sb.groups_count +
+	              sb^.ext2_sb.desc_per_block - 1) div
+		      sb^.ext2_sb.desc_per_block;
 
 {$IFDEF DEBUG}
 printk('\nroot fs: revision %d  inode count: %d  block count: %d\n', [super^.rev_level, super^.inodes_count, super^.blocks_count]);
 printk('block size: %d  first block: %d  db_count: %d\n', [blk_size, super^.first_data_block, db_count]);
 {$ENDIF}
 
-	     sb^.ext2_sb.group_desc := kmalloc(db_count * sizeof(P_buffer_head));
-	     if (sb^.ext2_sb.group_desc = NIL) then
-	        begin
-		   printk('EXT2-fs: not enough memory\n', []);
-		   result := NIL;
-		   exit;
-		end;
+	 sb^.ext2_sb.group_desc := kmalloc(db_count * sizeof(P_buffer_head));
+	 if (sb^.ext2_sb.group_desc = NIL) then
+	 begin
+	    printk('EXT2-fs: not enough memory\n', []);
+	    result := NIL;
+	    exit;
+	 end;
 
-	     for i := 0 to (db_count - 1) do
-	        begin
-		   sb^.ext2_sb.group_desc[i] := bread(major, minor,
-		                                      logic_sb_block + i + 1,
-						      sb^.blocksize);
-		   if (sb^.ext2_sb.group_desc[i] = NIL) then
-		      begin
-		         printk('EXT2-fs: unable to read group descriptors\n', []);
-			 result := NIL;
-			 exit;
-		      end;
-		end;
+	 for i := 0 to (db_count - 1) do
+	 begin
+	    sb^.ext2_sb.group_desc[i] := bread(major, minor,
+	                                       logic_sb_block + i + 1,
+	 				       sb^.blocksize);
+	    if (sb^.ext2_sb.group_desc[i] = NIL) then
+	    begin
+	       printk('EXT2-fs: unable to read group descriptors\n', []);
+	       result := NIL;
+	       exit;
+	    end;
+	 end;
 
-{ Il faudrait charger en mémoire quelques blocs de bitmap }
+{ FIXME: Il faudrait charger en mémoire quelques blocs de bitmap }
 
-	     sb^.op := @ext2_super_operations;
-	     result := sb;
+	 sb^.op := @ext2_super_operations;
+	 result := sb;
       end;
 end;
 
@@ -207,6 +225,15 @@ end;
  *****************************************************************************}
 procedure init_ext2_fs; [public, alias : 'INIT_EXT2_FS'];
 begin
+
+   memset(@ext2_fs_type,                0, sizeof(file_system_type));
+   memset(@ext2_super_operations,       0, sizeof(super_operations));
+   memset(@ext2_inode_operations,       0, sizeof(inode_operations));
+   memset(@ext2_file_operations ,       0, sizeof(file_operations));
+   memset(@ext2_file_inode_operations , 0, sizeof(inode_operations));
+   memset(@ext2_dir_operations ,        0, sizeof(file_operations));
+   memset(@ext2_dir_operations ,        0, sizeof(inode_operations));
+
    ext2_fs_type.name := 'ext2';
    ext2_fs_type.fs_flag := 0;
    ext2_fs_type.read_super := @ext2_read_super;
@@ -215,20 +242,16 @@ begin
    ext2_inode_operations.lookup     := @ext2_lookup;
 
    { Opérations sur fichiers réguliers }
-   ext2_file_operations.open  := NIL;
    ext2_file_operations.read  := @ext2_file_read;
-   ext2_file_operations.write := NIL;
    ext2_file_inode_operations.default_file_ops := @ext2_file_operations;
-   ext2_file_inode_operations.lookup := NIL;
 
    { Opérations sur répertoires }
-   ext2_dir_operations.open  := NIL;
-   ext2_dir_operations.read  := NIL;
-   ext2_dir_operations.write := NIL;
+   ext2_dir_operations.read  := @ext2_readdir;
    ext2_dir_inode_operations.default_file_ops := @ext2_dir_operations;
    ext2_dir_inode_operations.lookup := @ext2_lookup;
 
    register_filesystem(@ext2_fs_type);
+
 end;
 
 

@@ -4,32 +4,33 @@ flags =-Fi./src/include/kernel -Sh -Sg -Cn -Sc -S2 -OGr -Sm -Un -a -Aas -Rintel 
 lib_flags =-Fi./src/include -Fi./src/include/sys -OGr -Un -S2 -Sc -Sg -Rintel -CX -vwnh
 
 kernel: ${b}/setup ${b}/mbr ${s}/kernel/main.o ${s}/kernel/start.o ${s}/kernel/dma.o \
-        ${s}/kernel/init.o ${s}/kernel/time.o ${s}/kernel/fork.o ${s}/kernel/process.o \
-	${s}/kernel/sched.o ${s}/kernel/exit.o ${s}/debug/debug.o ${s}/asm/asm.o ${s}/asm/entry.o \
-	${s}/mm/init_mem.o ${s}/mm/mem.o ${s}/cpu/cpu.o ${s}/gdt/gdt.o \
+        ${s}/kernel/init.o ${s}/kernel/time.o ${s}/kernel/fork.o ${s}/kernel/process.o ${s}/kernel/signal.o \
+	${s}/kernel/sched.o ${s}/kernel/exit.o ${s}/kernel/sys.o ${s}/debug/debug.o ${s}/asm/asm.o ${s}/asm/entry.o \
+	${s}/mm/init_mem.o ${s}/mm/mem.o ${s}/mm/mmap.o ${s}/cpu/cpu.o ${s}/gdt/gdt.o \
 	${s}/drivers/char/tty.o ${s}/drivers/char/keyboard.o ${s}/drivers/char/com.o \
 	${s}/drivers/char/lpt.o ${s}/drivers/block/ide.o ${s}/drivers/block/ide-hd.o \
 	${s}/drivers/block/floppy.o ${s}/drivers/block/ll_rw_block.o ${s}/drivers/pci/pci.o \
-	${s}/drivers/net/rtl8139.o ${s}/int/int.o ${s}/int/init_int.o \
-	${s}/fs/init_vfs.o ${s}/fs/devices.o ${s}/fs/super.o ${s}/fs/open.o \
-	${s}/fs/read_write.o ${s}/fs/exec.o ${s}/fs/inode.o ${s}/fs/buffer.o \
-	${s}/fs/ioctl.o ${s}/fs/ext2/super.o ${s}/fs/ext2/file.o ${s}/fs/ext2/inode.o 
+	${s}/drivers/net/rtl8139.o ${s}/drivers/net/ne.o ${s}/int/int.o ${s}/int/init_int.o \
+	${s}/fs/init_vfs.o ${s}/fs/devices.o ${s}/fs/super.o ${s}/fs/open.o ${s}/fs/stat.o \
+	${s}/fs/pipe.o ${s}/fs/namei.o ${s}/fs/read_write.o ${s}/fs/exec.o ${s}/fs/inode.o \
+	${s}/fs/buffer.o ${s}/fs/fcntl.o ${s}/fs/ioctl.o ${s}/fs/readdir.o ${s}/fs/ext2/super.o \
+	${s}/fs/ext2/file.o ${s}/fs/ext2/inode.o ${s}/fs/ext2/dir.o ${s}/net/socket.o
 
 	@echo Linking kernel ...
-	@ld -s -o ${s}/kernel/tmpk ${s}/kernel/start.o ${s}/kernel/main.o ${s}/kernel/exit.o \
-	${s}/drivers/char/tty.o ${s}/debug/debug.o ${s}/drivers/block/ide.o \
-        ${s}/mm/init_mem.o ${s}/cpu/cpu.o ${s}/drivers/char/com.o \
+	@ld -o ${s}/kernel/tmpk ${s}/kernel/start.o ${s}/kernel/main.o ${s}/kernel/exit.o \
+	${s}/kernel/sys.o ${s}/drivers/char/tty.o ${s}/debug/debug.o ${s}/drivers/block/ide.o \
+        ${s}/mm/init_mem.o ${s}/cpu/cpu.o ${s}/drivers/char/com.o ${s}/kernel/signal.o \
 	${s}/drivers/char/lpt.o ${s}/int/init_int.o ${s}/drivers/pci/pci.o \
-	${s}/gdt/gdt.o ${s}/int/int.o ${s}/drivers/char/keyboard.o \
-	${s}/mm/mem.o ${s}/drivers/block/floppy.o \
-	${s}/drivers/net/rtl8139.o ${s}/fs/init_vfs.o ${s}/kernel/fork.o \
+	${s}/gdt/gdt.o ${s}/int/int.o ${s}/drivers/char/keyboard.o ${s}/fs/pipe.o \
+	${s}/mm/mem.o ${s}/mm/mmap.o ${s}/fs/ext2/dir.o ${s}/drivers/block/floppy.o \
+	${s}/drivers/net/rtl8139.o ${s}/drivers/net/ne.o ${s}/fs/init_vfs.o ${s}/kernel/fork.o \
 	${s}/fs/ioctl.o ${s}/fs/ext2/super.o ${s}/kernel/sched.o ${s}/fs/devices.o \
-	${s}/fs/super.o ${s}/kernel/time.o ${s}/kernel/dma.o \
-	${s}/asm/entry.o ${s}/fs/read_write.o ${s}/kernel/process.o \
+	${s}/fs/super.o ${s}/fs/fcntl.o ${s}/kernel/time.o ${s}/kernel/dma.o \
+	${s}/asm/entry.o ${s}/fs/read_write.o ${s}/kernel/process.o ${s}/fs/namei.o \
 	${s}/drivers/block/ide-hd.o ${s}/fs/open.o ${s}/fs/ext2/file.o \
-	${s}/fs/buffer.o ${s}/drivers/block/ll_rw_block.o \
-	${s}/fs/inode.o ${s}/fs/ext2/inode.o ${s}/asm/asm.o ${s}/fs/exec.o \
-	${s}/kernel/init.o -T linkfile
+	${s}/fs/buffer.o ${s}/fs/stat.o ${s}/drivers/block/ll_rw_block.o \
+	${s}/fs/inode.o ${s}/fs/ext2/inode.o ${s}/fs/readdir.o ${s}/asm/asm.o ${s}/fs/exec.o \
+	${s}/kernel/init.o ${s}/net/socket.o -T linkfile
 
 	@cat ${b}/setup ${s}/kernel/tmpk > ${s}/kernel/kernel
 	@rm ${s}/kernel/tmpk
@@ -85,6 +86,11 @@ ${s}/cpu/cpu.o: ${s}/cpu/cpu.pp
 	@ppc386 $(flags) -s ${s}/cpu/cpu.pp
 	@as -o ${s}/cpu/cpu.o ${s}/cpu/cpu.s
 
+${s}/net/socket.o: ${s}/net/socket.pp
+	@echo Compiling net/socket.pp
+	@ppc386 $(flags) -s ${s}/net/socket.pp
+	@as -o ${s}/net/socket.o ${s}/net/socket.s
+
 ${s}/drivers/char/com.o: ${s}/drivers/char/com.pp
 	@echo Compiling drivers/char/com.pp
 	@ppc386 $(flags) -s ${s}/drivers/char/com.pp
@@ -120,6 +126,11 @@ ${s}/mm/mem.o: ${s}/mm/mem.pp
 	@ppc386 $(flags) -s ${s}/mm/mem.pp
 	@as -o ${s}/mm/mem.o ${s}/mm/mem.s
 
+${s}/mm/mmap.o: ${s}/mm/mmap.pp
+	@echo Compiling mm/mmap.pp
+	@ppc386 $(flags) -s ${s}/mm/mmap.pp
+	@as -o ${s}/mm/mmap.o ${s}/mm/mmap.s
+
 ${s}/drivers/char/keyboard.o: ${s}/drivers/char/keyboard.pp
 	@echo Compiling drivers/char/keyboard.pp ...
 	@ppc386 $(flags) -s ${s}/drivers/char/keyboard.pp
@@ -140,20 +151,65 @@ ${s}/drivers/net/rtl8139.o: ${s}/drivers/net/rtl8139.pp
 	@ppc386 $(flags) -s ${s}/drivers/net/rtl8139.pp
 	@as -o ${s}/drivers/net/rtl8139.o ${s}/drivers/net/rtl8139.s
 
+${s}/drivers/net/ne.o: ${s}/drivers/net/ne.pp
+	@echo Compiling drivers/net/ne.pp
+	@ppc386 $(flags) -s ${s}/drivers/net/ne.pp
+	@as -o ${s}/drivers/net/ne.o ${s}/drivers/net/ne.s
+
 ${s}/fs/init_vfs.o: ${s}/fs/init_vfs.pp
 	@echo Compiling fs/init_vfs.pp
 	@ppc386 $(flags) -s ${s}/fs/init_vfs.pp
 	@as -o ${s}/fs/init_vfs.o ${s}/fs/init_vfs.s
+
+${s}/fs/stat.o: ${s}/fs/stat.pp
+	@echo Compiling fs/stat.pp
+	@ppc386 $(flags) -s ${s}/fs/stat.pp
+	@as -o ${s}/fs/stat.o ${s}/fs/stat.s
+
+${s}/fs/namei.o: ${s}/fs/namei.pp
+	@echo Compiling fs/namei.pp
+	@ppc386 $(flags) -s ${s}/fs/namei.pp
+	@as -o ${s}/fs/namei.o ${s}/fs/namei.s
+
+${s}/fs/readdir.o: ${s}/fs/readdir.pp
+	@echo Compiling fs/readdir.pp
+	@ppc386 $(flags) -s ${s}/fs/readdir.pp
+	@as -o ${s}/fs/readdir.o ${s}/fs/readdir.s
+
+${s}/fs/fcntl.o: ${s}/fs/fcntl.pp
+	@echo Compiling fs/fcntl.pp
+	@ppc386 $(flags) -s ${s}/fs/fcntl.pp
+	@as -o ${s}/fs/fcntl.o ${s}/fs/fcntl.s
+
+${s}/fs/pipe.o: ${s}/fs/pipe.pp
+	@echo Compiling fs/pipe.pp
+	@ppc386 $(flags) -s ${s}/fs/pipe.pp
+	@as -o ${s}/fs/pipe.o ${s}/fs/pipe.s
 
 ${s}/fs/ext2/super.o: ${s}/fs/ext2/super.pp
 	@echo Compiling fs/ext2/super.pp
 	@ppc386 $(flags) -s ${s}/fs/ext2/super.pp
 	@as -o ${s}/fs/ext2/super.o ${s}/fs/ext2/super.s
 
+${s}/fs/ext2/dir.o: ${s}/fs/ext2/dir.pp
+	@echo Compiling fs/ext2/dir.pp
+	@ppc386 $(flags) -s ${s}/fs/ext2/dir.pp
+	@as -o ${s}/fs/ext2/dir.o ${s}/fs/ext2/dir.s
+
 ${s}/kernel/sched.o: ${s}/kernel/sched.pp
 	@echo Compiling kernel/sched.pp
 	@ppc386 $(flags) -s ${s}/kernel/sched.pp
 	@as -o ${s}/kernel/sched.o ${s}/kernel/sched.s
+
+${s}/kernel/sys.o: ${s}/kernel/sys.pp
+	@echo Compiling kernel/sys.pp
+	@ppc386 $(flags) -s ${s}/kernel/sys.pp
+	@as -o ${s}/kernel/sys.o ${s}/kernel/sys.s
+
+${s}/kernel/signal.o: ${s}/kernel/signal.pp
+	@echo Compiling kernel/signal.pp
+	@ppc386 $(flags) -s ${s}/kernel/signal.pp
+	@as -o ${s}/kernel/signal.o ${s}/kernel/signal.s
 
 ${s}/kernel/fork.o: ${s}/kernel/fork.pp
 	@echo Compiling kernel/fork.pp
@@ -255,8 +311,8 @@ ${s}/lib/libpfpclib.a: ${s}/lib/fpclib.pp
 	@ppc386 $(lib_flags) ${s}/lib/fpclib.pp
 
 clean:
-	@rm -f *~ bochs/delphineOS.img mkboot kernel.log flagger
-	@rm -f src/*~
+	@rm -f *~ bochs/delphineOS.img bochs/bochout.txt mkboot kernel.log flagger
+	@rm -f src/*~ src/*.s
 	@rm -f src/boot/*~ src/boot/boot src/boot/setup src/boot/boot.dat src/boot/mbr
 	@rm -f src/cpu/*.o src/cpu/*~ src/cpu/*.ppu src/cpu/*.s
 	@rm -f src/debug/*.o src/debug/*~ src/debug/*.ppu src/debug/*.s

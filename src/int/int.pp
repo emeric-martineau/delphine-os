@@ -5,8 +5,13 @@
  *
  *  CopyLeft 2002 GaLi
  *
- *  version 0.1 - 20/06/2002 - GaLi - début de la gestion du Copy On Write
- *                                    voir procédure 'exception_14'
+ *  version 0.2 - 14/05/2003 - GaLi - Page fault exception gives more stack.
+ *                                    (A process has a 4096 bytes stack but
+ *                                    now, we add 4096 bytes if the process
+ *                                    has caused an exception because it uses
+ *                                    too much stack).
+ *
+ *  version 0.1 - 20/06/2002 - GaLi - Begin "Copy On Write" management
  *
  *  version 0.0 - ??/??/2001 - GaLi - initial version
  *
@@ -31,32 +36,35 @@ unit int;
 
 INTERFACE
 
-{DEFINE DEBUG}
+{DEFINE DEBUG_14}
 
 {$I fs.inc}
 {$I mm.inc}
 {$I process.inc}
 
 
-procedure printk (format : string ; args : array of const); external;
-procedure memcpy (src, dest : pointer ; size : dword); external;
-procedure outb (port : word ; val : byte); external;
-procedure panic (reason : string); external;
-procedure print_registers; external;
-procedure set_page_rights (adr : pointer ; r :dword); external;
+function  btod (val : byte) : dword; external;
 function  get_free_page : pointer; external;
 function  get_page_rights (adr : pointer) : dword; external;
 function  get_phys_addr (adr : pointer) : pointer; external;
-function  kmalloc (size : dword) : pointer; external;
-function  btod (val : byte) : dword; external;
 function  inb (port : word) : byte; external;
+function  kmalloc (size : dword) : pointer; external;
 function  MAP_NR (adr : pointer) : dword; external;
+procedure memcpy (src, dest : pointer ; size : dword); external;
+procedure memset (adr : pointer ; c : byte ; size : dword); external;
+procedure outb (port : word ; val : byte); external;
+procedure panic (reason : string); external;
+procedure print_registers; external;
+procedure printk (format : string ; args : array of const); external;
+procedure schedule; external;
+procedure send_sig (sig : dword ; p : P_task_struct); external;
 
 
 var
-   fpu_present : boolean; external name 'U_CPU_FPU_PRESENT';
-   mem_map     : P_page; external name 'U_MEM_MEM_MAP';
-   current     : P_task_struct; external name 'U_PROCESS_CURRENT';
+   fpu_present  : boolean; external name 'U_CPU_FPU_PRESENT';
+   mem_map      : P_page; external name 'U_MEM_MEM_MAP';
+   current      : P_task_struct; external name 'U_PROCESS_CURRENT';
+   shared_pages : dword; external name 'U_MEM_SHARED_PAGES';
 
 
 
@@ -86,8 +94,7 @@ begin
    end;
    isr1 := inb($20);
    isr2 := inb($A0);
-   printk('Unknown interrupt', []);
-   printk(' (isr1 = %h2 and isr2 = %h2)\n', [btod(isr1), btod(isr2)]);
+   printk('WARNING: Unknown interrupt (isr1=%h2, isr2=%h2)\n', [btod(isr1), btod(isr2)]);
    outb($A0, $20);      { End of interrupt (EOI) pour l'esclave }
    outb($20, $20);      { EOI pour le maitre }
 end;
@@ -100,11 +107,20 @@ end;
  * Se déclenche lors d'une division par zéro
  ******************************************************************************}
 procedure exception_0; [public, alias : 'EXCEPTION_0'];
+
+var
+   r_eip : dword;
+
 begin
-   printk('Exception 0 !!!\n', []);
+
    asm
-      hlt
+      mov   eax, [ebp + 4]
+      mov   r_eip, eax
    end;
+   printk('\nEIP: %h', [r_eip]);
+
+   panic('Exception 0: zero divide.');
+
 end;
 
 
@@ -115,11 +131,20 @@ end;
  * Se déclenche lors du debuggage
  *****************************************************************************}
 procedure exception_1; [public, alias : 'EXCEPTION_1'];
+
+var
+   r_eip : dword;
+
 begin
-   printk('Exception 1 !!!\n', []);
+
    asm
-      hlt
+      mov   eax, [ebp + 4]
+      mov   r_eip, eax
    end;
+   printk('\nEIP: %h', [r_eip]);
+
+   panic('Exception 1: debug exception.');
+
 end;
 
 
@@ -130,11 +155,20 @@ end;
  * Se déclenche lors qu'une interruption externe non masquable intervient
  *****************************************************************************}
 procedure exception_2; [public, alias : 'EXCEPTION_2'];
+
+var
+   r_eip : dword;
+
 begin
-   printk('Exception 2 !!!\n', []);
+
    asm
-      hlt
+      mov   eax, [ebp + 4]
+      mov   r_eip, eax
    end;
+   printk('\nEIP: %h', [r_eip]);
+
+   panic('Exception 2: NMI.');
+
 end;
 
 
@@ -145,11 +179,20 @@ end;
  * Se déclenche lorsque le processeur rencontre un breakpoint
  *****************************************************************************}
 procedure exception_3; [public, alias : 'EXCEPTION_3'];
+
+var
+   r_eip : dword;
+
 begin
-   printk('Exception 3 !!!\n', []);
+
    asm
-      hlt
+      mov   eax, [ebp + 4]
+      mov   r_eip, eax
    end;
+   printk('\nEIP: %h', [r_eip]);
+
+   panic('Exception 3: breakpoint.');
+
 end;
 
 
@@ -160,11 +203,20 @@ end;
  * Se déclenche lors d'un depassement de capacite
  *****************************************************************************}
 procedure exception_4; [public, alias : 'EXCEPTION_4'];
+
+var
+   r_eip : dword;
+
 begin
-   printk('Exception 4 !!!\n', []);
+
    asm
-      hlt
+      mov   eax, [ebp + 4]
+      mov   r_eip, eax
    end;
+   printk('\nEIP: %h', [r_eip]);
+
+   panic('Exception 4');
+
 end;
 
 
@@ -175,11 +227,20 @@ end;
  * Se déclenche lors d'un depassement pour l'instruction BOUND
  *****************************************************************************}
 procedure exception_5; [public, alias : 'EXCEPTION_5'];
+
+var
+   r_eip : dword;
+
 begin
-   printk('Exception 5 !!!\n', []);
+
    asm
-      hlt
+      mov   eax, [ebp + 4]
+      mov   r_eip, eax
    end;
+   printk('\nEIP: %h', [r_eip]);
+
+   panic('Exception 5');
+
 end;
 
 
@@ -190,11 +251,20 @@ end;
  * Se déclenche lorsque le processeur rencontre une instruction inconnue
  *****************************************************************************}
 procedure exception_6; [public, alias : 'EXCEPTION_6'];
+
+var
+   r_eip : dword;
+
 begin
-   printk('Exception 6 !!!\n', []);
+
    asm
-      hlt
+      mov   eax, [ebp + 4]
+      mov   r_eip, eax
    end;
+   printk('\nEIP: %h', [r_eip]);
+
+   panic('Exception 6: unknown instruction.');
+
 end;
 
 
@@ -204,6 +274,8 @@ end;
  *
  * Exception 7 is executed when a FPU instruction is executed without FPU or
  * when TS bit (register CR0) is set.
+ *
+ * FIXME: test this with a user mode program which uses the FPU.
  *****************************************************************************}
 procedure exception_7; [public, alias : 'EXCEPTION_7'];
 
@@ -213,26 +285,24 @@ const
 begin
 
    if (fpu_present) then
-       begin
-          if (P_i387_regs <> NIL) then
-	      begin
-	         if (P_i387_regs <> current) then
-		     begin
-		        { Save FPU registers in P_i387_regs structure }
-		     end;
-	      end;
-	  P_i387_regs := current;
-	  { Unset TS bit in cr0 }
-	  asm
-	     mov   eax, cr0
-	     or    al , $8
-	     mov   cr0, eax
-	  end;
-       end
+   begin
+      if (P_i387_regs <> NIL) then
+      begin
+         if (P_i387_regs <> current) then
+	 begin
+	    { FIXME: Save FPU registers in P_i387_regs structure }
+	 end;
+      end;
+      P_i387_regs := current;
+      { Unset TS bit in cr0 }
+      asm
+         mov   eax, cr0
+	 or    al , $8
+	 mov   cr0, eax
+      end;
+   end
    else
-       begin
-          panic('FPU instruction detected without coprocessor');
-       end;
+       panic('FPU instruction detected without coprocessor');
 
    asm
       leave
@@ -249,11 +319,20 @@ end;
  * Se déclenche lors d'une double faute
  *****************************************************************************}
 procedure exception_8; [public, alias : 'EXCEPTION_8'];
+
+var
+   r_eip : dword;
+
 begin
-   printk('Exception 8 !!!\n', []);
+
    asm
-      hlt
+      mov   eax, [ebp + 8]
+      mov   r_eip, eax
    end;
+   printk('\nEIP: %h', [r_eip]);
+
+   panic('Exception 8: double exception.');
+
 end;
 
 
@@ -264,11 +343,20 @@ end;
  * Se déclenche lors d'un Coprocessor Segment Overrun
  *****************************************************************************}
 procedure exception_9; [public, alias : 'EXCEPTION_9'];
+
+var
+   r_eip : dword;
+
 begin
-   printk('Exception 9 !!!\n', []);
+
    asm
-      hlt
+      mov   eax, [ebp + 4]
+      mov   r_eip, eax
    end;
+   printk('\nEIP: %h', [r_eip]);
+
+   panic('Exception 9: Coprocessor Segment Overrun.');
+
 end;
 
 
@@ -279,11 +367,20 @@ end;
  * Se déclenche lors qu'un TSS invalide est rencontré
  *****************************************************************************}
 procedure exception_10; [public, alias : 'EXCEPTION_10'];
+
+var
+   r_eip : dword;
+
 begin
-   printk('Exception 10 : invalid TSS.\n', []);
+
    asm
-      hlt
+      mov   eax, [ebp + 4]
+      mov   r_eip, eax
    end;
+   printk('\nEIP: %h', [r_eip]);
+
+   panic('Exception 10: invalid TSS.');
+
 end;
 
 
@@ -294,11 +391,20 @@ end;
  * Se déclenche lorsqu'un segment est non présent
  *****************************************************************************}
 procedure exception_11; [public, alias : 'EXCEPTION_11'];
+
+var
+   r_eip : dword;
+
 begin
-   printk('Exception 11 : non-present segment.\n', []);
+
    asm
-      hlt
+      mov   eax, [ebp + 8]
+      mov   r_eip, eax
    end;
+   printk('\nEIP: %h', [r_eip]);
+
+   panic('Exception 11: non-present segment.');
+
 end;
 
 
@@ -309,11 +415,20 @@ end;
  * Se déclenche lorsqu'un segement de pile manque
  *****************************************************************************}
 procedure exception_12; [public, alias : 'EXCEPTION_12'];
+
+var
+   r_eip : dword;
+
 begin
-   printk('Exception 12 : no stack segment.\n', []);
+
    asm
-      hlt
+      mov   eax, [ebp + 8]
+      mov   r_eip, eax
    end;
+   printk('\nEIP: %h', [r_eip]);
+
+   panic('Exception 12: no stack segment.');
+
    {* Si cette exception est déclenchée par un segment de pile non présent ou
     * par un OverFlow de la nouvelle pile, durant un inter-privilege-level
     * class, le code d'erreur contient un sélecteur de segment pour le segment
@@ -329,40 +444,36 @@ end;
 {******************************************************************************
  * exception_13
  *
- * Se déclenche lorsqu'un processeur tente d'acceder à une zone mémoire qui lui
- * est interdite.
  *****************************************************************************}
 procedure exception_13; [public, alias : 'EXCEPTION_13'];
 
 var
-   r_cs : word;
    r_cr0, r_cr3, flags : dword;
-   esp0 : dword;
+   esp0, r_eip : dword;
    error_code : dword;
 
 begin
-   printk('General Protection Fault !!!\n', []);
    
    asm
       mov   eax, [ebp + 4]
       mov   error_code, eax
-      mov   ax , cs
-      mov  r_cs, ax
+      mov   eax, [ebp + 8]
+      mov   r_eip, eax
       mov   eax, cr0
-      mov  r_cr0, eax
+      mov   r_cr0, eax
       mov   eax, cr3
-      mov  r_cr3, eax
+      mov   r_cr3, eax
       pushfd
-      pop  eax
+      pop   eax
       mov   flags, eax
-      mov  eax, esp
-      mov  esp0, eax
+      mov   eax, esp
+      mov   esp0, eax
    end;
 
-printk('CS: %h4  CR0: %h  CR3: %h  flags: %h\n', [r_cs, r_cr0, r_cr3, flags]);
-printk('esp: %h  error_code: %h\n', [esp0, error_code]);
+   printk('\nPID=%d  CR0: %h  CR3: %h  flags: %h\n', [current^.pid, r_cr0, r_cr3, flags]);
+   printk('EIP: %h  ESP: %h  error_code: %h\n', [r_eip, esp0, error_code]);
 
-   panic('');
+   panic('General Protection Fault');
 
 end;
 
@@ -394,13 +505,13 @@ var
    glob_index : dword;
    fault_adr  : pointer;
    new_page   : pointer;
-   r_eip      : dword;
+   r_eip, i   : dword;
+   page_table : P_pte_t;
 
 begin
 
    asm
-      pushad
-      sti   { Set interrupts on }
+      pushad   { FIXME: May be we could save more registers }
       mov   eax, cr2
       mov   r_cr2, eax
       mov   eax, [ebp + 8]
@@ -408,148 +519,198 @@ begin
       mov   eax, [ebp + 4]   { Get error code }
       and   eax, 111b
       mov   error_code, eax
+      sti      { Set interrupts on }
    end;
 
-   {$IFDEF DEBUG}
-      printk('14: %d@%h  rights=%d  EIP=%h\n', [error_code, r_cr2, get_page_rights(get_phys_addr(r_cr2)), r_eip]);
+   {$IFDEF DEBUG_14}
+      printk('exception_14 (%d): %d@%h  rights=%h2  EIP=%h ', [current^.pid, error_code, r_cr2,
+      							       get_page_rights(get_phys_addr(r_cr2)), r_eip]);
    {$ENDIF}
 
    if (error_code and $4) <> $4 then
-       begin
-           printk('\nPage fault in kernel mode (fuckin'' bad news !!!) PID=%d\n', [current^.pid]);
-	   printk('CR2: %h   error_code: %d EIP=%h\n', [r_cr2, error_code, r_eip]);
-	   panic('kernel panic');
-       end
+   begin
+      printk('\nPage fault in kernel mode (fuckin'' bad news !!!) PID=%d\n', [current^.pid]);
+      printk('CR2: %h -> %h  error_code: %d  EIP=%h -> %h\n', [r_cr2, get_phys_addr(r_cr2), error_code, r_eip,
+     							       get_phys_addr(pointer(r_eip))]);
+      panic('kernel panic');
+   end
    else    { The page fault appeared in user mode }
-       begin
-           if (error_code and $1) = $1 then
-	       begin
+   begin
+      if (error_code and $1) = $1 then   { Protection violation }
+      begin
 
-	           {* printk('\nCurrent process is trying to access a protected page => killing it...\n', []);
-		    * printk('CR2: %h   error_code: %h\n', [r_cr2, error_code]); *}
+         fault_adr := get_phys_addr(r_cr2);
 
-		   fault_adr := get_phys_addr(r_cr2);
+	 {* Si fault_page appartient aux pages adressables par le
+	  * processus, on lui en alloue une autre. Sinon, on le tue
+	  * (il a tenté un accès illégal quand même !!!) *}
 
-		   {* Ci fault_page appartient aux pages adressables par le
-		    * processus, on lui en alloue une autre. Sinon, on le tue
-		    * (il a tenté un accès illégal quand même !!!) *}
-
-		   if ((longint(fault_adr) and $FFFFF000) > $FFC01000) then
-		   begin
-		      {$IFDEF DEBUG}
-		         printk('14: mem_map count for this page=%d\n', [mem_map[MAP_NR(fault_adr)].count]);
-		      {$ENDIF}
-		      if (mem_map[MAP_NR(fault_adr)].count > 1) then
-		      begin
-		         asm
-			    cli
-			 end;
-		         mem_map[MAP_NR(fault_adr)].count -= 1;
-			 asm
-			    sti
-			 end;
-		         new_page := get_free_page;
-			 if (new_page = NIL) then
-			     panic('exception 14: not enough memory');
-
-		         { On recopie les données qui sont dans la page
-			   partagée }
-		         memcpy(pointer(longint(fault_adr) and $FFFFF000), new_page, 4096);
-		   
-		         { On enregistre maintenant la nouvelle page avec un
-			   accès en écriture }
-		         asm
-		            mov   eax, r_cr2
-		            push  eax
-		            shr   eax, 22
-		            mov   glob_index, eax
-		            pop   eax
-		            shr   eax, 12
-		            and   eax, 1111111111b
-		            mov   page_index, eax
-
-		            mov   edi, cr3
-		            mov   eax, glob_index
-		            shl   eax, 2    { EAX = EAX * 4 }
-		            add   edi, eax
-		            mov   ebx, [edi]
-		            and   ebx, $FFFFF000
-		            mov   eax, page_index
-		            shl   eax, 2
-		            add   ebx, eax
-		            mov   eax, new_page
-		            or    eax, 7   { Access rights }
-		            mov   [ebx], eax
-		            mov   eax, cr3  {* On vide le cache pour que la
-			                     * nouvelle entrée soit prise en
-					     * compte* }
-			    mov   cr3, eax
-		         end;
-		      end
-		   else
-		      begin
-		         asm
-			    mov   eax, r_cr2
-			    push  eax
-			    shr   eax, 22
-			    mov   glob_index, eax
-			    pop   eax
-			    shr   eax, 12
-			    and   eax, 1111111111b
-			    mov   page_index, eax
-			    
-			    mov   edi, cr3
-			    mov   eax, glob_index
-			    shl   eax, 2   { EAX = EAX * 4 }
-			    add   edi, eax
-			    mov   ebx, [edi]
-			    and   ebx, $FFFFF000
-			    mov   eax, page_index
-			    shl   eax, 2
-			    add   ebx, eax
-			    mov   eax, [ebx]
-			    or    eax, 7
-			    mov   [ebx], eax
-			    mov   eax, cr3
-			    mov   cr3, eax
-			 end;
-		      end;
-		   asm
-		      popad
-		      leave
-		      add   esp, 4   {* On enlève le code d'erreur de la pile
-		                      * (voir docs Intel) *}
-		      iret
-		   end;
-		   end
-		   else
-		   begin
-		      printk('Process %d is trying to accces a protected page !!!\n', [current^.pid]);
-		      printk('%d@%h  EIP=%h\n', [error_code, r_cr2, r_eip]);
-		      printk('Killing it !!!\n', []);
-		      panic('');
-		      asm
-		         popad
-			 leave
-			 pop   eax   {* On enlève le code d'erreur de la pile
-			              * (voir docs Intel) *}
-		         {iret}
-			 cli
-		         hlt
-		      end;
-		   end
-	       end
-	   else
-	       begin
-	       {* Si on arrive ici, c'est la faute a été causé par un processus
-	        * en mode utilisateur qui veut accéder à une de ces pages
-		* alors que celle-ci n'est pas pésente en RAM. C'est donc ici
-		* que l'on gère une partie du swapping *}
-	           printk('\nSwapping not implemented yet (PID=%d) !!!\n', [current^.pid]);
-		   printk('CR2: %h  error_code: %d  EIP=%h\n', [r_cr2, error_code, r_eip]);
-		   panic('');
+	 if ((longint(fault_adr) and $FFFFF000) > $FFC01000) and
+	    ((longint(fault_adr) and $FFFFF000) < current^.brk) then
+	 begin
+	    {$IFDEF DEBUG_14}
+	       printk('mem_map count=%d', [mem_map[MAP_NR(fault_adr)].count]);
+	    {$ENDIF}
+	    if (mem_map[MAP_NR(fault_adr)].count > 1) then
+	    begin
+	       asm
+	          pushfd
+	          cli
 	       end;
+	       shared_pages -= 1;
+	       mem_map[MAP_NR(fault_adr)].count -= 1;
+	       asm
+		  popfd
+	       end;
+	       new_page := get_free_page();
+	       if (new_page = NIL) then panic('exception_14: not enough memory');
+
+	       { On recopie les données qui sont dans la page partagée }
+	       memcpy(pointer(longint(fault_adr) and $FFFFF000), new_page, 4096);
+		   
+	       { On enregistre maintenant la nouvelle page avec un accès en écriture }
+
+	       asm
+	          mov   eax, r_cr2
+		  push  eax
+		  shr   eax, 22
+		  mov   glob_index, eax
+		  pop   eax
+		  shr   eax, 12
+		  and   eax, 1111111111b
+		  mov   page_index, eax
+
+                  mov   edi, cr3
+		  mov   eax, glob_index
+		  shl   eax, 2    { EAX = EAX * 4 }
+		  add   edi, eax
+		  mov   ebx, [edi]
+		  and   ebx, $FFFFF000
+		  mov   eax, page_index
+		  shl   eax, 2
+		  add   ebx, eax
+		  mov   eax, new_page
+		  or    eax, 7   { Access rights }
+		  mov   [ebx], eax
+		  mov   eax, cr3  {* On vide le cache pour que la
+			           * nouvelle entrée soit prise en
+			           * compte* }
+		  mov   cr3, eax
+	       end;
+	    end
+	    else
+	    begin
+	       asm
+		  mov   eax, r_cr2
+		  push  eax
+		  shr   eax, 22
+		  mov   glob_index, eax
+		  pop   eax
+		  shr   eax, 12
+		  and   eax, 1111111111b
+		  mov   page_index, eax
+
+		  mov   edi, cr3
+		  mov   eax, glob_index
+		  shl   eax, 2   { EAX = EAX * 4 }
+		  add   edi, eax
+		  mov   ebx, [edi]
+		  and   ebx, $FFFFF000
+		  mov   eax, page_index
+		  shl   eax, 2
+		  add   ebx, eax
+		  mov   eax, [ebx]
+		  or    eax, 7
+		  mov   [ebx], eax
+		  mov   eax, cr3
+		  mov   cr3, eax
+	       end;
+	    end;
+	    {$IFDEF DEBUG_14}
+	       printk('\n', []);
+	    {$ENDIF}
+	    asm
+	       popad
+	       leave
+	       add   esp, 4   {* On enlève le code d'erreur de la pile
+		               * (voir docs Intel) *}
+	       iret
+	    end;
+	 end
+	 else
+	 begin
+	    printk('Process %d is trying to accces a protected page !!!\n', [current^.pid]);
+	    printk('%d@%h  EIP=%h\n', [error_code, r_cr2, r_eip]);
+	    printk('Killing it !!!\n\n', []);
+	    send_sig(SIGKILL, current);
+	    schedule();
+	    asm
+	       popad
+	       leave
+	       add   esp, 4   {* On enlève le code d'erreur de la pile
+		               * (voir docs Intel) *}
+	       iret
+            end;
+	 end
+       end
+       else
+       begin
+          {* Si on arrive ici, c'est la faute a été causé par un processus
+	   * en mode utilisateur qui veut accéder à une de ces pages
+	   * alors que celle-ci n'est pas pésente en RAM. C'est donc ici
+	   * que l'on devra gérer une partie du swapping *}
+		
+	  { Check if the process needs more stack. If it needs more, we add 4096 bytes for the stack (but not more) }
+	  if ((longint(r_cr2) > $FFBFF000) and (longint(r_cr2) < $FFC00000)) then
+	  begin
+	     page_table := get_free_page();
+	     new_page   := get_free_page();
+	     if ((page_table = NIL) or (new_page = NIL)) then panic('exception_14: not enough memory');
+	     memset(page_table, 0, 4096);
+	     memset(new_page, 0, 4096);
+	     current^.cr3[1022] := longint(page_table) or USER_PAGE;
+	     page_table[1023]   := longint(new_page) or USER_PAGE;
+	     {$IFDEF DEBUG_14}
+	        printk('-> more stack\n', []);
+	     {$ENDIF}
+	     asm
+	        mov   eax, cr3   { Flush TLB, don't know if we really need this. }
+	        mov   cr3, eax   { I put it to be careful }
+	        popad
+		leave
+		add   esp, 4
+		iret
+	     end;
+	  end
+	  else
+	  { The process needs more than 8192 bytes for his stack...  Fuck it  :-) }
+	  if (longint(r_cr2) < $FFBFF000) and (longint(r_cr2) > $FFB00000)then
+	  begin
+	     {printk('\nCR2: %h  error_code: %d  EIP=%h\n', [r_cr2, error_code, r_eip]);}
+	     printk('\n\n---!!!---===***===---!!!---\n', []);
+	     printk('PID %d is using too much stack. (CR2=%h)\n', [current^.pid, r_cr2]);
+	     printk('DelphineOS gives processes 8192 stack bytes (not more), Sorry...\n', []);
+	     printk('Killing PID %d\n---!!!---===***===---!!!---\n\n', [current^.pid]);
+	     send_sig(SIGKILL, current);
+	     schedule();
+	     asm
+	        popad
+		leave
+		add   esp, 4
+		iret
+	     end;
+	  end
+	  else
+	  begin
+	     printk('\nSwapping not implemented yet (PID=%d) !!!\n', [current^.pid]);
+	     printk('CR2: %h  error_code: %d  EIP=%h\n', [r_cr2, error_code, r_eip]);
+	     page_index := (longint(r_cr2) and $FFFF) div 4096;
+	     printk('Current process page table entry #%d dump: ', [page_index]);
+	     printk('%h\n', [current^.page_table[page_index]]);
+	     panic('');
+	  end;
        end;
+    end;
 end;
 
 
@@ -560,11 +721,20 @@ end;
  * Exception reservée
  *****************************************************************************}
 procedure exception_15; [public, alias : 'EXCEPTION_15'];
+
+var
+   r_eip : dword;
+
 begin
-   printk('Exception 15 !!!\n', []);
+
    asm
-      hlt
+      mov   eax, [ebp + 8]
+      mov   r_eip, eax
    end;
+   printk('\nEIP: %h', [r_eip]);
+
+   panic('Exception 15');
+
 end;
 
 
@@ -575,11 +745,20 @@ end;
  * Se déclenche lors d'une erreur de virgule flottante
  *****************************************************************************}
 procedure exception_16; [public, alias : 'EXCEPTION_16'];
+
+var
+   r_eip : dword;
+
 begin
-   printk('Exception 16 !!!\n', []);
+
    asm
-      hlt
+      mov   eax, [ebp + 4]
+      mov   r_eip, eax
    end;
+   printk('\nEIP: %h', [r_eip]);
+
+   panic('Exception 16');
+
 end;
 
 
@@ -590,11 +769,20 @@ end;
  * Se déclenche lors d'une erreur d'alignement
  *****************************************************************************}
 procedure exception_17; [public, alias : 'EXCEPTION_17'];
+
+var
+   r_eip : dword;
+
 begin
-   printk('Exception 17 !!!\n', []);
+
    asm
-      hlt
+      mov   eax, [ebp + 8]
+      mov   r_eip, eax
    end;
+   printk('\nEIP: %h', [r_eip]);
+
+   panic('Exception 17');
+
 end;
 
 
@@ -605,11 +793,20 @@ end;
  * Se déclenche lors d'un problème machine
  *****************************************************************************}
 procedure exception_18; [public, alias : 'EXCEPTION_18'];
+
+var
+   r_eip : dword;
+
 begin
-   printk('Exception 18 !!!\n', []);
+
    asm
-      hlt
+      mov   eax, [ebp + 8]
+      mov   r_eip, eax
    end;
+   printk('\nEIP: %h', [r_eip]);
+
+   panic('Exception 18');
+
 end;
 
 
@@ -620,11 +817,20 @@ end;
  * ???
  *****************************************************************************}
 procedure exception_19; [public, alias : 'EXCEPTION_19'];
+
+var
+   r_eip : dword;
+
 begin
-   printk('Exception 19 !!!\n', []);
+
    asm
-      hlt
+      mov   eax, [ebp + 8]
+      mov   r_eip, eax
    end;
+   printk('\nEIP: %h', [r_eip]);
+
+   panic('Exception 19');
+
 end;
 
 
@@ -635,11 +841,20 @@ end;
  * ???
  *****************************************************************************}
 procedure exception_20; [public, alias : 'EXCEPTION_20'];
+
+var
+   r_eip : dword;
+
 begin
-   printk('Exception 20 !!!\n', []);
+
    asm
-      hlt
+      mov   eax, [ebp + 8]
+      mov   r_eip, eax
    end;
+   printk('\nEIP: %h', [r_eip]);
+
+   panic('Exception 20');
+
 end;
 
 
@@ -650,11 +865,20 @@ end;
  * ???
  *****************************************************************************}
 procedure exception_21; [public, alias : 'EXCEPTION_21'];
+
+var
+   r_eip : dword;
+
 begin
-   printk('Exception 21 !!!\n', []);
+
    asm
-      hlt
+      mov   eax, [ebp + 8]
+      mov   r_eip, eax
    end;
+   printk('\nEIP: %h', [r_eip]);
+
+   panic('Exception 21');
+
 end;
 
 
@@ -665,11 +889,20 @@ end;
  * ???
  *****************************************************************************}
 procedure exception_22; [public, alias : 'EXCEPTION_22'];
+
+var
+   r_eip : dword;
+
 begin
-   printk('Exception 22 !!!\n', []);
+
    asm
-      hlt
+      mov   eax, [ebp + 8]
+      mov   r_eip, eax
    end;
+   printk('\nEIP: %h', [r_eip]);
+
+   panic('Exception 22');
+
 end;
 
 
@@ -680,11 +913,20 @@ end;
  * ???
  *****************************************************************************}
 procedure exception_23; [public, alias : 'EXCEPTION_23'];
+
+var
+   r_eip : dword;
+
 begin
-   printk('Exception 23 !!!\n', []);
+
    asm
-      hlt
+      mov   eax, [ebp + 8]
+      mov   r_eip, eax
    end;
+   printk('\nEIP: %h', [r_eip]);
+
+   panic('Exception 23');
+
 end;
 
 
@@ -695,11 +937,20 @@ end;
  * ???
  *****************************************************************************}
 procedure exception_24; [public, alias : 'EXCEPTION_24'];
+
+var
+   r_eip : dword;
+
 begin
-   printk('Exception 24 !!!\n', []);
+
    asm
-      hlt
+      mov   eax, [ebp + 8]
+      mov   r_eip, eax
    end;
+   printk('\nEIP: %h', [r_eip]);
+
+   panic('Exception 24');
+
 end;
 
 
@@ -710,11 +961,20 @@ end;
  * ???
  *****************************************************************************}
 procedure exception_25; [public, alias : 'EXCEPTION_25'];
+
+var
+   r_eip : dword;
+
 begin
-   printk('Exception 25 !!!\n', []);
+
    asm
-      hlt
+      mov   eax, [ebp + 8]
+      mov   r_eip, eax
    end;
+   printk('\nEIP: %h', [r_eip]);
+
+   panic('Exception 25');
+
 end;
 
 
@@ -725,11 +985,20 @@ end;
  * ???
  *****************************************************************************}
 procedure exception_26; [public, alias : 'EXCEPTION_26'];
+
+var
+   r_eip : dword;
+
 begin
-   printk('Exception 26 !!!\n', []);
+
    asm
-      hlt
+      mov   eax, [ebp + 8]
+      mov   r_eip, eax
    end;
+   printk('\nEIP: %h', [r_eip]);
+
+   panic('Exception 26');
+
 end;
 
 
@@ -740,11 +1009,20 @@ end;
  * ???
  *****************************************************************************}
 procedure exception_27; [public, alias : 'EXCEPTION_27'];
+
+var
+   r_eip : dword;
+
 begin
-   printk('Exception 27 !!!\n', []);
+
    asm
-      hlt
+      mov   eax, [ebp + 8]
+      mov   r_eip, eax
    end;
+   printk('\nEIP: %h', [r_eip]);
+
+   panic('Exception 27');
+
 end;
 
 
@@ -756,11 +1034,20 @@ end;
  * ???
  *****************************************************************************}
 procedure exception_28; [public, alias : 'EXCEPTION_28'];
+
+var
+   r_eip : dword;
+
 begin
-   printk('Exception 28 !!!\n', []);
+
    asm
-      hlt
+      mov   eax, [ebp + 8]
+      mov   r_eip, eax
    end;
+   printk('\nEIP: %h', [r_eip]);
+
+   panic('Exception 28');
+
 end;
 
 
@@ -771,11 +1058,20 @@ end;
  * ???
  *****************************************************************************}
 procedure exception_29; [public, alias : 'EXCEPTION_29'];
+
+var
+   r_eip : dword;
+
 begin
-   printk('Exception 29 !!!\n', []);
+
    asm
-      hlt
+      mov   eax, [ebp + 8]
+      mov   r_eip, eax
    end;
+   printk('\nEIP: %h', [r_eip]);
+
+   panic('Exception 29');
+
 end;
 
 
@@ -786,11 +1082,20 @@ end;
  * ???
  *****************************************************************************}
 procedure exception_30; [public, alias : 'EXCEPTION_30'];
+
+var
+   r_eip : dword;
+
 begin
-   printk('Exception 30 !!!\n', []);
+
    asm
-      hlt
+      mov   eax, [ebp + 8]
+      mov   r_eip, eax
    end;
+   printk('\nEIP: %h', [r_eip]);
+
+   panic('Exception 30');
+
 end;
 
 
@@ -801,11 +1106,20 @@ end;
  * ???
  *****************************************************************************}
 procedure exception_31; [public, alias : 'EXCEPTION_31'];
+
+var
+   r_eip : dword;
+
 begin
-   printk('Exception 31 !!!\n', []);
+
    asm
-      hlt
+      mov   eax, [ebp + 8]
+      mov   r_eip, eax
    end;
+   printk('\nEIP: %h', [r_eip]);
+
+   panic('Exception 31');
+
 end;
 
 

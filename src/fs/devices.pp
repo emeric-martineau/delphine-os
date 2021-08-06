@@ -81,12 +81,9 @@ begin
    else
       begin
          if (filp^.op^.open = NIL) then
-	    begin
-	       printk('VFS (open): open function of block device %d:%d is not defined !!!\n', [inode^.rdev_maj, inode^.rdev_min]);
-	       result := -1;
-	    end
+	     result := 0
 	 else
-	    result := filp^.op^.open(inode, filp);
+	     result := filp^.op^.open(inode, filp);
       end;
 end;
 
@@ -123,12 +120,9 @@ begin
    else
       begin
          if (filp^.op^.open = NIL) then
-	    begin
-	       printk('VFS (open): open function of char device %d:%d is not defined\n', [inode^.rdev_maj, inode^.rdev_min]);
-	       result := -1;
-	    end
+	     result := 0
 	 else
-	    result := filp^.op^.open(inode, filp);
+	     result := filp^.op^.open(inode, filp);
       end;
 end;
 

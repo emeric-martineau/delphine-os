@@ -30,10 +30,12 @@ INTERFACE
 
 
 {$I fs.inc}
+{$I major.inc}
 
 
 procedure print_word (nb : word); external;
 procedure memcpy (src, dest : pointer; size : dword); external;
+procedure memset (adr : pointer ; c : byte ; size : dword); external;
 procedure printk (format : string; args : array of const); external;
 procedure outb (port : word ; val : byte); external;
 procedure register_chrdev (nb : byte ; name : string[20] ; fops : pointer); external;
@@ -46,9 +48,6 @@ function com_write (fichier : P_file_t ; buf : pointer ; count : dword) : dword;
 
 IMPLEMENTATION
 
-
-const
-   COM_DEV = 3;
 
 var
    com_IO   : array[1..4] of word; {* Tableau contenant les adresses I/O des
@@ -79,7 +78,7 @@ begin
         if (com_IO[i] <> 0) then
 	    begin
 	       register := TRUE;
-               printk('com%d at %h4', [i, com_IO[i]]);
+               printk('com%d at %h3', [i, com_IO[i]]);
 
 	       { On regarde si l'UART est de type 16550A }
 
@@ -109,14 +108,13 @@ begin
     end;
 
     if (register) then
-        begin
-	   com_fops.open  := @com_open;
-	   com_fops.read  := @com_read;
-	   com_fops.write := @com_write;
-	   com_fops.seek  := NIL;   { We cannot call seek() for a character device }
-	   com_fops.ioctl := NIL;
-           register_chrdev(COM_DEV, 'com', @com_fops);
-	end;
+    begin
+       memset(@com_fops, 0, sizeof(file_operations));
+       com_fops.open  := @com_open;
+       com_fops.read  := @com_read;
+       com_fops.write := @com_write;
+       register_chrdev(COM_MAJOR, 'com', @com_fops);
+    end;
 
 end;
 

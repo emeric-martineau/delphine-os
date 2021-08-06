@@ -1,6 +1,8 @@
 type
 
-   t_gdt_desc = record
+   P_gdt_desc = ^gdt_desc;
+
+   gdt_desc = record
       limit1    : word;
       base1     : word;
       base2     : byte;
