@@ -1,0 +1,77 @@
+#!/bin/sh
+
+test_return()
+{
+   if [ $? != 0 ]
+   then
+      echo 'Error during installation !!!'
+      umount $1
+      rm -r wxy
+      echo ''
+      exit
+   fi
+}
+
+echo ''
+
+if [ $# != 1 ] 
+   then
+   echo 'You must specify device where to install Delphine OS'
+   echo ''
+   echo 'Ex : delphine_install /dev/fd0 or delphine_install /dev/hda1'
+   echo ''
+   exit
+fi
+
+echo DelphineOS installation ...
+echo
+
+mkdir wxy
+
+case $1 in
+   /dev/fd0) mount /dev/fd0 -t ext2 wxy;test_return;;
+   /dev/hda1) mount /dev/hda1 -t ext2 wxy;test_return;;
+   /dev/hda2) mount /dev/hda2 -t ext2 wxy;test_return;;
+   /dev/hda3) mount /dev/hda3 -t ext2 wxy;test_return;;
+   /dev/hda4) mount /dev/hda4 -t ext2 wxy;test_return;;
+   /dev/hbd1) mount /dev/hdb1 -t ext2 wxy;test_return;;
+   /dev/hbd2) mount /dev/hdb2 -t ext2 wxy;test_return;;
+   /dev/hdb3) mount /dev/hdb3 -t ext2 wxy;test_return;;
+   /dev/hdb4) mount /dev/hdb4 -t ext2 wxy;test_return;;
+   *) echo $1 ': Device not supported for Delphine OS installation';
+      echo '';rm -r wxy;exit;;
+esac
+
+# Compilation du noyau !!!
+
+make
+cp ./src/kernel/kernel wxy/kernel
+
+# Voir mkboot.c
+if [ -e "mkboot" ]
+then
+   echo
+else
+   echo -n 'Compiling mkboot.c ... '
+   gcc  -o mkboot mkboot.c
+   echo 'OK'
+fi
+
+./mkboot $1 wxy/kernel
+
+echo -n 'Compiling boot sector file ...   '
+   a ./src/boot/boot.S
+   test_return
+   echo 'OK'
+
+# On copie le secteur de boot sur le périphérique spécifié
+   
+   dd if=./src/boot/boot of=$1 2> wxy/temp
+   test_return
+
+echo -n 'Unmounting device ...   '
+rm wxy/temp
+umount wxy
+rm -r wxy
+echo 'OK'
+echo ''

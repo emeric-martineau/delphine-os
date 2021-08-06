@@ -1,0 +1,5 @@
+{$IFNDEF _STDLIB_}
+{$DEFINE _STDLIB_}
+
+
+{$ENDIF}

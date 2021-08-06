@@ -1,0 +1,982 @@
+{******************************************************************************
+ *  ide.pp
+ * 
+ *  ATA/ATAPI devices management
+ *
+ *  CopyLeft 2002 GaLi
+ *
+ *  version 0.5 - 23/11/2002 - GaLi - Add support for really old hard drives
+ *
+ *  version 0.4 - 26/10/2002 - GaLi - Better partitions and drives detection
+ *
+ *  version 0.3 - ??/??/2001 - GaLi - initial version
+ *
+ *  NOTE: special support for Promise 20262 PCI mass storage controller
+ *        (because this is what I have)   :-)
+ *
+ *  Major number stands for the IDE interface on which the device is
+ *  Minor number stands for device partition.
+ *
+ *  You must specify both major and minor numbers when calling a procedure or
+ *  a function.
+ *
+ *  Major numbers :
+ *      - hda, hdb : 3
+ *      - hdc, hdd : 4
+ *      - hde, hdf : 5
+ *      - hdg, hdh : 6
+ * 
+ *  Minor numbers :
+ *      - 0        : Master device itself (no filesystem support)
+ *      - 1 a 4    : Master drive primary partitions
+ *      - 5 a 63   : Master drive extended partitions
+ *      - 64       : Slave drive itself (no filesystem support)
+ *      - 65 a 68  : Slave drive primary partitions
+ *      - 69 a 128 : Slave drive extended partitions
+ *
+ *  This program is free software; you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License as published by
+ *  the Free Software Foundation; either version 2 of the License, or
+ *  (at your option) any later version.
+ *
+ *  This program is distributed in the hope that it will be useful,
+ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ *  GNU General Public License for more details.
+ *
+ *  You should have received a copy of the GNU General Public License
+ *  along with this program; if not, write to the Free Software
+ *  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+ *****************************************************************************}
+
+
+unit ide_init;
+
+
+INTERFACE
+
+{DEFINE DEBUG}
+{DEFINE SHOW_PART_TYPE}
+
+{$I blk.inc}
+{$I buffer.inc}
+{$I fs.inc}
+{$I ide.inc}
+{$I process.inc}
+{$I pci.inc}
+
+
+{ External procedures }
+
+procedure delay; external;
+procedure printk (format : string ; args : array of const); external;
+procedure set_intr_gate (n : dword ; addr : pointer); external;
+procedure enable_IRQ (irq : byte); external;
+procedure outb (port : word ; val : byte); external;
+procedure register_blkdev (nb : byte ; name : string[20] ; fops : P_file_operations); external;
+procedure unexpected_hd_intr; external;
+procedure hd_log_to_chs (major, minor : byte ; log : dword ; var c : word ; var h,s : byte); external;
+procedure hd_intr; external;
+procedure do_hd_request (major : byte); external;
+function  inb (port : word) : byte; external;
+function  hd_open (inode : P_inode_t ; fichier : P_file_t) : dword; external;
+
+
+{ External variables }
+var
+   blk_dev : array [0..MAX_NR_BLOCK_DEV] of blk_dev_struct; external name 'U_RW_BLOCK_BLK_DEV';
+   first_pci_device : P_pci_device; external name 'U_PCI_INIT_FIRST_PCI_DEVICE';
+   nb_pci_devices : dword; external name 'U_PCI_INIT_NB_PCI_DEVICES';
+
+
+{ Exported variables }
+var
+   drive_info    : array[IDE0_MAJ..IDE3_MAJ, MASTER..SLAVE] of ide_struct;
+   do_hd         : pointer;
+
+
+
+procedure detect_drive (major, minor : byte);
+function  drive_busy (major, minor : byte) : boolean;
+procedure extended_part (major, minor : byte ; p_begin : dword);
+procedure init_ide;
+procedure partition_check (major, minor : byte);
+procedure print_ide_info (command : byte ; major, minor : byte);
+
+
+
+IMPLEMENTATION
+
+
+
+const
+   drive   : array[MASTER..SLAVE] of byte = ($A0, $B0);
+   hd_str  : array[3..6, 0..1] of string[4] = (('hda' + #0, 'hdb' + #0),
+                                               ('hdc' + #0, 'hdd' + #0),
+                                               ('hde' + #0, 'hdf' + #0),
+					       ('hdg' + #0, 'hdh' + #0));
+
+var
+   ata_buffer : drive_id;
+   ext_no     : dword;
+   hd_fops    : file_operations;
+
+
+
+{******************************************************************************
+ * drive_busy
+ *
+ * Input  : major and minor number
+ * Output : TRUE or FALSE
+ *
+ * Return TRUE if device is busy (or if there is no device) and FALSE if device
+ * is ready. 
+ *****************************************************************************}
+function drive_busy(major, minor : byte) : boolean; [public, alias : 'DRIVE_BUSY'];
+
+var
+   ret, drive_nb : byte;
+   base          : word;
+
+begin
+
+   base     := drive_info[major, minor div 64].IO_base;
+   drive_nb := drive[minor div 64];
+
+   asm
+       mov   ebx, 40000            { Number of tests }
+
+       mov   dx , base
+       add   dx , DRIVE_HEAD_REG   { Drive register }
+       mov   al , drive_nb
+       out   dx , al
+
+       inc   dx                    { Status register }
+
+       @loop_while_busy:
+           dec   ebx
+           cmp   ebx, 0
+           jz    @time_out
+           in    al , dx
+           and   al , $80           { Look at 'busy bit' }
+           cmp   al , $80           { Set to 1 ? (device busy) }
+           je @loop_while_busy      { Yes -> test again }
+
+       mov   ret , 0
+       jmp   @end_func
+
+     @time_out:
+       mov   ret , 1
+
+      @end_func:
+   end; { -> asm }
+
+   if (ret = 1) then
+       result := TRUE
+   else
+       result := FALSE;
+
+end; { -> procedure }
+
+
+
+
+{******************************************************************************
+ * data_ready
+ *
+ * Input  : major and minor number
+ * Output : TRUE or FALSE
+ *
+ * Return TRUE is data is available
+ *****************************************************************************}
+function data_ready (major, minor : byte) : boolean;
+
+var
+   drive_nb, ret : byte;
+   base          : word;
+
+begin
+
+   base     := drive_info[major, minor div 64].IO_base;
+   drive_nb := drive[minor div 64];
+
+   asm
+      mov   ebx, 40000
+
+      mov   dx , base
+      add   dx , DRIVE_HEAD_REG    { Drive register }
+      mov   al , drive_nb
+      out   dx , al
+
+      inc   dx                     { Status register }
+
+      @wait_data:
+         dec   ebx
+	 cmp   ebx, 0
+	 jz    @time_out
+	 in    al , dx
+	 and   al , $08
+	 cmp   al , $08
+	 jne   @wait_data
+
+      mov   ret, 0
+      jmp   @end_func
+
+      @time_out:
+         mov   ret, 1
+
+      @end_func:
+   end;
+
+   if (ret = 1) then
+       result := FALSE
+   else
+       result := TRUE;
+
+end;
+
+
+
+{******************************************************************************
+ * drive_error
+ *
+ * Input  : major and minor number
+ * Output : TRUE or FALSE
+ *
+ * Return TRUE if an error occured
+ *****************************************************************************}
+function drive_error (major, minor : byte) : boolean;
+
+var
+   drive_nb, ret : byte;
+   base          : word;
+
+begin
+
+   base     := drive_info[major, minor div 64].IO_base;
+   drive_nb := drive[minor div 64];
+
+   asm
+      mov   dx , base
+      add   dx , STATUS_REG
+      in    al , dx
+      and   al , $01
+      cmp   al , $01
+      je    @error
+
+      mov   ret, 0
+      jmp   @end_func
+
+      @error:
+         mov   ret, 1
+
+      @end_func:
+   end;
+
+   if (ret = 1) then
+       result := TRUE
+   else
+       result := FALSE;
+
+end;
+
+
+
+{******************************************************************************
+ * extended_part
+ *
+ * Input : major, minor number and partition's first logical sector
+ *
+ * Register some informations about extended partitions
+ *****************************************************************************}
+procedure extended_part (major, minor : byte ; p_begin : dword);
+
+var
+   cyl_LSB, cyl_MSB   : byte;
+   buffer             : partition_table;
+   buf_adr            : pointer;
+   port, base         : word;
+   a, min             : byte;
+   i                  : dword;
+   cylindre           : word;
+   tete, secteur, drv : byte;
+
+begin
+
+   min := minor div 64;
+   drv := drive[min];
+
+   if (drive_info[major, min].lba_sectors <> 0) then
+       begin
+          asm
+	     mov   eax, p_begin
+	     mov   secteur, al
+	     mov   cyl_LSB, ah
+	     shr   eax, 16
+	     mov   cyl_MSB, al
+	     and   ah, $0F
+	     or    ah, $40
+	     mov   tete, ah
+	  end;
+       end
+   else
+       begin
+          hd_log_to_chs(major, minor, p_begin, cylindre, tete, secteur);
+          asm
+             mov   ax , cylindre
+             mov   cyl_LSB, al
+             mov   cyl_MSB, ah
+          end;
+       end;
+
+   base := drive_info[major, min].IO_base;
+   outb(base + NRSECT_REG, 1);          { Read 1 sector }
+   outb(base + SECTOR_REG, secteur);    { Sector number }
+   outb(base + CYL_LSB_REG, cyl_LSB);   { Cylinder number (LSB) }
+   outb(base + CYL_MSB_REG, cyl_MSB);   { Cylinder number (MSB) }
+   outb(base + DRIVE_HEAD_REG, tete or drv);   { Head }
+   outb(base + CMD_REG, WIN_READ);             { Read sector command }
+
+   if not drive_error(major, minor) then 
+      begin
+	  while (not data_ready(major, minor)) do
+	    begin
+	    end;
+          { Data are there, no error }
+          port := base;
+          buf_adr := addr(buffer);
+
+          asm
+             mov   edi, buf_adr
+             mov   dx , port
+             mov   ecx, 256
+             cld
+             @read_data_loop:
+                in    ax , dx
+                stosw
+             loop @read_data_loop
+          end; { -> asm }
+      end
+      else
+	  begin
+	     printk('\nextended_part: cannot read sector !!!\n', []);
+	  end;
+
+         if (buffer.magic_word) <> $AA55 then
+	     printk('!', []);
+
+         for i := 1 to 4 do
+	     begin
+	        if (buffer.entry[i].type_part <> 0) then
+		    begin
+		       case (buffer.entry[i].type_part) of
+		          $5: extended_part(major, minor, buffer.entry[i].dist_sec + p_begin);
+			  $F: extended_part(major, minor, buffer.entry[i].dist_sec + p_begin);
+		          else
+		              begin
+		              if (buffer.entry[i].type_part <> 0) then
+		                 begin
+				    drive_info[major, min].part[ext_no].p_type := buffer.entry[i].type_part;
+				    drive_info[major, min].part[ext_no].p_begin := buffer.entry[i].dist_sec + p_begin;
+				    drive_info[major, min].part[ext_no].p_size := buffer.entry[i].taille_part;
+		                    printk(hd_str[major, min], []);
+		                    printk('%d ', [ext_no]);
+				    {$IFDEF SHOW_PART_TYPE}
+			               printk('(%h2: %d->%d) ', [buffer.entry[i].type_part, buffer.entry[i].dist_sec, buffer.entry[i].dist_sec + buffer.entry[i].taille_part]);
+				    {$ENDIF}
+				    ext_no += 1;
+			         end;
+			      end;
+		       end;
+		    end;
+	     end;
+end;
+
+
+
+{******************************************************************************
+ * partition_check
+ *
+ * Entrée : major et minor number
+ *
+ * Print and registers some informations about device's partitions
+ *****************************************************************************}
+procedure partition_check (major, minor : byte);
+
+var
+   i, a    : byte;
+   port    : word;
+   buf_adr : pointer;
+   index   : byte;
+   base    : word;
+
+   { This variables are going to contain informations about analysed 
+     partition }
+   boot      : byte;    { 00:not active, 80h:boot partition }
+   part_type : byte;    {* Partition type (Linux, DOS, Zindows, etc ...
+                         * -> May be DelphineOS ! Bubule *}
+   size      : dword;   { Number of sectors in this partition }
+   min       : byte;
+   buffer    : partition_table;
+
+begin
+
+   printk(' Partition check: ', []);
+
+   { First read the first sector to get the partition table }
+
+   min := minor div 64;
+
+   base := drive_info[major, min].IO_base;
+   outb(base + NRSECT_REG, 1);    { Read 1 sector }
+   outb(base + SECTOR_REG, 1);    { Sector number }
+   outb(base + CYL_LSB_REG, 0);   { Cylinder number (LSB) }
+   outb(base + CYL_MSB_REG, 0);   { Cylinder number (MSB) }
+   outb(base + DRIVE_HEAD_REG, drive[min]);    { Head 0 }
+   outb(base + CMD_REG, WIN_READ);             { Read sector command }
+
+   if not drive_error(major, minor) then
+      begin
+         while (not data_ready(major, minor)) do
+	    begin
+	    end;
+         { Data is ready, no error }
+         port := base;
+         buf_adr := addr(buffer);
+
+         asm
+             mov   edi, buf_adr
+             mov   dx , port
+             mov   ecx, 256
+             cld
+             @read_data_loop:
+                 in    ax , dx
+                 stosw
+             loop @read_data_loop
+         end; { -> asm }
+      end
+   else
+      begin
+         printk('partition_check: cannot read sector\n', []);
+      end;
+
+      { Verify 'magic word' to know if the partition table is valid }
+      if (buffer.magic_word = $AA55) then
+          begin
+             for i:=1 to 4 do
+                 begin
+                    if (buffer.entry[i].type_part <> 0) then
+		        begin
+		           drive_info[major, min].part[i].p_begin := buffer.entry[i].dist_sec;
+		           drive_info[major, min].part[i].p_size  := buffer.entry[i].taille_part;
+                           drive_info[major, min].part[i].p_type  := buffer.entry[i].type_part;
+		           printk(hd_str[major, min], []);
+                           printk('%d ', [i]);
+			   {$IFDEF SHOW_PART_TYPE}
+			      printk('(%h2: %d->%d) ', [buffer.entry[i].type_part, buffer.entry[i].dist_sec, buffer.entry[i].dist_sec + buffer.entry[i].taille_part]);
+			   {$ENDIF}
+
+                           case (buffer.entry[i].type_part) of
+                              $5 : begin
+			              printk('< ', []);
+			              extended_part(major, minor, drive_info[major, min].part[i].p_begin);
+				      printk('> ', []);
+				   end;
+                              $F : begin
+			              printk('< ', []);
+			              extended_part(major, minor, drive_info[major, min].part[i].p_begin);
+				      printk('> ', []);
+				   end;
+                           end; { case }
+                        end; { -> then }
+
+                 end; { -> for }
+
+          end { -> then }
+       else
+          begin
+             printk('bad partition table !!!', []);
+          end; { if (buffer.magic_word = $AA55) }
+
+   printk('\n', []);
+
+end; { -> procedure }
+
+
+
+
+{******************************************************************************
+ * print_ide_info
+ *
+ * Input : command, major and minor number
+ *
+ * Print some informations about the device.
+ * Parameter 'command' is here to know if it is an ATA or an ATAPI device so
+ * that we can register infos at the right place.
+ *****************************************************************************}
+procedure print_ide_info(command : byte ; major, minor : byte);
+
+var
+   b : dword;
+   a : word;
+   i : byte;
+   j : char;
+   LBA_disk : boolean;
+   min : byte;
+
+begin
+    { First print the device name }
+    for i := 1 to 40 do
+    begin
+        j := ata_buffer.model[i+1];
+        ata_buffer.model[i+1] := ata_buffer.model[i];
+        ata_buffer.model[i] := j;
+        i += 1; { Step is 2 }
+    end;
+
+    i   := 1;
+    min := minor div 64;
+
+    while (ata_buffer.model[i] <> ' ') do
+    begin
+        printk('%c', [ata_buffer.model[i]]);
+        i += 1;
+    end;
+
+    while (ata_buffer.model[i] = ' ') or (i = 40) do
+    begin
+        i += 1;
+    end;
+
+    if (i < 40)
+    then
+        printk('%c', [#32]);
+
+    while (ata_buffer.model[i] <> ' ') and (i < 40) do
+    begin
+        printk('%c', [ata_buffer.model[i]]);
+        i += 1;
+    end;
+
+    {* If it is an ATA device, we suppose it's a hard drive and we give it
+     * type 2 *}
+
+    if (command = ATA_IDENTIFY)
+    then begin
+        blk_dev[major].request_fn := @do_hd_request;
+        drive_info[major, min].ide_type := 2;
+        printk(', ', []);
+
+        { Print hard drive size }
+        { Does it support LBA ? }
+        i := ata_buffer.capability;
+
+        asm
+            mov   al , i
+            and   al , 2
+            mov    i , al
+        end; { -> asm }
+
+        if (i = 2)
+        then begin
+            { Device supports LBA }
+            drive_info[major, min].ide_type := drive_info[major, min].ide_type or $80;
+            printk('%d', [ata_buffer.lba_capacity div 2048]);
+            printk('Mb ', []);
+            drive_info[major, min].lba_sectors := ata_buffer.lba_capacity;
+	    drive_info[major, min].cyls    := ata_buffer.cur_cyls;
+	    drive_info[major, min].heads   := ata_buffer.cur_heads;
+	    drive_info[major, min].sectors := ata_buffer.cur_sectors;
+
+            if (ata_buffer.buf_size <> 0)
+            then begin
+                printk('w/%dk cache ', [ata_buffer.buf_size div 2]);
+            end;
+
+            printk('using LBA\n', []);
+        end { -> then }
+        else begin
+            { Device doesn't support LBA. Et ch'a ch'est balot }
+	    if (ata_buffer.cur_cyls = 0) then
+	    begin
+	        b := (ata_buffer.cyls *
+		      ata_buffer.heads *
+		      ata_buffer.sectors) div 2048;
+		drive_info[major, min].cyls    := ata_buffer.cyls;
+		drive_info[major, min].heads   := ata_buffer.heads;
+		drive_info[major, min].sectors := ata_buffer.sectors;
+	    end
+	    else begin
+                b := (ata_buffer.cur_cyls *
+                      ata_buffer.cur_heads *
+                      ata_buffer.cur_sectors)
+                      div 2048;
+		drive_info[major, min].cyls    := ata_buffer.cur_cyls;
+		drive_info[major, min].heads   := ata_buffer.cur_heads;
+		drive_info[major, min].sectors := ata_buffer.cur_sectors;
+	    end;
+                  
+            printk('%dMb', [b]);
+
+            if (ata_buffer.buf_size <> 0)
+            then begin
+                printk(' w/%dk cache', [ata_buffer.buf_size div 2]);
+            end;
+
+            printk(', CHS=%d/%d/%d\n', [drive_info[major, min].cyls,
+                                        drive_info[major, min].heads,
+                                        drive_info[major, min].sectors]);
+        end; { -> if.. then.. else...}
+
+        partition_check(major, minor);
+    end
+    else begin
+        {* If it is an ATAPI device, we get his type :
+         * 5 : CD-ROM or DVD-ROM
+         * 1 : IDE TAPE
+         * 0 : IDE FLOPPY (ZIP drive) *}
+
+        {a := (ata_buffer.config shr 8) and $1F;
+
+        asm
+            mov   ax , a
+            shr   ax , 8
+            and   ax , $1F
+            mov    a , ax
+	end;} { -> asm }
+
+        drive_info[major, min].ide_type := (ata_buffer.config shr 8) and $1F;
+
+        if (ata_buffer.buf_size <> 0)
+        then begin
+            printk(' w/%dk cache', [ata_buffer.buf_size div 2]);
+        end;
+
+        printk('\n', []);
+    end;
+end; { -> procedure }
+
+
+
+
+{******************************************************************************
+ * detect_drive
+ *
+ * Input : major and minor number
+ *
+ * Detect IDE devices
+ *****************************************************************************}
+procedure detect_drive (major, minor : byte);
+
+var
+   min, a     : byte;
+   port, base : word;
+   buf_addr   : pointer;
+
+begin
+
+   ext_no := 5;
+   min    := minor div 64;
+   base   := drive_info[major, min].IO_base;
+
+   {$IFDEF DEBUG}
+      printk('Trying to find dev %d:%d at io %h4\n', [major, minor, base]);
+   {$ENDIF}
+
+   if not drive_busy(major, minor) then
+      begin
+         { Send 'ATA identify' command }
+         outb(base + CMD_REG, ATA_IDENTIFY);
+	 if not drive_busy(major, minor) then
+	    begin
+	       if (data_ready(major, minor) and not drive_error(major, minor)) then
+	       { if (((a and $1) = 0) and ((a and $8) = 8)) then }
+	       { Data is ready, no error }
+	          begin
+		     printk(hd_str[major, min], []);
+		     printk(': ', []);
+		     { Get data }
+		     port := base;
+		     buf_addr := addr(ata_buffer);
+
+		     asm
+		        mov   edi, buf_addr
+			mov   dx , port
+			mov   ecx, 256     { Read 256 words (512 bytes) }
+			cld
+
+			@read_data_loop:
+			   in    ax , dx
+			   stosw
+			loop @read_data_loop
+		     end;
+		     
+		     register_blkdev(major, 'hd', NIL);
+		     print_ide_info(ATA_IDENTIFY, major, minor);
+
+		  end
+	       else
+	          begin
+		     { Send 'ATAPI identify' command }
+		     outb(base + CMD_REG, ATAPI_IDENTIFY);
+		     if not drive_busy(major, minor) then
+		        begin
+			   if (data_ready(major, minor) and not drive_error(major, minor)) then
+			      begin
+			         { Data is ready, no error }
+			         printk(hd_str[major, min], []);
+				 printk(': ', []);
+				 { Get data }
+				 port := base;
+				 buf_addr := addr(ata_buffer);
+
+				 asm
+				    mov   edi, buf_addr
+				    mov   dx , port
+				    mov   ecx, 256
+				    cld
+				    
+				    @read_data_loop:
+				       in    ax , dx
+				       stosw
+				    loop @read_data_loop
+				 end;
+
+				 print_ide_info(ATAPI_IDENTIFY, major, minor);
+
+			      end;
+			end;
+		  end;
+	    end;
+      end
+   else
+      begin
+         {$IFDEF DEBUG}
+	    printk('dev %d:%d is busy\n', [major, minor]);
+	 {$ENDIF}
+      end;
+end;
+
+
+
+{******************************************************************************
+ * probe_controller
+ *
+ * Input : ide controller base I/O address
+ *
+ * Output : TRUE if the controller responds else FALSE
+ *
+ * Function taken from Tabos written by Jan-Michael Brummer
+ *****************************************************************************}
+function probe_controller (io : word) : boolean;
+begin
+
+   if (io = $00) then
+       begin
+          result := FALSE;
+	  exit;
+       end;
+
+   {$IFDEF DEBUG}
+      printk('Try to find an IDE controller at %h4\n', [io]);
+   {$ENDIF}
+
+   outb(io + NRSECT_REG, $55);
+   outb(io + SECTOR_REG, $AA);
+
+   asm
+      nop
+      nop
+      nop
+      nop
+   end;
+
+   if ((inb(io + NRSECT_REG) = $55) and (inb(io + SECTOR_REG) = $AA)) then
+	result := TRUE
+   else
+        result := FALSE;
+
+end;
+
+
+
+{******************************************************************************
+ * init_pci_ide
+ *
+ * Check if there is a non standard mass storage controller in the PCI devices
+ * list.
+ *****************************************************************************}
+procedure init_pci_ide;
+
+var
+   maj             : byte;
+   i, j            : dword;
+   high_16         : word;
+   pci_devices     : P_pci_device;
+   udma_speed_flag : byte;
+
+begin
+
+   maj := 5;
+
+   pci_devices := first_pci_device;
+   for i := 1 to nb_pci_devices do
+       begin
+          if ((pci_devices^.main_class = $01) and
+	      (pci_devices^.sub_class  = $80)) then
+	      begin
+	         if (pci_devices^.vendor_id = $105A) and (pci_devices^.device_id = $4D38) then
+		 begin
+		    drive_info[maj, MASTER].IO_base := pci_devices^.io[0];
+		    drive_info[maj, MASTER].irq     := pci_devices^.irq;
+		    drive_info[maj, SLAVE].IO_base  := pci_devices^.io[0];
+		    drive_info[maj, SLAVE].irq      := pci_devices^.irq;
+		    maj += 1;
+		    drive_info[maj, MASTER].IO_base := pci_devices^.io[2];
+		    drive_info[maj, MASTER].irq     := pci_devices^.irq;
+		    drive_info[maj, SLAVE].IO_base  := pci_devices^.io[2];
+		    drive_info[maj, SLAVE].irq      := pci_devices^.irq;
+		    { Try to init pdc202xx controller. Code from Linux }
+		    {* high_16 := lo(pci_devices^.io[4]);
+		     * udma_speed_flag := inb(high_16 + $001F);
+		     * outb(high_16 + $001F, udma_speed_flag or $10);
+		     * delay;
+		     * outb(high_16 + $001F, udma_speed_flag and (not $10));
+		     * delay;
+		     * delay; *}
+		    exit;
+		 end
+		 else
+		 begin
+	         for j := 0 to 5 do
+		     begin
+		        if (probe_controller(pci_devices^.io[j])) then
+			    begin
+			       drive_info[maj, MASTER].IO_base := pci_devices^.io[j];
+			       drive_info[maj, MASTER].irq     := pci_devices^.irq;
+			       drive_info[maj, SLAVE].IO_base  := pci_devices^.io[j];
+			       drive_info[maj, SLAVE].irq      := pci_devices^.irq;
+			       exit;
+			       {maj += 1;
+			       if (maj > 6) then
+			           exit;}
+			    end;
+		     end;
+		  exit;
+		  end;
+	      end;
+	  pci_devices := pci_devices^.next;
+       end;
+
+end;
+
+
+
+{******************************************************************************
+ * init_ide
+ *
+ * Initialize and detect IDE devices. This procedure is only called during
+ * DelphineOS initialization
+ *****************************************************************************}
+procedure init_ide; [public, alias : 'INIT_IDE'];
+
+var
+   i, j : dword;
+
+begin
+
+   drive_info[IDE0_MAJ, MASTER].IO_base := $1F0;
+   drive_info[IDE0_MAJ, MASTER].irq     := 14;
+   drive_info[IDE0_MAJ, SLAVE].IO_base  := $1F0;
+   drive_info[IDE0_MAJ, SLAVE].irq      := 14;
+   drive_info[IDE1_MAJ, MASTER].IO_base := $170;
+   drive_info[IDE1_MAJ, MASTER].irq     := 15;
+   drive_info[IDE1_MAJ, SLAVE].IO_base  := $170;
+   drive_info[IDE1_MAJ, SLAVE].irq      := 15;
+   drive_info[IDE2_MAJ, MASTER].IO_base := $00;
+   drive_info[IDE2_MAJ, SLAVE].IO_base  := $00;
+   drive_info[IDE3_MAJ, MASTER].IO_base := $00;
+   drive_info[IDE3_MAJ, SLAVE].IO_base  := $00;
+
+   init_pci_ide;
+
+   { We give all devices type FFh (no drive), it will be modified if a drive
+     is detected }
+
+   do_hd  := @unexpected_hd_intr;
+
+   for i := IDE0_MAJ to IDE3_MAJ do
+      begin
+         drive_info[i, MASTER].ide_type    := $FF;
+	 drive_info[i, SLAVE].ide_type     := $FF;
+         drive_info[i, MASTER].ide_sem     := $01;
+	 drive_info[i, SLAVE].ide_sem      := $01;
+         drive_info[i, MASTER].lba_sectors := $00;
+	 drive_info[i, SLAVE].lba_sectors  := $00;
+	 for j := 1 to MAX_NR_PART do
+	    begin
+	       drive_info[i, MASTER].part[j].p_type := $00;
+	       drive_info[i, SLAVE].part[j].p_type  := $00;
+	    end;
+      end;
+
+   { Check IDE interfaces 0 and 1 (standard interfaces) }
+   for i := IDE0_MAJ to IDE1_MAJ do
+       begin
+          if (probe_controller(drive_info[i, MASTER].IO_base)) then
+	      begin
+	         {$IFDEF DEBUG}
+	            printk('ide%d: controller at %h4, irq %d\n', [i - 3, drive_info[i, MASTER].IO_base, drive_info[i, MASTER].irq]);
+		 {$ENDIF}
+	         detect_drive(i, 0);
+		 detect_drive(i, 64);
+	      end;
+       end;
+
+   { Check IDE interfaces 2 and 3 (if PCI IDE controllers detected) }
+   for i := IDE2_MAJ to IDE3_MAJ do
+       begin
+          if (drive_info[i, MASTER].IO_base <> 0) then
+              begin
+	         {$IFDEF DEBUG}
+	            printk('ide%d: controller at %h4, irq %d\n', [i - 3, drive_info[i, MASTER].IO_base, drive_info[i, MASTER].irq]);
+		 {$ENDIF}
+                 detect_drive(i, 0);
+	         detect_drive(i, 64);
+              end;
+       end;
+
+   { Register detected devices }
+
+   hd_fops.open  := @hd_open;
+   hd_fops.read  := NIL;
+   hd_fops.write := NIL;
+   hd_fops.seek  := NIL;
+
+   for i := IDE0_MAJ to IDE3_MAJ do
+       begin
+          if (drive_info[i, MASTER].ide_type <> $FF)
+	  or (drive_info[i, SLAVE].ide_type  <> $FF) then
+	      begin
+	         {$IFDEF DEBUG}
+		    printk('Registering IDE controller at %h4, irq %d\n', [drive_info[i, MASTER].IO_base, drive_info[i, MASTER].irq]);
+		 {$ENDIF}
+	         register_blkdev(i, 'hd', @hd_fops);
+		 set_intr_gate(drive_info[i, MASTER].irq + 32, @hd_intr);
+		 enable_IRQ(drive_info[i, MASTER].irq);
+	      end;
+       end;
+
+{ May be we have to reset all the controllers (software reset). Don't know. }
+
+   outb($3F6, 4);
+   drive_busy(4, 0);
+   outb($3F6, 0);
+   drive_busy(4, 0);
+
+end; { -> procedure }
+
+
+
+begin
+end.

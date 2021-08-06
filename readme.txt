@@ -1,0 +1,92 @@
+
+Installation de DelphineOS:
+---------------------------
+
+taper :  ./install device (device=/dev/fd0 ou /dev/hda?)
+
+ATTENTION : L'anti-virus du BIOS doit être désactivé pour que DelphineOS
+            fonctionne correctement.
+
+Bochs :
+-------
+
+pour tester DelphineOS avec Bochs, il suffit de creer l'image
+taper : ./go_bochs
+
+
+
+
+                      -=DOCUMENTATION DelphineOS=-
+
+
+Détail de la mémoire physique (sans pagination):
+------------------------------------------------
+
+  addr debut       -> addr fin             : nb page : description
+
+  00000h           -> 01FFFh               :       2 : Pile système (8 Ko)
+  02000h           -> 11FFFh               :      16 : GDT (8192 descripteurs), soit 64 Ko
+  12000h           -> 12000h + X * 4ko -1  :  X<=166 : Noyau (664 Ko maximum)     X = taille du noyau div 4ko + 1
+
+  12000h + X * 4ko -> B7FFFh               :       X : Memoire libre
+    
+
+  B8000h  ->   BFFFFh  : Mémoire vidéo (32 Ko)
+  C0000h  ->   FFFFFh  : Réservé (mappage des cartes ISA et PCI ???)
+ 100000h  ->  100FFFh  : Données fondamentales du noyau (Voir plus bas)
+ 101000h  ->  101FFFh  : Répertoire global de pages pour le noyau (4Ko)
+                           (accès à toutes la mémoire)
+ 102000h  ->  102FFFh  : 1ere table de pages du noyau (4Ko)
+ 103000h  ->  ??????h  : Tables de pages du noyau
+
+
+Tout le reste est libre pour l'OS !!!
+
+
+-------------------------------------------------------------------------------
+
+
+Organisation de la "zone de données fondamentale du noyau" :
+------------------------------------------------------------
+
+   100000h -> 1003FFh : bitmap de la GDT (1Ko)
+   100400h -> 10058Fh : IDT (50 entrées), soit 400 octets
+   100590h -> 1005F7h : TSS initial
+   1005F8h -> 
+
+
+-------------------------------------------------------------------------------
+
+Adressage des processus:
+------------------------
+
+Chaque processus dispose de 4Mo de mémoire ainsi que de 2 piles de 4Ko. (Une
+pour le mode noyau et une pour le mode utilisateur).
+
+Les adresses virtuelles sont donc :
+
+   0xFFC01000 -> 0xFFFFFFFF : code et données du processus
+   0xFFC00000 -> 0xFFC00FFF : pile (mode utilisateur)
+
+
+-------------------------------------------------------------------------------
+
+
+Compilation de fichiers sous linux pour DelphineOS :
+----------------------------------------------------
+
+Le partie 'linking' est la plus importante. Utilisez la commande suivante :
+
+   ld -o name file -T linkfile
+
+name : nom du fichier éxécutable (format ELF)
+
+file : nom du fichier objet (format ELF)
+
+linkfile : fichier fournit avec DelphineOS qui spécifie certaines valeurs
+           différentes des valeurs par défaut dans l'en-tête ELF
+
+Switch '-r' de ld : make relocable file. Le fichier ainsi créer peut également
+                    servir lui aussi d'entrée à ld.
+
+-------------------------------------------------------------------------------
