@@ -43,6 +43,7 @@ INTERFACE
 
 {* External procedure and functions *}
 
+procedure print_bochs (format : string ; args : array of const); external;
 procedure printk (format : string ; args : array of const); external;
 function  sys_close (fd : dword) : dword; external;
 
@@ -113,7 +114,7 @@ label out;
 begin
 
    {$IFDEF DEBUG_SYS_DUP2}
-      printk('sys_dup2 (%d): %d %d\n', [current^.pid, oldfd, newfd]);
+      print_bochs('sys_dup2 (%d): %d %d\n', [current^.pid, oldfd, newfd]);
    {$ENDIF}
 
 	sti();
@@ -122,7 +123,7 @@ begin
    begin
       result := -EBADF;
 		{$IFDEF DEBUG_SYS_DUP2}
-			printk('sys_dup2 (%d): %s is not a valid fd\n', [current^.pid, oldfd]);
+			print_bochs('sys_dup2 (%d): %s is not a valid fd\n', [current^.pid, oldfd]);
 		{$ENDIF}
       exit;
    end;
@@ -147,7 +148,7 @@ out:
 	current^.close_on_exec := current^.close_on_exec and ( not (1 shl newfd));
 
 	{$IFDEF DEBUG_SYS_DUP2}
-		printk('sys_dup2 (%d): result=%d\n', [current^.pid, result]);
+		print_bochs('sys_dup2 (%d): result=%d\n', [current^.pid, result]);
 	{$ENDIF}
 
 end;
@@ -167,7 +168,7 @@ var
 begin
 
    {$IFDEF DEBUG_SYS_DUP}
-      printk('sys_dup (%d): fildes=%d (%h)\n', [current^.pid, fildes, current^.file_desc[fildes]]);
+      print_bochs('sys_dup (%d): fildes=%d (%h)\n', [current^.pid, fildes, current^.file_desc[fildes]]);
    {$ENDIF}
 
 	sti();
@@ -190,7 +191,7 @@ begin
 {		current^.file_desc[fildes]^.inode^.count += 1;}
 		current^.file_desc[fd] := current^.file_desc[fildes];
 		{$IFDEF DEBUG_SYS_DUP}
-			printk('sys_dup (%d): %d -> %d\n', [current^.pid, fildes, fd]);
+			print_bochs('sys_dup (%d): %d -> %d\n', [current^.pid, fildes, fd]);
 		{$ENDIF}
 		result := fd;
 	end
@@ -235,7 +236,7 @@ begin
 
       F_GETFD: begin
                   result := (current^.close_on_exec shr fd) and 1;
-      		   	printk('F_GETFD (fd=%d): close_on_exec=%h\n', [fd, current^.close_on_exec]);
+      		   	print_bochs('F_GETFD (fd=%d): close_on_exec=%h\n', [fd, current^.close_on_exec]);
       	       end;
 
       F_SETFD: begin
@@ -253,14 +254,14 @@ begin
       F_GETFL:  result := fichier^.flags;
 
       else
-         printk('sys_fcntl (%d): unknown command (%h)\n', [current^.pid, cmd]);
+         print_bochs('sys_fcntl (%d): unknown command (%h)\n', [current^.pid, cmd]);
    end;
 
    {$IFDEF DEBUG_SYS_FCNTL}
       if (cmd = F_DUPFD) then
-          printk('sys_fcntl (%d): have called sys_dupfd(%d)\n', [current^.pid, fd])
+          print_bochs('sys_fcntl (%d): have called sys_dupfd(%d)\n', [current^.pid, fd])
       else
-          printk('sys_fcntl (%d): cmd=%d, fd=%d, arg=%d -> res=%d (%d)\n', [current^.pid, cmd, fd, arg, result,
+          print_bochs('sys_fcntl (%d): cmd=%d, fd=%d, arg=%d -> res=%d (%d)\n', [current^.pid, cmd, fd, arg, result,
 	   				fichier^.flags]);
    {$ENDIF}
 

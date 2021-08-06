@@ -49,11 +49,14 @@ INTERFACE
 
 { External procedures and functions }
 
-procedure panic (reason : string); external;
-procedure printk (format : string ; args : array of const); external;
-procedure kfree_s (addr : pointer ; size : dword); external;
-procedure schedule; external;
+function  do_signal (signr : dword) : boolean; external;
 function  get_free_page : pointer; external;
+procedure kfree_s (addr : pointer ; size : dword); external;
+procedure panic (reason : string); external;
+procedure print_bochs (format : string ; args : array of const); external;
+procedure printk (format : string ; args : array of const); external;
+procedure schedule; external;
+function  signal_pending (p : P_task_struct) : dword; external;
 
 
 procedure add_task (task : P_task_struct);
@@ -72,7 +75,6 @@ function  sys_getppid : dword; cdecl;
 function  sys_getuid : dword; cdecl;
 function  sys_geteuid : dword; cdecl;
 function  sys_setpgid (pid, pgid : dword) : dword; cdecl;
-function  sys_times (buffer : P_tms) : dword; cdecl;
 procedure wake_up (p : PP_wait_queue);
 procedure wake_up_process (task : P_task_struct);
 
@@ -114,7 +116,7 @@ var
 begin
 
    {$IFDEF DEBUG}
-      printk('add_task: PID=%d\n', [task^.pid]);
+      print_bochs('add_task: PID=%d\n', [task^.pid]);
    {$ENDIF}
 
    cur_table := pid_table;
@@ -158,7 +160,7 @@ procedure del_task (task : P_task_struct); [public, alias : 'DEL_TASK'];
 begin
 
    {$IFDEF DEBUG}
-      printk('del_task: PID=%d\n', [task^.pid]);
+      print_bochs('del_task: PID=%d\n', [task^.pid]);
    {$ENDIF}
 
 	pushfd();
@@ -186,13 +188,23 @@ end;
  *
  *****************************************************************************}
 procedure add_to_runqueue (task : P_task_struct); [public, alias : 'ADD_TO_RUNQUEUE'];
+
+{$IFDEF DEBUG_ADD_TO_RUNQUEUE}
+var
+	i : dword;
+{$ENDIF}
+
 begin
 
 	pushfd();
 	cli();
 
    {$IFDEF DEBUG_ADD_TO_RUNQUEUE}
-      printk('add_to_runqueue: PID=%d\n', [task^.pid]);
+		asm
+			mov eax, [ebp+4]
+			mov i, eax
+		end;
+      print_bochs('add_to_runqueue: PID=%d  EIP=%h', [task^.pid, i]);
    {$ENDIF}
 
    if (task^.next_run = NIL) then
@@ -206,6 +218,10 @@ begin
       first_task^.prev_run^.next_run := task;
       first_task^.prev_run := task;
    end;
+
+	{$IFDEF DEBUG_ADD_TO_RUNQUEUE}
+		print_bochs('  END\n', []);
+	{$ENDIF}
 
 	popfd();
 
@@ -224,6 +240,11 @@ end;
  *****************************************************************************}
 procedure del_from_runqueue (task : P_task_struct); [public, alias : 'DEL_FROM_RUNQUEUE'];
 
+{$IFDEF DEBUG_DEL_FROM_RUNQUEUE}
+var
+	i : dword;
+{$ENDIF}
+
 begin
 
 	pushfd();
@@ -232,7 +253,11 @@ begin
       if (task^.next_run <> NIL) and (task^.pid <> 1) then
       begin
          {$IFDEF DEBUG_DEL_FROM_RUNQUEUE}
-            printk('del_from_runqueue: PID=%d\n', [task^.pid]);
+				asm
+					mov eax, [ebp+4]
+					mov i, eax
+				end;
+            print_bochs('del_from_runqueue: PID=%d  EIP=%h\n', [task^.pid, i]);
          {$ENDIF}
          task^.prev_run^.next_run := task^.next_run;
          task^.next_run^.prev_run := task^.prev_run;
@@ -304,11 +329,11 @@ begin
 	popfd();
 
    {$IFDEF DEBUG}
-      printk('get_new_pid: %d\n', [i + add]);
+      print_bochs('get_new_pid: %d\n', [i + add]);
    {$ENDIF}
 
    if (i + add) > 1022 then
-      printk('WARNING get_new_pid: new PID is > 1022 (%d)\n', [i + add]);
+      print_bochs('WARNING get_new_pid: new PID is > 1022 (%d)\n', [i + add]);
 
    result := i + add;
 
@@ -434,7 +459,8 @@ end;
 procedure add_wait_queue (p : PP_wait_queue ; wait : P_wait_queue);
 
 begin
-{printk('add_wait_queue (%d): wait=%h wait^.next=%h\n', [current^.pid, wait, p^]);}
+{print_bochs('add_wait_queue (%d): wait=%h wait^.next=%h\n',
+[current^.pid, wait, p^]);}
    wait^.next := p^;
    p^ := wait;
 end;
@@ -452,7 +478,8 @@ var
    tmp : P_wait_queue;
 
 begin
-{printk('remove_wait_queue (%d): wait=%h wait^.next=%h\n', [current^.pid, wait, wait^.next]);}
+{print_bochs('remove_wait_queue (%d): wait=%h wait^.next=%h\n',
+[current^.pid, wait, wait^.next]);}
 
    if (p^ = wait) then   { wait est le 1er élément de p }
        p^ := wait^.next
@@ -472,7 +499,7 @@ end;
  * sleep_on
  *
  * Met le processus courant dans la file d'attente p. Le processus n'est
- * plus éxécuté jusqu'à son réveil meme si un signal arrive.
+ * plus éxécuté jusqu'à son réveil même si un signal arrive.
  *
  * NOTE: this function is only used by kflushd().
  *****************************************************************************}
@@ -484,13 +511,16 @@ var
 								* virtuel, donc, pas de problème avec cette
 								* déclaration *}
 
+	sig  : dword;
+
 begin
 
    {$IFDEF DEBUG_SLEEP_ON}
-      printk('sleep_on: PID=%d (%h)\n', [current^.pid, @wait]);
+      print_bochs('sleep_on: PID=%d (%h)\n', [current^.pid, @wait]);
    {$ENDIF}
 
    wait.task := current;
+	wait.next := NIL;
    add_wait_queue(p, @wait);
 
    current^.state := TASK_UNINTERRUPTIBLE;
@@ -522,14 +552,14 @@ begin
       while (tmp <> NIL) do
       begin
          {$IFDEF DEBUG_WAKE_UP}
-            printk('wake_up: PID=%d\n', [longint(tmp^.task^)]);
+            print_bochs('wake_up: PID=%d\n', [longint(tmp^.task^)]);
          {$ENDIF}
 	 		add_to_runqueue(tmp^.task);
 	 		tmp := tmp^.next;
       end;
    end;
 
-   schedule();
+{   schedule();}
 
 end;
 
@@ -549,6 +579,8 @@ var
 								* virtuel, donc, pas de problème avec cette
 								* déclaration *}
 
+	sig  : dword;
+
 {$IFDEF DEBUG_INTERRUPTIBLE_SLEEP_ON}
    r_eip : dword;
 {$ENDIF}
@@ -562,17 +594,25 @@ begin
 			mov   eax, [ebp + 4]
 			mov   r_eip, eax
       end;
-      printk('interruptible_sleep_on: PID=%d (%h) EIP=%h\n', [current^.pid, @wait, r_eip]);
+      print_bochs('interruptible_sleep_on: PID=%d (%h) EIP=%h\n', [current^.pid, @wait, r_eip]);
    {$ENDIF}
 
    wait.task := current;
+	wait.next := NIL;
+
    add_wait_queue(p, @wait);
 
    current^.state := TASK_INTERRUPTIBLE;
 
    schedule();
 
+	cli();
+
    remove_wait_queue(p, @wait);
+
+	sig := signal_pending(current);
+	if (sig <> 0) then
+		 do_signal(sig);
 
 	sti();
 
@@ -605,18 +645,24 @@ begin
 		end;
 	{$ENDIF}
 
+	pushfd();
+	cli();
+
    tmp := p^;
 
    if (tmp <> NIL) then
    begin
       {$IFDEF DEBUG_INTERRUPTIBLE_WAKE_UP}
-         printk('interruptible_wake_up: PID=%d EIP=%h\n', [longint(tmp^.task^), r_eip]);
+         print_bochs('interruptible_wake_up: EIP=%h ', [r_eip]);
+			print_bochs('PID=%d\n', [longint(tmp^.task^)]);
       {$ENDIF}
       add_to_runqueue(tmp^.task);
    end;
 
    if (s) then
        schedule();
+
+	popfd();
 
 end;
 
@@ -630,33 +676,6 @@ procedure wake_up_process (task : P_task_struct); [public, alias : 'WAKE_UP_PROC
 begin
 
    add_to_runqueue(task);
-
-end;
-
-
-
-{******************************************************************************
- * sys_times
- *
- * Store process times for the calling process
- *
- * FIXME: sys_times do nothing !!!
- *****************************************************************************}
-function sys_times (buffer : P_tms) : dword; cdecl; [public, alias : 'SYS_TIMES'];
-begin
-
-{   printk('sys_times (%d): buffer=%h\n', [current^.pid, buffer]);}
-
-   if (buffer = NIL) then
-       result := -EFAULT
-   else
-   begin
-      buffer^.tms_utime  := current^.utime;
-      buffer^.tms_stime  := current^.stime;
-      buffer^.tms_cutime := 1;
-      buffer^.tms_cstime := 1;
-      result := jiffies;
-   end;
 
 end;
 
@@ -678,7 +697,7 @@ begin
    end;
 
    {$IFDEF DEBUG_SYS_GETCWD}
-      printk('sys_getcwd: ', []);
+      print_bochs('sys_getcwd: ', []);
    {$ENDIF}
 
    if (size < ord(current^.cwd[0])) then
@@ -689,11 +708,11 @@ begin
 	  begin
               buf[i - 1] := current^.cwd[i];
 	      {$IFDEF DEBUG_SYS_GETCWD}
-	         printk('%c', [current^.cwd[i]]);
+	         print_bochs('%c', [current^.cwd[i]]);
 	      {$ENDIF}
 	  end;
 	  {$IFDEF DEBUG_SYS_GETCWD}
-	     printk(' (%d)\n', [i + 1]);
+	     print_bochs(' (%d)\n', [i + 1]);
 	  {$ENDIF}
           buf[i] := #0;
           result := i + 1;

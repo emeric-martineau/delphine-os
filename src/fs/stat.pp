@@ -31,7 +31,7 @@ INTERFACE
 
 {DEFINE DEBUG_SYS_STAT}
 {DEFINE DEBUG_SYS_FSTAT}
-{DEFINE DEBUG_SYS_STAT64}
+{$DEFINE DEBUG_SYS_STAT64}
 
 
 {* Headers *}
@@ -48,6 +48,7 @@ function  alloc_inode : P_inode_t; external;
 procedure free_inode (inode : P_inode_t); external;
 procedure kfree_s (addr : pointer ; size : dword); external;
 function  namei (path : pchar) : P_inode_t; external;
+procedure print_bochs (format : string ; args : array of const); external;
 procedure printk (format : string ; args : array of const); external;
 
 
@@ -94,8 +95,14 @@ var
 
 begin
 
+	if (fd >= OPEN_MAX) then
+	begin
+		result := -EBADF;
+		exit;
+	end;
+
    fichier := current^.file_desc[fd];
-   if ((fichier = NIL) or (fd >= OPEN_MAX)) then
+   if (fichier = NIL) then
    begin
       result := -EBADF;
       exit;
@@ -105,13 +112,13 @@ begin
 
    if (inode = NIL) then
    begin
-      printk('sys_fstat (%d) fd %d has no inode\n', [current^.pid, fd]);
+      print_bochs('sys_fstat (%d) fd %d has no inode\n', [current^.pid, fd]);
       result := -EBADF;
       exit;
    end;
 
    {$IFDEF DEBUG_SYS_FSTAT}
-      printk('sys_fstat: fd=%d  mode=%h\n', [fd, inode^.mode]);
+      print_bochs('sys_fstat: fd=%d  mode=%h\n', [fd, inode^.mode]);
    {$ENDIF}
 
    statbuf^.st_dev     := (inode^.dev_maj shl 8) + inode^.dev_min;
@@ -149,7 +156,7 @@ begin
 	sti();
 
    {$IFDEF DEBUG_SYS_STAT}
-      printk('sys_stat: filename=%s\n', [filename]);
+      print_bochs('sys_stat: filename=%s\n', [filename]);
    {$ENDIF}
 
    inode := namei(filename);
@@ -159,7 +166,7 @@ begin
     * It means that "filename" hasn't been found *}
    begin
       {$IFDEF DEBUG_SYS_STAT}
-         printk('sys_stat: no inode returned by namei(%s) -> %d\n', [filename, longint(inode)]);
+         print_bochs('sys_stat: no inode returned by namei(%s) -> %d\n', [filename, longint(inode)]);
       {$ENDIF}
       result := longint(inode);
       exit;
@@ -208,7 +215,7 @@ begin
    end;
 
    {$IFDEF DEBUG_SYS_STAT64}
-      printk('Welcome in sys_stat64 (%h, %h)\n', [statbuf, flags]);
+      print_bochs('Welcome in sys_stat64 (%h, %h)\n', [statbuf, flags]);
    {$ENDIF}
 
    inode := namei(filename);
@@ -218,7 +225,7 @@ begin
     * It means that "filename" hasn't been found *}
    begin
       {$IFDEF DEBUG_SYS_STAT64}
-         printk('sys_stat64: no inode returned by namei(%s)\n', [filename]);
+         print_bochs('sys_stat64: no inode returned by namei(%s)\n', [filename]);
       {$ENDIF}
       result := longint(inode);
       exit;
@@ -257,7 +264,7 @@ end;
  *****************************************************************************}
 function sys_readlink (path : pchar ; buf : pchar ; bufsiz : dword) : dword; cdecl; [public, alias : 'SYS_READLINK'];
 begin
-   printk('Welcome in sys_readlink (%c%s)\n', [path[0], path]);
+   print_bochs('Welcome in sys_readlink (%c%s)\n', [path[0], path]);
    result := -ENOSYS;
    exit;
 end;

@@ -3,6 +3,8 @@
 
 #include <sys/cdefs.h>
 
+__BEGIN_DECLS
+
 #define M_E		2.7182818284590452354	/* e */
 #define M_LOG2E		1.4426950408889634074	/* log_2 e */
 #define M_LOG10E	0.43429448190325182765	/* log_10 e */
@@ -68,9 +70,13 @@ double atan2(double x, double y) __THROW __attribute__((__const__));
 double copysign(double value, double sign) __attribute__((__const__));
 
 #  define HUGE_VAL \
-  (__extension__                                                              \
-   ((union { unsigned __l __attribute__((__mode__(__DI__))); double __d; })   \
-    { __l: 0x000000007ff00000ULL }).__d)
+  (__extension__ \
+   ((union { unsigned long long __ll; double __d; }) \
+    { __ll: 0x7ff0000000000000ULL }).__d)
+#  define HUGE_VALF \
+  (__extension__ \
+   ((union { unsigned int __i; float __f; }) \
+    { __i: 0x7f800000UL }).__f)
 
 #ifdef _GNU_SOURCE
 void sincos(double x, double* sinx, double* cosx);
@@ -92,5 +98,12 @@ double erfc(double x);
 double lgamma(double x);
 
 double rint(double x);
+
+double modf(double x, double * iptr);
+
+double frexp(double x, int *exp);
+double ldexp(double x, int exp);
+
+__END_DECLS
 
 #endif

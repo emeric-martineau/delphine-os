@@ -76,8 +76,11 @@ int main (int argc, char *argv[])
    if ((major == 3) && (minor > 64)) {
       drive = 0x81;
    }
+
+/* FIXME */
 drive = 0x80;
 partition_ofs = 0x1BE;
+
    if ((fd = open(argv[1], O_RDONLY)) < 0) {
       printf("\nmkboot: Can't open device !!!\n\n");
       return(-1);

@@ -53,22 +53,22 @@ INTERFACE
 
 function  access_rights_ok (flags : dword ; inode : P_inode_t) : boolean; external;
 procedure del_mmap_req (req : P_mmap_req); external;
+procedure dump_mmap_req (t : P_task_struct); external;
 procedure farjump (tss : word ; ofs : pointer); external;
 procedure free_inode (inode : P_inode_t); external;
 function  get_free_page : pointer; external;
 function  get_free_mem : dword; external;
-function  get_pt_entry (addr : P_pte_t) : pointer; external;
+function  get_pte (addr : dword) : P_pte_t; external;
 procedure kfree_s (buf : pointer ; len : dword); external;
 procedure lock_inode (inode : P_inode_t); external;
 function  MAP_NR (adr : pointer) : dword; external;
 procedure memcpy (src, dest : pointer ; size : dword); external;
 procedure memset (adr : pointer ; c : byte ; size : dword); external;
 function  namei (path : pointer) : P_inode_t; external;
-function  page_align (nb : longint) : dword; external;
 procedure print_bochs (format : string ; args : array of const); external;
 procedure printk (format : string ; args : array of const); external;
 procedure push_page (page_adr : pointer); external;
-procedure set_pt_entry (addr : P_pte_t ; val : dword); external;
+procedure set_pte (addr : dword ; pte : pte_t); external;
 function  sys_close (fd : dword) : dword; cdecl; external;
 procedure unload_process_cr3 (pt : P_task_struct); external;
 procedure unlock_inode (inode : P_inode_t); external;
@@ -147,17 +147,17 @@ var
 
 begin
 
-{print_bochs('sys_exec (%d): (%s) args: %h envp: %h\n',
-				[current^.pid, path, argv, envp]);}
+print_bochs('\nsys_exec (%d): (%s) args: %h envp: %h\n',
+				[current^.pid, path, argv, envp]);
 
    {$IFDEF DEBUG_SYS_EXEC}
-      printk('sys_exec (%d): (%s) args: %h envp: %h\n', [current^.pid, path, argv, envp]);
+      print_bochs('sys_exec (%d): (%s) args: %h envp: %h\n', [current^.pid, path, argv, envp]);
    {$ENDIF}
 
 	sti();
 
    {$IFDEF DEBUG_SYS_EXEC}
-      printk('sys_exec (%d): going to call namei(%s)\n', [current^.pid, path]);
+      print_bochs('sys_exec (%d): going to call namei(%s)\n', [current^.pid, path]);
    {$ENDIF}
 
    tmp_inode := namei(path);
@@ -165,7 +165,7 @@ begin
    { namei() returned an error code, not a valid pointer }
    begin
       {$IFDEF DEBUG_SYS_EXEC}
-         printk('sys_exec (%d): no inode returned by namei()\n', [current^.pid]);
+         print_bochs('sys_exec (%d): no inode returned by namei()\n', [current^.pid]);
       {$ENDIF}
       result := longint(tmp_inode);
       exit;
@@ -174,7 +174,7 @@ begin
    lock_inode(tmp_inode);
 
    {$IFDEF DEBUG_SYS_EXEC}
-      printk('sys_exec (%d): checking access rights\n', [current^.pid]);
+      print_bochs('sys_exec (%d): checking access rights\n', [current^.pid]);
    {$ENDIF}
 
    {* Check if we can execute this file *}
@@ -210,7 +210,7 @@ begin
    end;
 
    {$IFDEF DEBUG_SYS_EXEC}
-      printk('sys_exec (%d): reading header\n', [current^.pid]);
+      print_bochs('sys_exec (%d): reading header\n', [current^.pid]);
    {$ENDIF}
 
    {* Read the first 4096 bytes of the file
@@ -230,7 +230,7 @@ begin
    result := -ENOEXEC;
 
    {$IFDEF DEBUG_SYS_EXEC}
-      printk('sys_exec (%d): checking header\n', [current^.pid]);
+      print_bochs('sys_exec (%d): checking header\n', [current^.pid]);
    {$ENDIF}
 
    res := check_ELF_header(buf, path, tmp_inode);
@@ -256,13 +256,13 @@ begin
    phdr_table := pointer(longint(elf_header) + elf_header^.e_phoff);
 
    {$IFDEF SHOW_PROGRAM_TABLE}
-      printk('Program header table:\n', []);
+      print_bochs('Program header table:\n', []);
       for i := 0 to (elf_header^.e_phnum - 1) do
       begin
-         printk('Segment %d\n', [i]);
-	 		printk('Type: %d  Offset: %h\n', [phdr_table[i].p_type, phdr_table[i].p_offset]);
-	 		printk('vaddr: %h  paddr: %h  filesz: %d  memsz: %d\n', [phdr_table[i].p_vaddr, phdr_table[i].p_paddr, phdr_table[i].p_filesz, phdr_table[i].p_memsz]);
-	 		printk('flags: %h  align: %d\n', [phdr_table[i].p_flags, phdr_table[i].p_align]);
+         print_bochs('Segment %d\n', [i]);
+	 		print_bochs('Type: %d  Offset: %h\n', [phdr_table[i].p_type, phdr_table[i].p_offset]);
+	 		print_bochs('vaddr: %h  paddr: %h  filesz: %d  memsz: %d\n', [phdr_table[i].p_vaddr, phdr_table[i].p_paddr, phdr_table[i].p_filesz, phdr_table[i].p_memsz]);
+	 		print_bochs('flags: %h  align: %d\n', [phdr_table[i].p_flags, phdr_table[i].p_align]);
       end;
    {$ENDIF}
 
@@ -282,7 +282,8 @@ begin
        process_pages += 1;
 
    {$IFDEF DEBUG_SYS_EXEC}
-      printk('sys_exec (%d): On-disk size: %d  memory size: %d -> %d pages\n', [current^.pid, len, process_mem, process_pages]);
+      print_bochs('sys_exec (%d): On-disk size: %d  memory size: %d -> %d pages\n',
+						[current^.pid, len, process_mem, process_pages]);
    {$ENDIF}
 
 
@@ -291,7 +292,12 @@ begin
 {--------------------------------------------------------------------------------------------}
 
 
-
+   if (current^.mmap <> NIL) then
+   begin
+      repeat
+			del_mmap_req(current^.mmap);
+      until (current^.mmap = NIL);
+   end;
 
    {* Going to read arguments from the calling process and
     * put them in the new process data space *}
@@ -334,7 +340,7 @@ begin
    if (current^.close_on_exec <> 0) then
    begin
       {$IFDEF DEBUG_SYS_EXEC}
-         printk('sys_exec (%d): we have to close some files (%h)\n', [current^.pid, current^.close_on_exec]);
+         print_bochs('sys_exec (%d): we have to close some files (%h)\n', [current^.pid, current^.close_on_exec]);
       {$ENDIF}
       tmp := current^.close_on_exec;
       while (tmp <> 0) do
@@ -347,37 +353,33 @@ begin
 	    		mov   i  , eax
          end;
 	 		{$IFDEF DEBUG_SYS_EXEC}
-	    		printk('sys_exec (%d): calling sys_close(%d)\n', [current^.pid, tmp]);
+	    		print_bochs('sys_exec (%d): calling sys_close(%d)\n', [current^.pid, tmp]);
          {$ENDIF}
          sys_close(tmp);
          {$IFDEF DEBUG_SYS_EXEC}
-            printk('sys_exec (%d): tmp=%d %h\n', [current^.pid, tmp, i]);
+            print_bochs('sys_exec (%d): tmp=%d %h\n', [current^.pid, tmp, i]);
 	 		{$ENDIF}
 	 		tmp := i;
       end;
    end;
 
+	{$IFDEF DEBUG_SYS_EXEC}
+		print_bochs('sys_exec (%d): Unloading process cr3\n', [current^.pid]);
+	{$ENDIF}
    unload_process_cr3(current);
+
 
    { We have to update process descriptor. FIXME: update is not completly done }
 
    current^.end_code   := page_align(phdr_table[0].p_vaddr + phdr_table[0].p_memsz);
    current^.end_data   := page_align(phdr_table[1].p_vaddr + phdr_table[1].p_memsz);
    current^.brk        := page_align(phdr_table[2].p_vaddr + phdr_table[2].p_memsz);
+	current^.mmap  	  := NIL;
+   current^.size  	  := process_pages;
    current^.real_size  := 1;
    current^.first_size := process_pages;
    current^.executable := tmp_inode;
    current^.wait_queue := NIL;
-
-   if (current^.mmap <> NIL) then
-   begin
-      repeat
-			del_mmap_req(current^.mmap^.next);
-      until (current^.mmap^.next = current^.mmap);
-      del_mmap_req(current^.mmap);
-   end;
-
-   current^.mmap := NIL;
 
    new_page_table := get_free_page();
    if (new_page_table = NIL) then
@@ -393,7 +395,15 @@ begin
        current^.cr3[i] := 0;
 
    current^.cr3[769] := longint(new_page_table) or USER_PAGE;
-   new_page_table[0] := longint(buf) or RDONLY_PAGE;
+
+	set_pte(BASE_ADDR, longint(buf) or RDONLY_PAGE);
+
+	i := BASE_ADDR + 4096;
+	while i <= (current^.brk - 4096) do
+	begin
+		set_pte(i, USED_ENTRY);
+		i += 4096;
+	end;
 
    p := BASE_ADDR - ((MAX_ARG_PAGES * 4096) - p);
 
@@ -415,19 +425,19 @@ begin
    end;
 
    {$IFDEF DEBUG_ARGS}
-      printk('sys_exec (%d): New process user stack dump :\n', [current^.pid]);
+      print_bochs('sys_exec (%d): New process user stack dump :\n', [current^.pid]);
       i := longint(stack_addr);
       tmp_stack_addr := pointer((p and $FFFFFFFC) - 4);
       while (longint(tmp_stack_addr) >= i) do
       begin
          test := pointer(tmp_stack_addr^);
-         printk('sys_exec (%d): %h -> %h (%h)\n', [current^.pid, tmp_stack_addr, test, pointer(test^)]);
+         print_bochs('sys_exec (%d): %h -> %h (%h)\n', [current^.pid, tmp_stack_addr, test, pointer(test^)]);
 	 		tmp_stack_addr -= 4;
       end;
    {$ENDIF}
 
    {$IFDEF DEBUG_SYS_EXEC}
-      printk('sys_exec (%d): exiting  (entry point=%h, brk=%h)\n', [current^.pid, ret_adr, current^.brk]);
+      print_bochs('sys_exec (%d): exiting  (entry point=%h, brk=%h)\n', [current^.pid, ret_adr, current^.brk]);
    {$ENDIF}
 
 end;
@@ -477,7 +487,7 @@ begin
    begin
       printk('sys_exec (%d): %s has an invalid entry point. (%h)\n', [current^.pid, path, elf_header^.e_entry]);
       if ((longint(elf_header^.e_entry) and $08000000) = $08000000) then
-      	 printk('sys_exec (%d): it looks like a Linux binary file. Try to compile it for DelphineOS.\n', [current^.pid]);
+      	 printk('sys_exec (%d): It looks like a GNU/Linux binary file.\n', [current^.pid]);
       push_page(elf_header);
       unlock_inode(inode);
       free_inode(inode);
@@ -704,7 +714,7 @@ begin
 	 		ptr        := pointer(pag + offset);
 	 		byte(ptr^) := byte(str[len]);
 
-{      	 printk('moving char %c at ofs %d in page %d (pag=%h -> %h)\n', [byte(str[len]), offset, p div 4096,
+{      	 print_bochs('moving char %c at ofs %d in page %d (pag=%h -> %h)\n', [byte(str[len]), offset, p div 4096,
 	          pag, pointer(pag + offset)]);}
 
       end;

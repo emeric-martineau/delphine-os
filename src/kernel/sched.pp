@@ -59,6 +59,7 @@ procedure enable_IRQ (irq : byte); external;
 procedure farjump (tss : word ; ofs : pointer); external;
 procedure initialize_PIT (freq : dword); external;
 procedure outb (port : word ; val : byte); external;
+procedure print_bochs (format : string ; args : array of const); external;
 procedure printk (format : string ; args : array of const); external;
 procedure set_intr_gate (n : dword ; addr : pointer); external;
 function  signal_pending (p : P_task_struct) : dword; external;
@@ -115,19 +116,11 @@ begin
    prev    := current;
    current := prev^.next_run;
 
-   sig := signal_pending(prev);
-
-   if (prev^.state = TASK_INTERRUPTIBLE) and (sig <> 0) then
-   begin
-{      printk('schedule: PID %d has received a signal\n', [prev^.pid]);}
-      add_to_runqueue(prev);
-   end;
-
    if (prev^.state <> TASK_RUNNING) then
    begin
-      {printk('schedule: PID %d is going to sleep %d %d  |  ', [prev^.pid, current^.pid]);}
+      {print_bochs('schedule: PID %d is going to sleep %d %d  |  ', [prev^.pid, current^.pid]);}
       del_from_runqueue(prev);
-      {printk('%d %d\n', [prev^.pid, current^.pid]);}
+      {print_bochs('%d %d\n', [prev^.pid, current^.pid]);}
    end;
 
    { If the next process ready to run is 'init', we launch the next (after 'init') }
@@ -136,13 +129,6 @@ begin
 
    if (current <> prev) then
        farjump(current^.tss_entry, NIL);
-
-   sig := signal_pending(current);
-   if (sig <> 0) then
-   begin
-{      printk('schedule: PID %d has received signal %d\n', [current^.pid, sig]);}
-      do_signal(sig);
-   end;
 
 	popad();
 	popfd();
@@ -162,7 +148,7 @@ end;
 procedure timer_intr; interrupt;
 
 var
-   r_cs, r_eip   : dword;
+   r_cs, r_eip, sig : dword;
    tmp_wq : P_wait_queue;
    task   : P_task_struct;
 
@@ -177,7 +163,7 @@ begin
 
 {printk(' %h ', [r_eip]);}
 
-   jiffies        += 1;
+   jiffies += 1;
 
 	{ Mise à jour du temps CPU utilisé par le processus }
 	if (r_cs = $23) then

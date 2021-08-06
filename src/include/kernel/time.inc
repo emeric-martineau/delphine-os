@@ -44,10 +44,10 @@ type
    end;
 
    tms = record
-	tms_utime  : dword;
-	tms_stime  : dword;
-	tms_cutime : dword;
-	tms_cstime : dword;
+		tms_utime  : dword;
+		tms_stime  : dword;
+		tms_cutime : dword;
+		tms_cstime : dword;
    end;
 
    timeval = record

@@ -32,6 +32,7 @@ unit debug;
 INTERFACE
 
 
+{$I config.inc}
 {$I fs.inc}
 {$I lock.inc}
 {$I major.inc}
@@ -56,6 +57,7 @@ procedure schedule; external;
 procedure delay;
 procedure dump_dev;
 procedure dump_mem;
+procedure dump_mmap_req (t : P_task_struct);
 procedure dump_task;
 function  get_arg_addr (addr : dword ; t : P_task_struct) : pointer;
 procedure panic (reason : string);
@@ -855,7 +857,7 @@ begin
 		else
 			 print_bochs('%d', [tty]);
 
-		print_bochs('      %d   %h  ', [task^.real_size, task^.brk]);
+		print_bochs('      %d(%d)   %h  ', [task^.size, task^.real_size, task^.brk]);
 	      
       case (task^.state) of
          TASK_RUNNING:         print_bochs('    R', []);
@@ -875,7 +877,8 @@ begin
       if (save <> NIL) then
       begin
          repeat
-            {printk('%h -> %h -> %h\n', [toto^.prev^.addr, toto^.addr, toto^.next^.addr]);}
+            printk('%h -> %h -> %h\n',
+				[toto^.prev, toto, toto^.next]);
 	    i += 1;
 	    toto := toto^.next;
          until (toto = save);
@@ -893,6 +896,39 @@ begin
 
 	popfd();
 
+end;
+
+
+
+{******************************************************************************
+ * dump_mmap_req
+ *
+ ******************************************************************************}
+procedure dump_mmap_req (t : P_task_struct); [public, alias : 'DUMP_MMAP_REQ'];
+
+var
+	i : dword;
+	toto, save : P_mmap_req;
+
+begin
+
+		print_bochs('mmap requests for PID %d\n', [t^.pid]);
+
+		i := 0;
+
+      toto := t^.mmap;
+      save := toto;
+      if (save <> NIL) then
+      begin
+         repeat
+            print_bochs('%h -> %h -> %h\n',
+				[toto^.prev, toto, toto^.next]);
+	    		i += 1;
+	    		toto := toto^.next;
+         until (toto = save);
+      end;
+
+      print_bochs('%d mmap requests\n', [i]);
 end;
 
 
@@ -970,7 +1006,7 @@ begin
 	pushfd();
 	cli();
 
-   print_bochs('\nMemory: %dk/%dk - ',[get_free_mem div 1024, get_total_mem div 1024]);
+   print_bochs('\nMemory: %dk/%dk - ',[get_free_mem(), get_total_mem()]);
 
    print_bochs('%d shared pages (%d bytes)\n', [shared_pages, shared_pages * 4096]);
 
@@ -989,9 +1025,11 @@ begin
    end;
    read_unlock(@buffer_head_list_lock);
 
-   print_bochs('buffer_head_list: %d dirty, %d used, %d buffers\n', [nr_buffer_head_dirty, nb, nr_buffer_head]);
+   print_bochs('buffer_head_list: %d dirty, %d used, %d/%d buffers\n',
+					[nr_buffer_head_dirty, nb, nr_buffer_head, BUFFER_HEAD_LIST_MAX_ENTRIES]);
 
-   print_bochs('lookup_cache: %d entries\n', [lookup_cache_entries]);
+   print_bochs('lookup_cache: %d/%d entries\n',
+					[lookup_cache_entries, LOOKUP_CACHE_MAX_ENTRIES]);
 
 {   for i := 1 to 1024 do
    begin
@@ -1080,7 +1118,7 @@ begin
 
 	cli();
 
-   printk('\nSystem halted (%s)', [@reason[1]]);
+   printk('\n\nSystem halted (%s)', [@reason[1]]);
    disable_IRQ(0);   { Stop timer }
    asm
       sti

@@ -35,7 +35,6 @@ INTERFACE
 
 {$I errno.inc}
 {$I fcntl.inc}
-{$I fs.inc}
 {$I pipe.inc}
 {$I process.inc}
 {$I signal.inc}
@@ -67,6 +66,7 @@ procedure push_page (page_addr : pointer); external;
 procedure send_sig (sig : dword ; p : P_task_struct); external;
 function  signal_pending (p : P_task_struct) : dword; external;
 procedure unlock_inode (inode : P_inode_t); external;
+procedure wake_up (p : PP_wait_queue); external;
 
 
 {* External variables *}
@@ -84,12 +84,14 @@ procedure init_pipe;
 function  pipe_close (fichier : P_file_t) : dword;
 function  pipe_ioctl (fichier : P_file_t ; req : dword ; argp : pointer) : dword;
 function  pipe_read (fichier : P_file_t ; buf : pointer ; count : dword) : dword;
+procedure pipe_wait (inode : P_inode_t);
 function  pipe_write (fichier : P_file_t ; buf : pointer ; count : dword) : dword;
 function  sys_pipe (fildes : pointer) : dword; cdecl;
 
 
 IMPLEMENTATION
 
+{$I inline.inc}
 
 {* Constants only used in THIS file *}
 
@@ -101,6 +103,135 @@ IMPLEMENTATION
 
 var
    pipe_file_operations : file_operations;
+
+
+
+{******************************************************************************
+ * PIPE_BASE
+ *
+ *****************************************************************************}
+function PIPE_BASE (inode : P_inode_t) : dword; inline;
+begin
+	result := longint(inode^.pipe_i.base);
+end;
+
+
+
+{******************************************************************************
+ * PIPE_END
+ *
+ *****************************************************************************}
+function PIPE_END (inode : P_inode_t) : dword; inline;
+begin
+	result := (inode^.pipe_i.start + inode^.size) and (4096 - 1);
+end;
+
+
+
+{******************************************************************************
+ * PIPE_FREE
+ *
+ *****************************************************************************}
+function PIPE_FREE (inode : P_inode_t) : dword; inline;
+begin
+	result := 4096 - inode^.size;
+end;
+
+
+
+{******************************************************************************
+ * PIPE_LEN
+ *
+ *****************************************************************************}
+function PIPE_LEN (inode : P_inode_t) : dword; inline;
+begin
+	result := inode^.size;
+end;
+
+
+
+{******************************************************************************
+ * PIPE_READERS
+ *
+ *****************************************************************************}
+function PIPE_READERS (inode : P_inode_t) : dword; inline;
+begin
+	result := inode^.pipe_i.readers;
+end;
+
+
+
+{******************************************************************************
+ * PIPE_START
+ *
+ *****************************************************************************}
+function PIPE_START (inode : P_inode_t) : dword; inline;
+begin
+	result := longint(inode^.pipe_i.start);
+end;
+
+
+
+{******************************************************************************
+ * PIPE_MAX_RCHUNK
+ *
+ * Returns the number of byte we can read in one shot
+ *
+ *****************************************************************************}
+function PIPE_MAX_RCHUNK (inode : P_inode_t) : dword; inline;
+begin
+	if (inode^.pipe_i.start + inode^.size) > 4096 then
+		 result := 4096 - inode^.pipe_i.start
+	else
+		 result := inode^.size;
+end;
+
+
+
+{******************************************************************************
+ * PIPE_MAX_WCHUNK
+ *
+ * Returns the number of byte we can write in one shot
+ *
+ * NOTE: Have to use 'tmp' because of the Free Pascal Compiler  :(
+ *****************************************************************************}
+function PIPE_MAX_WCHUNK (inode : P_inode_t) : dword; inline;
+var
+	tmp : dword;
+begin
+	if (inode^.pipe_i.start + inode^.size) >= 4096 then
+	begin
+		result := 4096 - inode^.size;
+	end
+	else
+	begin
+		tmp := inode^.pipe_i.start;
+		tmp += inode^.size;
+		result := 4096 - tmp;
+	end;
+end;
+
+
+
+{******************************************************************************
+ * PIPE_WAITING_WRITERS
+ *
+ *****************************************************************************}
+function PIPE_WAITING_WRITERS (inode : P_inode_t) : dword; inline;
+begin
+	result := inode^.pipe_i.waiting_writers;
+end;
+
+
+
+{******************************************************************************
+ * PIPE_WRITERS
+ *
+ *****************************************************************************}
+function PIPE_WRITERS (inode : P_inode_t) : dword; inline;
+begin
+	result := inode^.pipe_i.writers;
+end;
 
 
 
@@ -129,12 +260,10 @@ end;
  *****************************************************************************}
 function pipe_ioctl (fichier : P_file_t ; req : dword ; argp : pointer) : dword; [public, alias : 'PIPE_IOCTL'];
 begin
-
 	if (req = FIONREAD) then
 		 result := 4096
 	else
-		 result := -EINVAL;
-
+		result := -EINVAL;
 end;
 
 
@@ -146,71 +275,111 @@ end;
 function pipe_read (fichier : P_file_t ; buf : pointer ; count : dword) : dword; [public, alias : 'PIPE_READ'];
 
 var
-   pipe_size  : dword;   { Nb of bytes in the pipe that have not been read }
-	pipe_inode : P_inode_t;
+	inode 		: P_inode_t;
+	pipebuf		: pointer;
+	ret, chars	: dword;
 
 label again;
 
 begin
 
-   result := 0;
+	{FIXME: check if buf has a correct value (-EFAULT) }
 
-	pipe_inode := fichier^.inode;
-   pipe_size  := pipe_inode^.size;
+	if (count = 0) then
+	begin
+		result := 0;
+		exit;
+	end;
 
-   {$IFDEF DEBUG_PIPE_READ}
-		print_bochs('pipe_read (%d): count=%d buf=%h pipe_size=%d\n',
-				 		[current^.pid, count, pipe_inode^.pipe_i.base, pipe_size]);
-   {$ENDIF}
+	ret   := 0;
+	inode := fichier^.inode;
+
+	{$IFDEF DEBUG_PIPE_READ}
+		print_bochs('pipe_read (%d): count=%d buf=%h PIPE_LEN=%d\n',
+		[current^.pid, count, buf, PIPE_LEN(inode)]);
+	{$ENDIF}
 
 again:
 
-	pipe_size := pipe_inode^.size;
+	if (PIPE_LEN(inode) = 0) then
+	{ There is nothing in the pipe }
+	begin
+		{$IFDEF DEBUG_PIPE_READ}
+			print_bochs('pipe_read (%d): PIPE_LEN=0, ret=%d ', [current^.pid, ret]);
+		{$ENDIF}
+		if (inode^.pipe_i.writers = 0) then
+		{ No writer, so there won't be any more data }
+		begin
+			{$IFDEF DEBUG_PIPE_READ}
+				print_bochs('No writer => result=0\n', []);
+			{$ENDIF}
+			result := 0;
+			exit;
+		end
+		else
+		begin
+			if (fichier^.flags and O_NONBLOCK) = O_NONBLOCK then
+			begin
+				{$IFDEF DEBUG_PIPE_READ}
+					print_bochs('Non-blocking file -> exiting\n', []);
+				{$ENDIF}
+				result := -EAGAIN;
+				exit;
+			end
+			else
+			{ We have to wait for some data }
+			begin
+				{ Waking up processes which were waiting for the pipe's data to change }
+				if (inode^.pipe_i.wait <> NIL) then
+		 			 wake_up(@inode^.pipe_i.wait);
 
-   if (pipe_size = 0) then
-   begin
-      if (pipe_inode^.pipe_i.writers = 0) then
-      begin
-         {$IFDEF DEBUG_PIPE_READ}
-	    		print_bochs('pipe_read (%d): no writers, result=0.\n', [current^.pid]);
-	 		{$ENDIF}
-         result := 0;
-	 		exit;
-      end
-      else
-      begin
-         {$IFDEF DEBUG_PIPE_READ}
-            print_bochs('pipe_read (%d): going to wait for some data\n', [current^.pid]);
-         {$ENDIF}
-	 		unlock_inode(pipe_inode);
-	 		interruptible_sleep_on(@pipe_inode^.pipe_i.wait);
-	 		lock_inode(pipe_inode);
-	 		{$IFDEF DEBUG_PIPE_READ}
-	    		print_bochs('pipe_read (%d): data is there (%d)\n', [current^.pid, pipe_inode^.size]);
-	 		{$ENDIF}
-			goto again;
-      end;
-   end
-   else if (count > pipe_size) then
-   begin
-      {$IFDEF DEBUG_PIPE_READ}
-         print_bochs('pipe_read (%d): going to read %d bytes from %h\n',
-					 		[current^.pid, pipe_size, pipe_inode^.pipe_i.base + pipe_inode^.pipe_i.start]);
-      {$ENDIF}
-      memcpy(pipe_inode^.pipe_i.base + pipe_inode^.pipe_i.start, buf, pipe_size);
-      pipe_inode^.size := 0;
-      result := pipe_size;
-   end
-   else
-   begin
-      {$IFDEF DEBUG_PIPE_READ}
-         print_bochs('pipe_read (%d): going to read %d bytes from %h\n',
-					 		[current^.pid, pipe_size, pipe_inode^.pipe_i.base + pipe_inode^.pipe_i.start]);
-      {$ENDIF}
-      memcpy(pipe_inode^.pipe_i.base + pipe_inode^.pipe_i.start, buf, count);
-      pipe_inode^.size := pipe_size - count;
-      result := count;
-   end;
+				{$IFDEF DEBUG_PIPE_READ}
+					print_bochs('=> WAITING\n', []);
+				{$ENDIF}
+				unlock_inode(inode);
+				interruptible_sleep_on(@inode^.pipe_i.wait);
+				lock_inode(inode);
+				{$IFDEF DEBUG_PIPE_READ}
+					print_bochs('pipe_read (%d): UP\n', [current^.pid]);
+				{$ENDIF}
+				goto again;
+			end;
+		end;
+	end
+	else
+	{ There is something in the pipe, copying data }
+	begin
+		while (PIPE_LEN(inode) <> 0) and (count <> 0) do
+		begin
+			chars   := PIPE_MAX_RCHUNK(inode);
+			pipebuf := pointer(PIPE_BASE(inode) + PIPE_START(inode));
+
+			if (chars > count) then chars := count;
+
+			{$IFDEF DEBUG_PIPE_READ}
+				print_bochs('pipe_read (%d): copying %d bytes from %d to %h\n',
+				[current^.pid, chars, longint(pipebuf) - longint(inode^.pipe_i.base), buf]);
+			{$ENDIF}
+
+			memcpy(pipebuf, buf, chars);
+			count -= chars;
+			inode^.pipe_i.start += chars;
+			inode^.pipe_i.start := inode^.pipe_i.start and (4096 - 1);
+			inode^.size -= chars;
+			ret += chars;
+			buf += chars;
+		end;
+	end;
+
+	{ Waking up processes which were waiting for the pipe's data to change }
+	if (inode^.pipe_i.wait <> NIL) then
+		 wake_up(@inode^.pipe_i.wait);
+
+	{$IFDEF DEBUG_PIPE_READ}
+		print_bochs('pipe_read (%d): result=%d\n', [current^.pid, ret]);
+	{$ENDIF}
+
+	result := ret;
 
 end;
 
@@ -223,72 +392,138 @@ end;
 function pipe_write (fichier : P_file_t ; buf : pointer ; count : dword) : dword; [public, alias : 'PIPE_WRITE'];
 
 var
-   pipe_size  : dword;   { Nb of bytes in the pipe that have not been read }
-   pipe_free  : dword;   { Nb of bytes which can be written to the pipe }
-	pipe_inode : P_inode_t;
+	ret, chars	: dword;
+	inode 		: P_inode_t;
+	pipebuf		: pointer;
+
+label again, chunk_again;
 
 begin
 
-   {FIXME: check if buf has a correct value }
+	if (count = 0) then
+	begin
+		result := 0;
+		exit;
+	end;
 
-	pipe_inode := fichier^.inode;
+	ret   := 0;
+	inode := fichier^.inode;
 
-   if (pipe_inode^.pipe_i.readers = 0) then
+	{$IFDEF DEBUG_PIPE_WRITE}
+		print_bochs('pipe_write (%d): count=%d buf=%h PIPE_LEN=%d\n',
+		[current^.pid, count, buf, PIPE_LEN(inode)]);
+	{$ENDIF}
+
+	if (inode^.pipe_i.lock <> 0) then
+	begin
+		if (fichier^.flags and O_NONBLOCK) = O_NONBLOCK then
+		begin
+			result := -EAGAIN;
+			exit;
+		end
+		else
+		begin
+			unlock_inode(inode);
+			interruptible_sleep_on(@inode^.pipe_i.wait);
+			lock_inode(inode);
+			goto again;
+		end;
+	end
+	else
+		inode^.pipe_i.lock := 1;
+
+	{ OK, now we have the write lock }
+
+again:
+
+   if (inode^.pipe_i.readers = 0) then
    { The pipe is "broken", there are no readers. }
    begin
+		{$IFDEF DEBUG_PIPE_WRITE}
+			print_bochs('pipe_write (%d): broken pipe !!!\n', [current^.pid]);
+		{$ENDIF}
       send_sig(SIGPIPE, current);
       result := -EPIPE;
       exit;
    end;
 
-   pipe_size  := pipe_inode^.size;
-   pipe_free  := 4096 - pipe_size;
+chunk_again:
 
-   {$IFDEF DEBUG_PIPE_WRITE}
-   	print_bochs('pipe_write (%d): count=%d buf=%h pipe_size=%d  pipe_free=%d\n',
-				 		[current^.pid, count, pipe_inode^.pipe_i.base, pipe_size, pipe_free]);
+	chars   := PIPE_MAX_WCHUNK(inode);
+	pipebuf := pointer(PIPE_BASE(inode) + PIPE_END(inode));
+
+	if (chars > count) then chars := count;
+
+	{$IFDEF DEBUG_PIPE_WRITE}
+		print_bochs('pipe_write (%d): copying %d bytes from %h to %d (count=%d)\n',
+		[current^.pid, chars, buf, longint(pipebuf) - longint(inode^.pipe_i.base), count]);
 	{$ENDIF}
 
-   if (pipe_free >= count) then
-   begin
-      {$IFDEF DEBUG_PIPE_WRITE}
-         print_bochs('pipe_write (%d): going to write %d bytes at %h\n',
-					 		[current^.pid, count, pipe_inode^.pipe_i.base + pipe_size]);
-      {$ENDIF}
-      memcpy(buf, pipe_inode^.pipe_i.base + pipe_size, count);
-      pipe_inode^.size += count;
-      result := count;
-   end
-   else if (count > 4096) then
-   begin
-      {$IFDEF DEBUG_PIPE_WRITE}
-         print_bochs('pipe_write (%d): going to write %d bytes at %h\n',
-					 		[current^.pid, pipe_free, pipe_inode^.pipe_i.base + pipe_inode^.pipe_i.start]);
-      {$ENDIF}
-      memcpy(buf, pipe_inode^.pipe_i.base + pipe_inode^.pipe_i.start, pipe_free);
-      result := pipe_free;
-   end
-   else
-   begin
-      {$IFDEF DEBUG_PIPE_WRITE}
-         print_bochs('pipe_write (%d): going to write %d bytes at %h\n',
-					 		[current^.pid, count, pipe_inode^.pipe_i.base + pipe_inode^.pipe_i.start]);
-         print_bochs('pipe_write (%d): we have to wait for more free bytes in the pipe\n', [current^.pid]);
-      {$ENDIF}
-   end;
+	memcpy(buf, pipebuf, chars);
 
-   if (pipe_inode^.pipe_i.wait <> NIL) then
-   begin
-      {$IFDEF DEBUG_PIPE_WRITE}
-         print_bochs('pipe_write (%d): waking up a process\n', [current^.pid]);
-      {$ENDIF}
-      interruptible_wake_up(@pipe_inode^.pipe_i.wait, TRUE);
-   end;
+	count -= chars;
+	ret   += chars;
+	inode^.size += chars;
 
-   {$IFDEF DEBUG_PIPE_WRITE}
-      print_bochs('pipe_write (%d): exiting. result=%d\n', [current^.pid, result]);
-   {$ENDIF}
+	if (count <> 0) then
+	{ Do we have to continue ? }
+	begin
+		if (PIPE_FREE(inode) <> 0) then
+		{ Is there another chunk to write ? }
+			 goto chunk_again
+		else
+		{ We have to wait to continue }
+		begin
+			if (fichier^.flags and O_NONBLOCK) = O_NONBLOCK then
+			begin
+				{$IFDEF DEBUG_PIPE_WRITE}
+					print_bochs('pipe_write (%d): non-blocking file => result=%d\n',
+					[current^.pid, ret]);
+				{$ENDIF}
+				result := ret;
+				inode^.pipe_i.lock := 0;
+				exit;
+			end
+			else
+			begin
+				{ Waking up processes which were waiting for the pipe's data to change }
+				if (inode^.pipe_i.wait <> NIL) then
+		 			 wake_up(@inode^.pipe_i.wait);
 
+				{$IFDEF DEBUG_PIPE_WRITE}
+					print_bochs('pipe_write (%d): WAITING\n', [current^.pid]);
+				{$ENDIF}
+				unlock_inode(inode);
+				interruptible_sleep_on(@inode^.pipe_i.wait);
+				lock_inode(inode);
+				{$IFDEF DEBUG_PIPE_WRITE}
+					print_bochs('pipe_write (%d): UP\n', [current^.pid]);
+				{$ENDIF}
+				goto again;
+			end;
+		end;
+	end;
+
+	{$IFDEF DEBUG_PIPE_WRITE}
+		print_bochs('pipe_write (%d): result=%d\n', [current^.pid, ret]);
+	{$ENDIF}
+
+	inode^.pipe_i.lock := 0;
+	result := ret;
+
+end;
+
+
+
+{******************************************************************************
+ * pipe_wait
+ *
+ *****************************************************************************}
+procedure pipe_wait (inode : P_inode_t);
+begin
+	unlock_inode(inode);
+	interruptible_sleep_on(@inode^.pipe_i.wait);
+	lock_inode(inode);
 end;
 
 
@@ -346,11 +581,14 @@ begin
          print_bochs('pipe_close (%d): pipe wait queue is not empty\n', [current^.pid]);
       {$ENDIF}
       {FIXME: do something clean }
-      while (fichier^.inode^.pipe_i.wait <> NIL) do
-             interruptible_wake_up(@fichier^.inode^.pipe_i.wait, TRUE);
+		wake_up(@fichier^.inode^.pipe_i.wait);
    end;
 
    result := 0;
+
+	{$IFDEF DEBUG_PIPE_CLOSE}
+		print_bochs('pipe_close (%d): EXITING\n', [current^.pid]);
+	{$ENDIF}
 
 end;
 

@@ -49,6 +49,7 @@ var
 
 function  IS_REG (inode : P_inode_t) : boolean; external;
 procedure lock_inode (inode : P_inode_t); external;
+procedure print_bochs (format : string ; args : array of const); external;
 procedure printk (format : string ; args : array of const); external;
 procedure unlock_inode (inode : P_inode_t); external;
 
@@ -89,13 +90,13 @@ begin
    if (fd >= OPEN_MAX) or (fichier = NIL) then exit;
 
    {$IFDEF DEBUG_SYS_LSEEK}
-      printk('sys_lseek (%d): fd=%d  ofs=%d  whence=%d  fichier^.pos=%d  ',
+      print_bochs('sys_lseek (%d): fd=%d  ofs=%d  whence=%d  fichier^.pos=%d  ',
 				 [current^.pid, fd, offset, whence, fichier^.pos]);
    {$ENDIF}
 
    if (fichier^.inode = NIL) then
    begin
-      printk('sys_lseek: inode not defined fo fd %d (kernel bug ???)\n', [fd]);
+      print_bochs('sys_lseek: inode not defined fo fd %d (kernel bug ???)\n', [fd]);
       exit;
    end;
 
@@ -113,7 +114,7 @@ begin
 							 end;
                       if (fichier^.pos + offset > fichier^.inode^.size) then
 		      			 begin
-		         		 	 printk('sys_lseek: current ofs + ofs > file size (fd=%d)\n', [fd]);
+		         		 	 print_bochs('sys_lseek: current ofs + ofs > file size (fd=%d)\n', [fd]);
 			 					 result := -EINVAL;
 		         			 exit;
 		      			 end
@@ -125,14 +126,14 @@ begin
 			   			 	  fichier^.pos := fichier^.inode^.size
 		      			 else
 		      			 begin
-                         printk('sys_lseek: cannot add offset to current file size (not supported, fd=%d offset=%d)\n', [fd,offset]);
+                         print_bochs('sys_lseek: cannot add offset to current file size (not supported, fd=%d offset=%d)\n', [fd,offset]);
        		         	 result := -ENOSYS;
 		         			 exit;
 		      			 end;
                    end;
          else
          begin
-	    	   printk('sys_lseek: whence parameter has a bad value (fd=%d, whence=%d)\n', [fd, whence]);
+	    	   print_bochs('sys_lseek: whence parameter has a bad value (fd=%d, whence=%d)\n', [fd, whence]);
 	    		result := -EINVAL;
 	    		exit;
 	 		end;
@@ -143,7 +144,7 @@ begin
    begin
       if (fichier^.op = NIL) or (fichier^.op^.seek = NIL) then
       begin
-         printk('sys_lseek: no seek operation defined for fd %d (ofs=%d whence=%d)\n', [fd, offset, whence]);
+         print_bochs('sys_lseek: no seek operation defined for fd %d (ofs=%d whence=%d)\n', [fd, offset, whence]);
 	 		result := -ENOSYS;   { FIXME: another error code ??? }
       end
       else
@@ -155,7 +156,7 @@ begin
    end;
 
    {$IFDEF DEBUG_SYS_LSEEK}
-      printk('OUT (%d, %d)\n', [result, fichier^.pos]);
+      print_bochs('OUT (%d, %d)\n', [result, fichier^.pos]);
    {$ENDIF}
 
 end;
@@ -185,13 +186,13 @@ begin
    fichier := current^.file_desc[fd];
 
    {$IFDEF DEBUG_SYS_READ}
-      printk('sys_read (%d): fd=%d  count=%d  pos=%d  ', [current^.pid, fd, count, fichier^.pos]);
+      print_bochs('sys_read (%d): fd=%d  count=%d  pos=%d  ', [current^.pid, fd, count, fichier^.pos]);
    {$ENDIF}
 
    if (fd >= OPEN_MAX) or (fichier = NIL) then
    begin
       {$IFDEF SHOW_SYS_READ_ERRORS}
-      	 printk('sys_read (%d): bad fd (%d)\n', [current^.pid, fd]);
+      	 print_bochs('sys_read (%d): bad fd (%d)\n', [current^.pid, fd]);
       {$ENDIF}
       result := -EBADF;
       exit;
@@ -200,7 +201,7 @@ begin
    if (count < 0) then
    begin
 		{$IFDEF SHOW_SYS_READ_ERRORS}
-      	printk('sys_read (%d): count < 0 (%d)\n', [current^.pid, count]);
+      	print_bochs('sys_read (%d): count < 0 (%d)\n', [current^.pid, count]);
 		{$ENDIF}
       result := -EINVAL;
       exit;
@@ -209,7 +210,7 @@ begin
    if (fichier^.inode = NIL) then
    begin
 		{$IFDEF SHOW_SYS_READ_ERRORS}
-      	printk('sys_read (%d): inode not defined for fd %d\n', [current^.pid, fd]);
+      	print_bochs('sys_read (%d): inode not defined for fd %d\n', [current^.pid, fd]);
 		{$ENDIF}
       result := -EBADF;
       exit;
@@ -218,7 +219,7 @@ begin
    if (fichier^.op = NIL) then
    begin
 		{$IFDEF SHOW_SYS_READ_ERRORS}
-      	printk('sys_read (%d): file operations not defined for fd %d\n', [current^.pid, fd]);
+      	print_bochs('sys_read (%d): file operations not defined for fd %d\n', [current^.pid, fd]);
 		{$ENDIF}
       result := -1;
       exit;
@@ -227,7 +228,7 @@ begin
    if (fichier^.op^.read = NIL) then
    begin
       {$IFDEF SHOW_SYS_READ_ERRORS}
-			printk('sys_read (%d): read operation not defined for fd %d\n', [current^.pid, fd]);
+			print_bochs('sys_read (%d): read operation not defined for fd %d\n', [current^.pid, fd]);
       {$ENDIF}
 		result := -1;
       exit;
@@ -236,7 +237,7 @@ begin
 {	if (buf < pointer(BASE_ADDR)) then
 	begin
 		{$IFDEF SHOW_SYS_READ_ERRORS}
-			printk('sys_read (%d): buf=%h\n', [current^.pid, buf]);
+			print_bochs('sys_read (%d): buf=%h\n', [current^.pid, buf]);
 		{$ENDIF}
 		result := -EFAULT;
 		exit;
@@ -251,7 +252,7 @@ begin
    if (fichier^.flags = O_WRONLY) then
    begin
 		{$IFDEF SHOW_SYS_READ_ERRORS}
-			printk('sys_read (%d): permission denied\n', [current^.pid]);
+			print_bochs('sys_read (%d): permission denied\n', [current^.pid]);
 		{$ENDIF}
       result := -EPERM;
       exit;
@@ -262,7 +263,7 @@ begin
    unlock_inode(fichier^.inode);
 
    {$IFDEF DEBUG_SYS_READ}
-      printk('OUT (%d)\n', [result]);
+      print_bochs('OUT (%d)\n', [result]);
    {$ENDIF}
 
 end;
@@ -292,13 +293,13 @@ begin
    fichier := current^.file_desc[fd];   
 
    {$IFDEF DEBUG_SYS_WRITE}
-      printk('sys_write (%d): fd=%d  count=%d  pos=%d  ', [current^.pid, fd, count, fichier^.pos]);
+      print_bochs('sys_write (%d): fd=%d  count=%d  pos=%d  ', [current^.pid, fd, count, fichier^.pos]);
    {$ENDIF}
 
    if (fd >= OPEN_MAX) or (fichier = NIL) then
    begin
       {$IFDEF SHOW_SYS_WRITE_ERRORS}
-      	 printk('sys_write (%d): bad fd (%d)\n', [current^.pid, fd]);
+      	 print_bochs('sys_write (%d): bad fd (%d)\n', [current^.pid, fd]);
       {$ENDIF}
       result := -EBADF;
       exit;
@@ -308,7 +309,7 @@ begin
    if (count < 0) then
    begin
 		{$IFDEF SHOW_SYS_WRITE_ERRORS}
-      	printk('sys_write (%d): count < 0 (%d)\n', [current^.pid, count]);
+      	print_bochs('sys_write (%d): count < 0 (%d)\n', [current^.pid, count]);
 		{$ENDIF}
       result := -EINVAL;
       exit;
@@ -317,7 +318,7 @@ begin
    if (fichier^.inode = NIL) then
    begin
 		{$IFDEF SHOW_SYS_WRITE_ERRORS}
-      	printk('sys_write (%d): inode not defined for fd %d\n', [current^.pid, fd]);
+      	print_bochs('sys_write (%d): inode not defined for fd %d\n', [current^.pid, fd]);
       {$ENDIF}
 		result := -EBADF;
       exit;
@@ -326,7 +327,7 @@ begin
    if (fichier^.op = NIL) then
    begin
 		{$IFDEF SHOW_SYS_WRITE_ERRORS}
-      	printk('sys_write (%d): file operations not defined for fd %d\n', [current^.pid, fd]);
+      	print_bochs('sys_write (%d): file operations not defined for fd %d\n', [current^.pid, fd]);
       {$ENDIF}
 		result := -1;
       exit;
@@ -335,7 +336,7 @@ begin
    if (fichier^.op^.write = NIL) then
    begin
 		{$IFDEF SHOW_SYS_WRITE_ERRORS}
-      	printk('sys_write (%d): write operation not defined for fd %d\n', [current^.pid, fd]);
+      	print_bochs('sys_write (%d): write operation not defined for fd %d\n', [current^.pid, fd]);
       {$ENDIF}
 		result := -1;
       exit;
@@ -357,7 +358,7 @@ begin
       result := -EPERM;
 
    {$IFDEF DEBUG_SYS_WRITE}
-      printk('OUT (%d)\n', [result]);
+      print_bochs('OUT (%d)\n', [result]);
    {$ENDIF}
 
 end;

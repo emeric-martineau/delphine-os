@@ -160,17 +160,11 @@ begin
    mem_map      := $101000;   { mem_map address }
    size_mem_map := nb_pages * sizeof(T_page);
 
-   {* We use assembly here because all variables haven't the same type *}
-
-   asm
-      mov   eax, mem_map
-      add   eax, size_mem_map
-      mov   start_mem, eax
-      mov   fin_pile, eax
-      mov   fin_pile_dma, eax
-      mov   debut_pile, eax
-      mov   debut_pile_dma, eax
-   end;
+	start_mem 		:= longint(mem_map) + size_mem_map;
+	debut_pile  	:= pointer(longint(mem_map) + size_mem_map);
+	debut_pile_dma := pointer(longint(mem_map) + size_mem_map);
+	fin_pile 		:= pointer(longint(mem_map) + size_mem_map);
+	fin_pile_dma 	:= pointer(longint(mem_map) + size_mem_map);
 
    { Align start_mem on a 4096 bytes boundary (1 page) }
    if ((start_mem mod 4096) <> 0) then
@@ -282,7 +276,7 @@ begin
       if (PageReserved(i)) then
           reserved_pages := reserved_pages + 1
       else
-          {* Note : push_page() updates debut_pile, fin_pile,
+          {* NOTE : push_page() updates debut_pile, fin_pile,
 	   	  * debut_pile_dma and fin_pile_dma pointers as well as
 	   	  * nb_free_pages and free_memory variables (see mm/mem.pp) *}
 	   	 push_page(i);

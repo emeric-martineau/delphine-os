@@ -51,6 +51,7 @@ procedure add_to_runqueue (task : P_task_struct); external;
 procedure dump_task; external;
 procedure memcpy (src, dest : pointer ; size : dword); external;
 procedure panic(reason : string); external;
+procedure print_bochs (format : string ; args : array of const); external;
 procedure printk (format : string ; args : array of const); external;
 procedure schedule; external;
 procedure do_exit (status : dword); external;
@@ -224,7 +225,7 @@ begin
    end;
 
    {$IFDEF DEBUG_DO_SIGNAL}
-      printk('do_signal (%d): %d, %h (PID=%d)\n', [current^.pid, signr, current^.signal_struct[signr].sa_handler, current^.pid]);
+      print_bochs('do_signal (%d): %d, %h (PID=%d)\n', [current^.pid, signr, current^.signal_struct[signr].sa_handler, current^.pid]);
    {$ENDIF}
 
    if (current^.pid = 1) then   { We can't send signals to init }
@@ -271,14 +272,19 @@ begin
 			SIGALRM: begin
 	             		do_exit(signr);
 	          		end;
-	 else
-	    printk('do_signal (%d): don''t know what to do with signal %d\n', [current^.pid, signr]);
+
+			SIGPIPE: begin
+	             		do_exit(signr);
+	          		end;
+
+		else
+			printk('do_signal (%d): don''t know what to do with signal %d\n', [current^.pid, signr]);
       end;
    end
    else
    begin
       {printk('do_signal: we have to execute a handler for signal %d (test=%h)\n', [signr, test]);}
-      printk('do_signal (%d): calling handler for signal %d\n', [current^.pid, signr]);
+      print_bochs('do_signal (%d): calling handler for signal %d\n', [current^.pid, signr]);
       test := longint(sig.sa_handler);
       if (sig.sa_flags and SA_RESETHAND) = SA_RESETHAND then
       	  longint(sig.sa_handler) := SIG_DFL;
@@ -291,13 +297,13 @@ begin
 	 		pop   ebx
 	 		sti
       end;
-      printk('do_signal (%d): back from handler\n', [current^.pid]);
+      print_bochs('do_signal (%d): back from handler\n', [current^.pid]);
    end;
 
    current^.signal[0] := current^.signal[0] and (not (1 shl (signr - 1)));
 
    {$IFDEF DEBUG_DO_SIGNAL}
-      printk('do_signal (%d): EXITING\n', [current^.pid]);
+      print_bochs('do_signal (%d): EXITING\n', [current^.pid]);
 {		dump_task();}
    {$ENDIF}
 
@@ -315,12 +321,12 @@ procedure send_sig (sig : dword ; p : P_task_struct); [public, alias : 'SEND_SIG
 begin
 
    {$IFDEF DEBUG_SEND_SIG}
-      printk('send_sig (%d): dest PID=%d (state=%d), SIG=%d\n', [current^.pid, p^.pid, p^.state, sig]);
+      print_bochs('send_sig (%d): dest PID=%d (state=%d), SIG=%d\n', [current^.pid, p^.pid, p^.state, sig]);
    {$ENDIF}
 
    if (sig > 32) then
    begin
-      printk('send_sig (%d): sig is > 32 (%d). Signal won''t be sent\n', [current^.pid, sig]);
+      print_bochs('send_sig (%d): sig is > 32 (%d). Signal won''t be sent\n', [current^.pid, sig]);
       exit;
    end;
 
@@ -333,19 +339,23 @@ begin
 			pushfd();
 			cli();
          p^.signal[0] := p^.signal[0] or (1 shl (sig - 1));
-         add_to_runqueue(p);
          {$IFDEF DEBUG_SEND_SIG}
-            printk('send_sig (%d): waking up process %d\n', [current^.pid, p^.pid]);
+            print_bochs('send_sig (%d): waking up process %d\n', [current^.pid, p^.pid]);
          {$ENDIF}
+         add_to_runqueue(p);
 			popfd();
       end
       else if (p^.state = TASK_UNINTERRUPTIBLE) then
       begin
-         printk('send_sig (%d): task %d is uninterruptible\n', [current^.pid, p^.pid]);
+         print_bochs('send_sig (%d): task %d is uninterruptible\n', [current^.pid, p^.pid]);
       end
       else
          p^.signal[0] := p^.signal[0] or (1 shl (sig - 1));
    end;
+
+   {$IFDEF DEBUG_SEND_SIG}
+      print_bochs('send_sig (%d): END\n', [current^.pid]);
+   {$ENDIF}
 
 end;
 
@@ -453,7 +463,7 @@ begin
 
    if (pid > 1022) then
    begin
-      printk('WARNING sys_kill (%d): PID > 1022 (%d)\n', [current^.pid, pid]);
+      print_bochs('WARNING sys_kill (%d): PID > 1022 (%d)\n', [current^.pid, pid]);
       result := -ESRCH;   { No such process }
       exit;
    end;
@@ -479,7 +489,7 @@ begin
    end
    else
    begin
-      printk('sys_kill (%d): got to send signal %d to process group %d\n', [current^.pid, sig, -pid]);
+      print_bochs('sys_kill (%d): got to send signal %d to process group %d\n', [current^.pid, sig, -pid]);
       result := -ENOSYS;
    end;
 

@@ -52,6 +52,7 @@ function  kmalloc (len : dword) : pointer; external;
 procedure lock_buffer (bh : P_buffer_head); external;
 procedure memset (adr : pointer ; c : byte ; size : dword); external;
 procedure panic (reason : string); external;
+procedure print_bochs (format : string ; args : array of const); external;
 procedure printk (format : string ; args : array of const); external;
 procedure schedule; external;
 procedure unlock_buffer (bh : P_buffer_head); external;
@@ -105,9 +106,9 @@ begin
    begin
       {IFDEF DEBUG_MAKE_REQUEST}
          if (rw = READ) then
-             printk('make_request: does not need to read\n', [])
+             print_bochs('make_request: does not need to read\n', [])
 	 		else
-	      	 printk('make_request: does not need to write\n', []);
+	      	 print_bochs('make_request: does not need to write\n', []);
       {ENDIF}
       unlock_buffer(bh);
       exit;
@@ -168,6 +169,9 @@ end;
  *
  * Prépare une requête de lecture ou d'écriture pour un périphérique en mode
  * bloc
+ *
+ * NOTE: bh must be locked
+ *
  *****************************************************************************}
 procedure ll_rw_block (rw : dword ; bh : P_buffer_head); [public, alias : 'LL_RW_BLOCK'];
 
@@ -243,6 +247,7 @@ begin
       {$IFDEF DEBUG_END_REQUEST}
       	 printk('end_request: calling request_fn()\n', []);
       {$ENDIF}
+		lock_buffer(blk_dev[major].current_request^.bh);
       blk_dev[major].request_fn(major);
    end;
 

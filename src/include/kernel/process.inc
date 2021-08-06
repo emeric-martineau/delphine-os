@@ -48,53 +48,55 @@ type
    end;
 
    task_struct = record
-      pid            : dword;
-      state, nop     : byte;
-      nop2, nop3     : byte;
+      pid            	: dword;
+      state, nop     	: byte;
 
-      utime, stime   : dword; 	 { Nb de ticks utilisés par le processus }
+		first_time_slice	: byte;
+		time_slice			: byte;
 
-      tss_entry      : dword;     { Numero du descripteur de TSS }
-      tss            : ^tss_struct;
+      utime, stime   	: dword; 	 { Nb de ticks utilisés par le processus }
 
-      ppid, uid, gid : dword;
+      tss_entry      	: dword;     { Numero du descripteur de TSS }
+      tss            	: ^tss_struct;
 
-      exit_code      : dword;
+      ppid, uid, gid 	: dword;
 
-      end_code       : dword; 	  { Those values are... }
-      end_data       : dword; 	  { ...page-aligned }
+      exit_code      	: dword;
 
-		arg_addr 		: pointer;	 { Process arguments address }
+      end_code       	: dword; 	  { Those values are... }
+      end_data       	: dword; 	  { ...page-aligned }
 
-      brk            : dword;     { Process last legal address + 1 }
-      first_size     : dword;     { Original nb of pages the process uses }
-		real_size		: dword; 	 { Current nb of pages the process uses }
-{      size           : dword;}     { Current nb of pages the process uses }
-      cr3            : P_pte_t;   { Pointe vers le repertoire global de pages }
+		arg_addr 			: pointer;	 { Process arguments address }
 
-      mmap           : P_mmap_req;
+      brk            	: dword;     { Process last legal address + 1 }
+      first_size     	: dword;     { Original nb of pages the process uses }
+		real_size			: dword; 	 { Current nb of pages the process uses }
+      size           	: dword;     { Current nb of pages the process uses }
+      cr3            	: P_pte_t;   { Pointe vers le repertoire global de pages }
 
-      close_on_exec  : dword;     { One bit for each file descriptor }
-      umask          : dword;
-      file_desc      : array[0..31] of P_file_t;
-      root, pwd      : P_inode_t;
-      cwd            : array[0..254] of char;
+      mmap           	: P_mmap_req;
 
-      signal         : sigset_t;  { Indique les signaux envoyés au processus }
-      blocked        : sigset_t;  { Indique les signaux bloqués par le processus }
-      signal_struct  : array[1..32] of sigaction;
+      close_on_exec  	: dword;     { One bit for each file descriptor }
+      umask          	: dword;
+      file_desc      	: array[0..31] of P_file_t;
+      root, pwd      	: P_inode_t;
+      cwd            	: array[0..254] of char;
 
-      executable     : P_inode_t;
+      signal         	: sigset_t;  { Indique les signaux envoyés au processus }
+      blocked        	: sigset_t;  { Indique les signaux bloqués par le processus }
+      signal_struct  	: array[1..32] of sigaction;
 
-      timeout        : longint;   { Number of ticks we have to sleep }
-      alarm          : dword;
+      executable     	: P_inode_t;
 
-      wait_queue     : P_wait_queue;
+      timeout        	: longint;   { Number of ticks we have to sleep }
+      alarm          	: dword;
 
-      p_pptr         : P_task_struct;   { Pointe sur le père }
-      p_cptr         : P_task_struct;   { Pointe sur le plus jeune fils }
-      p_ysptr        : P_task_struct;   { Pointe sur le processus créé APRES P par le père de P }
-      p_osptr        : P_task_struct;   { Pointe sur le processus créé AVANT P par le père de P }
+      wait_queue     	: P_wait_queue;
+
+      p_pptr         	: P_task_struct;   { Pointe sur le père }
+      p_cptr         	: P_task_struct;   { Pointe sur le plus jeune fils }
+      p_ysptr        	: P_task_struct;   { Pointe sur le processus créé APRES P par le père de P }
+      p_osptr        	: P_task_struct;   { Pointe sur le processus créé AVANT P par le père de P }
 
       next_task, prev_task : P_task_struct;
       next_run, prev_run   : P_task_struct;

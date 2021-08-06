@@ -43,6 +43,7 @@ INTERFACE
 {* External procedure and functions *}
 
 function  IS_DIR (inode : P_inode_t) : boolean; external;
+procedure print_bochs (format : string ; args : array of const); external;
 procedure printk (format : string ; args : array of const); external;
 
 
@@ -62,6 +63,7 @@ function sys_getdents (fd : dword ; dirent : pointer ; count : dword) : dword; c
 
 IMPLEMENTATION
 
+{$I inline.inc}
 
 {* Constants only used in THIS file *}
 
@@ -85,26 +87,24 @@ var
 
 begin
 
-   asm
-      sti
-   end;
+	sti();
 
    {$IFDEF DEBUG_SYS_GETDENTS}
-      printk('sys_getdents: fd=%d  dirent=%h  count=%d\n', [fd, dirent, count]);
+      print_bochs('sys_getdents: fd=%d  dirent=%h  count=%d\n', [fd, dirent, count]);
    {$ENDIF}
 
    fichier := current^.file_desc[fd];
 
    if (fd >= OPEN_MAX) or (fichier = NIL) then
    begin
-      printk('sys_getdents: fd %d is not a valid fd\n', [fd]);
+      print_bochs('sys_getdents: fd %d is not a valid fd\n', [fd]);
       result := -EBADF;
       exit;
    end;
 
    if (not IS_DIR(fichier^.inode)) then
    begin
-      printk('sys_getdents: fd %d is not a directory\n', [fd]);
+      print_bochs('sys_getdents: fd %d is not a directory\n', [fd]);
       result := -ENOTDIR;
       exit;
    end;
@@ -114,10 +114,10 @@ begin
    if ((fichier^.op <> NIL) and (fichier^.op^.read <> NIL)) then
         result := fichier^.op^.read(fichier, dirent, count)
    else
-        printk('sys_getdents: no read operation defined for fd %d\n', [fd]);
+        print_bochs('sys_getdents: no read operation defined for fd %d\n', [fd]);
 
    {$IFDEF DEBUG_SYS_GETDENTS}
-      printk('sys_getdents: result=%d\n', [result]);
+      print_bochs('sys_getdents: result=%d\n', [result]);
    {$ENDIF}
 
 end;

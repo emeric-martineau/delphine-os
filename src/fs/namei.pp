@@ -1,16 +1,14 @@
 {******************************************************************************
  *  namei.pp
  *
- *  This file contains lookup(), sys_unlink(), namei() and dir_namei().
+ *  This file contains lookup(), sys_unlink(), sys_mkdir(), sys_rmdir(),
+ *  namei() and dir_namei().
+ *
  *  It also contains functions necessary to lookup_cache.
  *
  *  NOTE: Functions used to manage lookup_cache begin with 'lc_'
  *
  *  Copyleft (C) 2003
- *
- *  version 0.1 - 10/10/2003 - GaLi - lookup_cache management is ..NEARLY.. OK.
- *
- *  version 0.0 - 13/09/2003 - GaLi - Initial version
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -50,6 +48,8 @@ INTERFACE
 {DEFINE NAMEI_WARNING}
 {DEFINE DEBUG_DIR_NAMEI}
 {DEFINE DEBUG_SYS_UNLINK}
+{DEFINE DEBUG_SYS_MKDIR}
+{DEFINE DEBUG_SYS_RMDIR}
 {DEFINE DIR_NAMEI_WARNING}
 {DEFINE DEBUG_LOOKUP}
 
@@ -96,6 +96,8 @@ function  lc_add_entry (dir : P_inode_t ; name : pchar ; len : dword ; res_inode
 function  lc_find_entry (dir : P_inode_t ; name : pchar ; len : dword ; res_inode : PP_inode_t) : longint;
 function  lookup (dir : P_inode_t ; name : pchar ; len : dword ; res_inode : PP_inode_t) : longint;
 function  namei (path : pchar) : P_inode_t;
+function  sys_mkdir (pathname : pchar ; mode : dword) : dword; cdecl;
+function  sys_rmdir (pathname : pchar ; mode : dword) : dword; cdecl;
 function  sys_unlink (path : pchar) : dword; cdecl;
 
 
@@ -397,7 +399,7 @@ end;
 function dir_namei (path : pchar ; name : pointer) : P_inode_t; [public, alias : 'DIR_NAMEI'];
 
 var
-   tmp, res_name       : pchar;
+   tmp			        : pchar;
    filename, basename  : string;
    base, inode         : P_inode_t;
    i, index, nb_dir, j : dword;
@@ -416,12 +418,14 @@ begin
    end;
 
    {$IFDEF DEBUG_DIR_NAMEI}
-      printk('dir_namei (%d): trying to find %s\n', [current^.pid, path]);
+      print_bochs('dir_namei (%d): trying to find %s\n', [current^.pid, path]);
    {$ENDIF}
 
    tmp := path;
 
-   {* 'filename' initialization (we copy path into filename)
+   {* FIXME ???
+	 *
+	 * 'filename' initialization (we copy path into filename)
     *
     * NOTE: path length MUST be < 255 *}
 
@@ -450,6 +454,10 @@ begin
    else
       base := current^.pwd;
 
+	{ If last character is '/' remove it }
+	if (filename[i-1] = '/') then
+		 filename[i-1] := #0;
+
    {* We are going to call lookup() for each directory in the path. So we
     * calculate how many directories there are *}
    nb_dir := 0;
@@ -463,7 +471,7 @@ begin
    end;
 
    {$IFDEF DEBUG_DIR_NAMEI}
-      printk('dir_namei (%d): %d directories in the path\n', [current^.pid, nb_dir]);
+      print_bochs('dir_namei (%d): %d directories in the path\n', [current^.pid, nb_dir]);
    {$ENDIF}
 
    inode := alloc_inode();
@@ -494,13 +502,13 @@ begin
 			if (str_len <> 0) then
 	   	begin
 	      	{$IFDEF DEBUG_DIR_NAMEI}
-	         	printk('dir_namei (%d): calling lookup(%s) DIR\n', [current^.pid, basename]);
+	         	print_bochs('dir_namei (%d): calling lookup(%s) DIR\n', [current^.pid, basename]);
 	      	{$ENDIF}
 	      	if (lookup(base, @basename, str_len, @inode) < 0) then
 	      	begin
 	         	{ One of the directory in the path has not been found !!! }
 		 			{$IFDEF DEBUG_DIR_NAMEI}
-		    			printk('dir_namei (%d): %s has not been found by lookup()\n', [current^.pid, basename]);
+		    			print_bochs('dir_namei (%d): %s has not been found by lookup()\n', [current^.pid, basename]);
 		 			{$ENDIF}
 	         	free_inode(inode);
 	         	result := -ENOENT;
@@ -511,7 +519,7 @@ begin
 	      	if not IS_DIR(inode) then
 	      	begin
 	         	{$IFDEF DEBUG_DIR_NAMEI}
-	            	printk('dir_namei (%d): %s is not a directory\n', [current^.pid, basename]);
+	            	print_bochs('dir_namei (%d): %s is not a directory\n', [current^.pid, basename]);
 	         	{$ENDIF}
 	         	free_inode(inode);
 	         	result := -ENOTDIR;
@@ -522,9 +530,9 @@ begin
 	      	inode := alloc_inode();
 	      	if (inode = NIL) then
 	      	begin
-	         printk('dir_namei (%d): not enough memory\n', [current^.pid]);
-		 		result := NIL;
-		 		exit;
+	         	printk('dir_namei (%d): not enough memory\n', [current^.pid]);
+		 			result := NIL;
+		 			exit;
 	      	end;
 			end;
 	   	index += 1;
@@ -546,7 +554,7 @@ begin
    if (str_len = 0) then
    begin
       {IFDEF DEBUG_DIR_NAMEI}
-         printk('dir_namei (%d): str_len=0\n', [current^.pid]);
+         print_bochs('dir_namei (%d): str_len=0\n', [current^.pid]);
       {ENDIF}
       free_inode(inode);
       result := -EISDIR;
@@ -571,7 +579,6 @@ end;
  * Returns the inode of the specified name.
  *
  * FIXME: - for the moment, namei() doesn't check directories access rights
- *        - Still a few bugs.
  *
  * NOTE: may be we could optimize this function 
  *****************************************************************************}
@@ -590,14 +597,14 @@ begin
    if (path[0] = #0) then
    begin
       {$IFDEF NAMEI_WARNING}
-         printk('namei (%d): file name is a null string\n', [current^.pid]);
+         print_bochs('namei (%d): file name is a null string\n', [current^.pid]);
       {$ENDIF}
       result := -EINVAL;
       exit;
    end;
 
    {$IFDEF DEBUG_NAMEI}
-      printk('namei (%d): trying to find %s\n', [current^.pid, path]);
+      print_bochs('namei (%d): trying to find %s\n', [current^.pid, path]);
    {$ENDIF}
 
    tmp := path;
@@ -644,13 +651,13 @@ begin
    end;
 
    {$IFDEF DEBUG_NAMEI}
-      printk('namei (%d): %d directories in the path\n', [current^.pid, nb_dir]);
+      print_bochs('namei (%d): %d directories in the path\n', [current^.pid, nb_dir]);
    {$ENDIF}
 
    inode := alloc_inode();
    if (inode = NIL) then
    begin
-      printk('namei (%d): not enough memory to look for %s\n', [current^.pid, path]);
+      print_bochs('namei (%d): not enough memory to look for %s\n', [current^.pid, path]);
       result := -ENOMEM;
       exit;
    end;
@@ -674,13 +681,13 @@ begin
 	   if (str_len <> 0) then
 	   begin
 	      {$IFDEF DEBUG_NAMEI}
-	         printk('namei (%d): calling lookup(%s) DIR\n', [current^.pid, basename]);
+	         print_bochs('namei (%d): calling lookup(%s) DIR\n', [current^.pid, basename]);
 	      {$ENDIF}
 	      if (lookup(base, @basename, str_len, @inode) < 0) then
 	      begin
 	         { One of the directory in the path has not been found !!! }
 	         {$IFDEF DEBUG_NAMEI}
-	            printk('namei (%d): %s has not been found by lookup()\n', [current^.pid, basename]);
+	            print_bochs('namei (%d): %s has not been found by lookup()\n', [current^.pid, basename]);
 	         {$ENDIF}
 	         free_inode(inode);
 	         result := -ENOENT;
@@ -691,7 +698,7 @@ begin
 	      if not IS_DIR(inode) then
 	      begin
 	         {$IFDEF DEBUG_NAMEI}
-	            printk('namei (%d): %s is not a directory\n', [current^.pid, basename]);
+	            print_bochs('namei (%d): %s is not a directory\n', [current^.pid, basename]);
 	         {$ENDIF}
 	         free_inode(inode);
 	         result := -ENOTDIR;
@@ -702,7 +709,7 @@ begin
 	      inode := alloc_inode();
 	      if (inode = NIL) then
 	      begin
-	         printk('namei (%d): not enough memory\n', [current^.pid]);
+	         print_bochs('namei (%d): not enough memory\n', [current^.pid]);
 	         result := NIL;
 	         exit;
 	      end;
@@ -725,7 +732,7 @@ begin
    if (basename[0] = #0) then   { This happens when 'path' ends with a'/' }
    begin
       {$IFDEF DEBUG_NAMEI}
-         printk('namei (%d): %s -> %d\n', [current^.pid, path, base^.ino]);
+         print_bochs('namei (%d): %s -> %d\n', [current^.pid, path, base^.ino]);
       {$ENDIF}
       free_inode(inode);
       result := base;
@@ -733,7 +740,7 @@ begin
    end;
 
    {$IFDEF DEBUG_NAMEI}
-      printk('namei (%d): calling lookup(%s) FILE\n', [current^.pid, basename]);
+      print_bochs('namei (%d): calling lookup(%s) FILE\n', [current^.pid, basename]);
    {$ENDIF}
 
    if (lookup(base, @basename, str_len, @inode) < 0) then
@@ -741,10 +748,10 @@ begin
       { File has not been found !!! }
       free_inode(inode);
       {$IFDEF NAMEI_WARNING}
-         printk('namei (%d): cannot find file %s (in %s)\n', [current^.pid, basename, path]);
+         print_bochs('namei (%d): cannot find file %s (in %s)\n', [current^.pid, basename, path]);
       {$ENDIF}
       {$IFDEF DEBUG_NAMEI}
-         printk('namei (%d): cannot find file %s (in %s)\n', [current^.pid, basename, path]);
+         print_bochs('namei (%d): cannot find file %s (in %s)\n', [current^.pid, basename, path]);
       {$ENDIF}
       result := -ENOENT;
       exit;
@@ -753,7 +760,7 @@ begin
       result := inode;
 
    {$IFDEF DEBUG_NAMEI}
-      printk('namei (%d): %s -> %d\n', [current^.pid, path, inode^.ino]);
+      print_bochs('namei (%d): %s -> %d\n', [current^.pid, path, inode^.ino]);
    {$ENDIF}
 
 end;
@@ -771,13 +778,13 @@ function sys_unlink (path : pchar) : dword; cdecl; [public, alias : 'SYS_UNLINK'
 
 var
    len, ind         : dword;
-   name             : pchar;
-   dir_inode, inode, res_inode : P_inode_t;
+   name             : string;
+   dir_inode, inode : P_inode_t;
 
 begin
 
    {$IFDEF DEBUG_SYS_UNLINK}
-      printk('sys_unlink (%d): path=%s\n', [current^.pid, path]);
+      print_bochs('sys_unlink (%d): path=%s\n', [current^.pid, path]);
    {$ENDIF}
 
    if (path[0] = #0) then
@@ -786,37 +793,27 @@ begin
       exit;
    end;
 
-   name := kmalloc(255);
-   if (name = NIL) then
-   begin
-      printk('sys_unlink (%d): not enough memory\n', [current^.pid]);
-      result := -ENOMEM;
-      exit;
-   end;
-
-   dir_inode := dir_namei(path, name);
+   dir_inode := dir_namei(path, @name);
    if (longint(dir_inode) < 0) then
    begin
       {$IFDEF DEBUG_SYS_UNLINK}
-      	 printk('sys_unlink (%d): no such file\n', [current^.pid]);
+      	 print_bochs('sys_unlink (%d): no such file\n', [current^.pid]);
       {$ENDIF}
       result := longint(dir_inode);
-      kfree_s(name, 255);
       exit;
    end;
 
    {$IFDEF DEBUG_SYS_UNLINK}
-      printk('sys_unlink (%d): name=%s (dir ino=%d)\n', [current^.pid, name, dir_inode^.ino]);
+      print_bochs('sys_unlink (%d): name=%s (dir ino=%d)\n', [current^.pid, name, dir_inode^.ino]);
    {$ENDIF}
 
 	{ Check if we can write in dir_inode }
    if not access_rights_ok(O_WRONLY, dir_inode) then
    begin
       {$IFDEF DEBUG_SYS_UNLINK}
-      	 printk('sys_unlink (%d): cannot write to inode %d\n', [current^.pid, dir_inode^.ino]);
+      	 print_bochs('sys_unlink (%d): cannot write to inode %d\n', [current^.pid, dir_inode^.ino]);
       {$ENDIF}
       result := -EPERM;
-      kfree_s(name, 255);
       free_inode(dir_inode);
       exit;
    end;
@@ -827,20 +824,18 @@ begin
    inode := alloc_inode();
    if (inode = NIL) then
    begin
-      printk('sys_unlink: not enough memory for alloc_inode() (1)\n', []);
+      print_bochs('sys_unlink: not enough memory for alloc_inode() (1)\n', []);
       result := -ENOMEM;
       exit;
    end;
 
-	ind := lookup(dir_inode, name, len, @inode);
-
+	ind := lookup(dir_inode, @name, len, @inode);
    if (ind = -1) then
    begin
       {$IFDEF DEBUG_SYS_UNLINK}
-      	 printk('sys_unlink (%d): lookup() failed\n', [current^.pid]);
+      	 print_bochs('sys_unlink (%d): lookup() failed\n', [current^.pid]);
       {$ENDIF}      
       result := -ENOENT;
-      kfree_s(name, 255);
       free_inode(dir_inode);
       free_inode(inode);
       exit;
@@ -849,10 +844,9 @@ begin
    if not access_rights_ok(O_WRONLY, inode) then
    begin
       {$IFDEF DEBUG_SYS_UNLINK}
-      	 printk('sys_unlink (%d): cannot write to inode %d\n', [current^.pid, inode^.ino]);
+      	 print_bochs('sys_unlink (%d): cannot write to inode %d\n', [current^.pid, inode^.ino]);
       {$ENDIF}
       result := -EPERM;
-      kfree_s(name, 255);
       free_inode(dir_inode);
       free_inode(inode);
       exit;
@@ -861,47 +855,228 @@ begin
    if IS_DIR(inode) then
    begin
       {$IFDEF DEBUG_SYS_UNLINK}
-      	 printk('sys_unlink (%d): %s (ino=%d) is a directory\n', [current^.pid, name, inode^.ino]);
+      	 print_bochs('sys_unlink (%d): %s (ino=%d) is a directory\n', [current^.pid, name, inode^.ino]);
       {$ENDIF}      
       result := -EISDIR;
-      kfree_s(name, 255);
       free_inode(dir_inode);
       free_inode(inode);
       exit;
    end;
 
    {$IFDEF DEBUG_SYS_UNLINK}
-      printk('sys_unlink (%d): %s ino=%d\n', [current^.pid, name, inode^.ino]);
+      print_bochs('sys_unlink (%d): %s ino=%d\n', [current^.pid, name, inode^.ino]);
    {$ENDIF}
 
    lock_inode(inode);
 
    if (inode^.op <> NIL) and (inode^.op^.unlink <> NIL) then
-       result := inode^.op^.unlink(dir_inode, name, inode)
+       result := inode^.op^.unlink(dir_inode, @name, inode)
    else
    begin
-      printk('sys_unlink: unlink() operation not defined for %s\n', [path]);
+      print_bochs('sys_unlink: unlink() operation not defined for %s\n', [path]);
       result := -ENOSYS;
    end;
 
    if (result <> 0) then
-       printk('sys_unlink: error during fs-unlink() -> %d\n', [inode^.nlink, result]);
+       print_bochs('sys_unlink: error during fs-unlink() -> %d\n', [result]);
 
    unlock_inode(inode);
-   kfree_s(name, 255);
    free_inode(dir_inode);
    free_inode(inode);
 
 
 	{ Remove inode from lookup_cache }
 
-	res_inode := alloc_inode();
-   if (res_inode = NIL) then
+	if (ind <> 0) then
+		 lc_del_entry(ind);
+
+end;
+
+
+
+{******************************************************************************
+ * sys_mkdir
+ *
+ *****************************************************************************}
+function sys_mkdir (pathname : pchar ; mode : dword) : dword; cdecl; [public, alias : 'SYS_MKDIR'];
+
+var
+	len			: dword;
+	name			: string;
+	inode 		: P_inode_t;
+	dir_inode 	: P_inode_t;
+
+label fin;
+
+begin
+
+	result := -ENOSYS;
+
+	{$IFDEF DEBUG_SYS_MKDIR}
+		print_bochs('sys_mkdir (%d): pathname=%s mode=%h\n',
+						[current^.pid, pathname, mode]);
+	{$ENDIF}
+
+	{ Get directory in which we have to create the new one }
+	dir_inode := dir_namei(pathname, @name);
+   if (longint(dir_inode) < 0) then
+	{ Cannot find it }
    begin
-      printk('sys_unlink: not enough memory for alloc_inode() (2)\n', []);
+		{$IFDEF DEBUG_SYS_MKDIR}
+			print_bochs('sys_mkdir (%d): dir_namei() failed\n', [current^.pid]);
+		{$ENDIF}
+		result := longint(dir_inode);
+		exit;
+   end
+	else
+	{ OK, check if the file already exists }
+	begin
+	   len := 0;
+		while (name[len] <> #0) do len += 1;
+
+   	inode := alloc_inode();
+   	if (inode = NIL) then
+   	begin
+      	print_bochs('sys_mkdir (%d): not enough memory for alloc_inode() (1)\n',
+							[current^.pid]);
+      	result := -ENOMEM;
+			free_inode(dir_inode);
+   	   exit;
+	   end;
+
+		lookup(dir_inode, @name, len, @inode);
+		if (inode^.ino <> 0) then
+		{ The file already exists }
+		begin
+			{$IFDEF DEBUG_SYS_MKDIR}
+				print_bochs('sys_mkdir (%d): %s already exists\n',
+								[current^.pid, name]);
+			{$ENDIF}
+			result := -EEXIST;
+			goto fin;
+		end;
+
+		if (dir_inode^.op = NIL) or (dir_inode^.op^.mkdir = NIL) then
+		begin
+			{$IFDEF DEBUG_SYS_MKDIR}
+				print_bochs('sys_mkdir (%d): op^.mkdir = NIL\n', [current^.pid]);
+			{$ENDIF}
+			result := -ENOSYS;
+			goto fin;
+		end;
+
+		result := dir_inode^.op^.mkdir(dir_inode, @name, mode);
+
+	end;
+
+fin:
+	free_inode(dir_inode);
+	free_inode(inode);
+
+end;
+
+
+
+{******************************************************************************
+ * sys_rmdir
+ *
+ *****************************************************************************}
+function sys_rmdir (pathname : pchar ; mode : dword) : dword; cdecl; [public, alias : 'SYS_RMDIR'];
+
+var
+	dir_inode	: P_inode_t;
+	inode			: P_inode_t;
+	name			: string;
+	len, ind 	: dword;
+
+begin
+
+	{$IFDEF DEBUG_SYS_RMDIR}
+		print_bochs('sys_rmdir (%d): pathname=%s\n', [current^.pid, pathname]);
+	{$ENDIF}
+
+   dir_inode := dir_namei(pathname, @name);
+   if (longint(dir_inode) < 0) then
+   begin
+      {$IFDEF DEBUG_SYS_RMDIR}
+      	 print_bochs('sys_rmdir (%d): no such file\n', [current^.pid]);
+      {$ENDIF}
+      result := longint(dir_inode);
+      exit;
+   end;
+
+   {$IFDEF DEBUG_SYS_RMDIR}
+      print_bochs('sys_rmdir (%d): name=%s (dir ino=%d)\n', [current^.pid, name, dir_inode^.ino]);
+   {$ENDIF}
+
+	{ Check if we can write in dir_inode }
+   if not access_rights_ok(O_WRONLY, dir_inode) then
+   begin
+      {$IFDEF DEBUG_SYS_RMDIR}
+      	 print_bochs('sys_rmdir (%d): cannot write to inode %d\n', [current^.pid, dir_inode^.ino]);
+      {$ENDIF}
+      result := -EPERM;
+      free_inode(dir_inode);
+      exit;
+   end;
+
+   len := 0;
+   while (name[len] <> #0) do len += 1;
+
+   inode := alloc_inode();
+   if (inode = NIL) then
+   begin
+      print_bochs('sys_rmdir: not enough memory for alloc_inode() (1)\n', []);
       result := -ENOMEM;
       exit;
    end;
+
+	ind := lookup(dir_inode, @name, len, @inode);
+   if (ind = -1) then
+   begin
+      {$IFDEF DEBUG_SYS_RMDIR}
+      	 print_bochs('sys_rmdir (%d): lookup() failed\n', [current^.pid]);
+      {$ENDIF}      
+      result := -ENOENT;
+      free_inode(dir_inode);
+      free_inode(inode);
+      exit;
+   end;
+
+   if not access_rights_ok(O_WRONLY, inode) then
+   begin
+      {$IFDEF DEBUG_SYS_RMDIR}
+      	 print_bochs('sys_rmdir (%d): cannot write to inode %d\n', [current^.pid, inode^.ino]);
+      {$ENDIF}
+      result := -EPERM;
+      free_inode(dir_inode);
+      free_inode(inode);
+      exit;
+   end;
+
+   {$IFDEF DEBUG_SYS_RMDIR}
+      print_bochs('sys_rmdir (%d): %s ino=%d\n', [current^.pid, name, inode^.ino]);
+   {$ENDIF}
+
+   lock_inode(inode);
+
+   if (inode^.op <> NIL) and (inode^.op^.rmdir <> NIL) then
+       result := inode^.op^.rmdir(dir_inode, @name, inode)
+   else
+   begin
+      print_bochs('sys_rmdir: rmdir() operation not defined for %s\n', [pathname]);
+      result := -ENOSYS;
+   end;
+
+   if (result <> 0) then
+       print_bochs('sys_rmdir: error during fs-rmdir() -> %d\n', [result]);
+
+   unlock_inode(inode);
+   free_inode(dir_inode);
+   free_inode(inode);
+
+
+	{ Remove inode from lookup_cache }
 
 	if (ind <> 0) then
 		 lc_del_entry(ind);

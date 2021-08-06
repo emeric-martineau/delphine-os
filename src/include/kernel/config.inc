@@ -3,6 +3,10 @@
  *
  * NOTE: Every symbol defined here will print some info ONLY through Bochs
  *       console (using port 0xe9)
+ *
+ * NOTE2: Do not forget to 'make clean' before recompiling DelphineOS kernel if
+ *        you modify this file.
+ *
  *}
 
 
@@ -17,7 +21,7 @@ const
 	FREE_BUFFER_MAX					= 400;   {* Number of buffers we want to free
 														 * when calling free_buffers() *}
 
-	FREE_LOOKUP_CACHE_MAX			= 400;   {* Number of lookup cache entrie we
+	FREE_LOOKUP_CACHE_MAX			= 400;   {* Number of lookup cache entries we
 														 * want to free when calling
 														 * free_lookup_cache() *}
 
@@ -67,7 +71,7 @@ const
 {DEFINE DEBUG_EXT2_NEW_BLOCK}
 {DEFINE DEBUG_EXT2_READDIR}
 {DEFINE DEBUG_EXT2_ADD_LINK}
-{DEFINE DEBUG_EXT2_DELETE_ENTRY}
+{$DEFINE DEBUG_EXT2_DELETE_ENTRY}
 {DEFINE DEBUG_EXT2_FIND_ENTRY}
 {DEFINE DEBUG_EXT2_GET_REAL_BLOCK}
 {DEFINE DEBUG_EXT2_FILE_READ}
@@ -81,10 +85,12 @@ const
 {DEFINE DEBUG_EXT2_WRITE_INODE}
 {DEFINE DEBUG_EXT2_DELETE_INODE}
 {DEFINE DEBUG_EXT2_CREATE}
-{DEFINE DEBUG_EXT2_UNLINK}
+{$DEFINE DEBUG_EXT2_UNLINK}
 {DEFINE DEBUG_EXT2_READ_SUPER}
 {DEFINE REVISION_WARNING}
 {DEFINE DEBUG_EXT2_GET_GROUP_DESC}
+{DEFINE DEBUG_EXT2_MKDIR}
+{DEFINE DEBUG_EXT2_EMPTY_DIR}
 
 
 {*****************}

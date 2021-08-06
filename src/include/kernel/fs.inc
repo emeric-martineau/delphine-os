@@ -115,7 +115,6 @@ type
       close : function (fichier : P_file_t) : dword;
       seek  : function (fichier : P_file_t ; offset, whence : dword) : dword;
       ioctl : function (fichier : P_file_t ; req : dword ; argp : pointer) : dword;
-		mmap  : function (fichier : P_file_t ) : dword;
    end;
 
 
@@ -123,6 +122,8 @@ type
       default_file_ops : P_file_operations;
       lookup   : function (dir : P_inode_t ; name : pchar ; len : dword ; res_inode : PP_inode_t) : boolean;
       create   : function (dir : P_inode_t ; name : pchar ; mode : dword) : P_inode_t;
+		mkdir    : function (dir : P_inode_t ; name : pchar ; mode : dword) : dword;
+		rmdir    : function (dir : P_inode_t ; name : pchar ; inode : P_inode_t) : dword;
       truncate : procedure (inode : P_inode_t);
       unlink   : function (dir : P_inode_t ; name : pchar ; inode : P_inode_t) : dword;
    end;
@@ -182,8 +183,8 @@ type
       mode     : dword;   { Type de fichier et droits d'accès }
       uid      : dword;   { Identificateur de propriétaire }
       gid      : dword;   { Identificateur de groupe }
-      size     : dword;   { Longueur du fichier en octets }
-      blksize  : dword;   { Taille d'un bloc en octets }
+      size     : dword;   { File length in bytes }
+      blksize  : dword;   { Logical block size }
       blocks   : dword;   { Nb de blocs de 512 octets du fichier }
       wait     : P_wait_queue;   { File d'attente }
       sb       : P_super_block_t;

@@ -1,6 +1,8 @@
 {$IFNDEF __MM__}
 {$DEFINE __MM__}
 
+{$I fs.inc}
+
 type
 
    P_bios_map_entry = ^T_bios_map_entry;
@@ -25,7 +27,7 @@ type
 
    T_page_desc = record
        page        : pointer;      { Page dans laquelle est contenue des 
-	                              objets de la meme taille }
+	                              	 objets de la meme taille }
        next        : ^T_page_desc; { Pointeur sur le prochain page_desc }
        bitmap      : dword;        { Bitmap primaire de la page }
        adr_bitmap2 : dword;        { Adresse du bitmap secondaire }
@@ -46,13 +48,15 @@ type
    end;
 
    mmap_req = record   { This is used to record mmap requests in task_struct }
-      addr  : pointer;
-      size  : dword;
-		flags : byte;
-		prot  : byte;
-		count : word;
-      next  : ^mmap_req;
-      prev  : ^mmap_req;
+      addr  	: pointer;
+      size  	: dword;
+		pgoff 	: dword;
+		flags 	: byte;
+		prot  	: byte;
+		count 	: word;
+		fichier	: P_file_t;
+      next  	: ^mmap_req;
+      prev  	: ^mmap_req;
    end;
 
 
@@ -71,15 +75,15 @@ const
 
 { Page table entries flags }
 
-    NULL_PAGE    = $200; { The page has been chosen but not allocated }
-	 MAPPED_PAGE  = $200;
-    USER_PAGE    = 7;    { PRESENT_PAGE or WRITE_PAGE or USER_MODE }
-    RDONLY_PAGE  = 5;    { PRESENT_PAGE or USER_MODE }
-    KERNEL_PAGE  = 1;
+    USER_PAGE    = $207;  { PRESENT_PAGE or WRITE_PAGE or USER_MODE or USED_ENTRY }
+    RDONLY_PAGE  = $205;  { PRESENT_PAGE or USER_MODE or USED_ENTRY}
+    KERNEL_PAGE  = $201;
 
-    USER_MODE    = 4;
-    WRITE_PAGE   = 2;
-    PRESENT_PAGE = 1;
+	 FILE_MAPPED_PAGE = $400;  { The page maps a file }
+    USED_ENTRY    	= $200;  { The page has been chosen but not allocated }
+    USER_MODE     	= 4;
+    WRITE_PAGE    	= 2;
+    PRESENT_PAGE  	= 1;
 
 
 {----------------------------------------------------------------------------------}

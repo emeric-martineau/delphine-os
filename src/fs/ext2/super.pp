@@ -46,12 +46,13 @@ procedure ext2_delete_inode (inode : P_inode_t); external;
 function  ext2_file_read (fichier : P_file_t ; buffer : pointer ; count : dword) : dword; external;
 function  ext2_file_write (fichier : P_file_t ; buffer : pointer ; count : dword) : dword; external;
 function  ext2_lookup (dir : P_inode_t ; name : pchar ; len : dword ; res_inode : PP_inode_t) : boolean; external;
+function  ext2_mkdir (dir : P_inode_t ; name : pchar ; mode : dword) : dword; external;
 function  ext2_readdir (fichier : P_file_t ; buffer : pointer ; count : dword) : dword; external;
 procedure ext2_read_inode (inode : P_inode_t); external;
+function  ext2_rmdir (dir : P_inode_t ; name : pchar ; inode : P_inode_t) : dword; external;
 procedure ext2_truncate (inode : P_inode_t); external;
 function  ext2_unlink (dir : P_inode_t ; name : pchar ; inode : P_inode_t) : dword; external;
 procedure ext2_write_inode (inode : P_inode_t); external;
-function  find_buffer (major, minor : byte ; block, size : dword) : P_buffer_head; external;
 function  kmalloc (len : dword) : pointer; external;
 procedure ll_rw_block (rw : dword ; bh : P_buffer_head); external;
 procedure lock_buffer (bh : P_buffer_head); external;
@@ -207,12 +208,21 @@ begin
 	db_count := (sb^.ext2_sb.groups_count +
 	             sb^.ext2_sb.desc_per_block - 1) div sb^.ext2_sb.desc_per_block;
 
-	{$IFDEF DEBUG_EXT2_READ_SUPER}
-		print_bochs('root fs: revision %d  inode count: %d  block count: %d\n',
-						[super^.rev_level, super^.inodes_count, super^.blocks_count]);
-		print_bochs('block size: %d  first block: %d  db_count: %d\n',
-						[blk_size, super^.first_data_block, db_count]);
-	{$ENDIF}
+	{IFDEF DEBUG_EXT2_READ_SUPER}
+		print_bochs('EXT2: root fs: revision %d.%d  inode count: %d  block count: %d\n',
+		[super^.rev_level, super^.minor_rev_level, super^.inodes_count,
+		 super^.blocks_count]);
+		print_bochs('EXT2: block size: %d  first block: %d  db_count: %d\n',
+		[blk_size, super^.first_data_block, db_count]);
+
+		if (super^.rev_level = EXT2_DYNAMIC_REV) then
+		begin
+			print_bochs('EXT2: inode_size=%d feature_compat=%h\nEXT2: feature_incompat=%h feature_ro_compat=%h\n',
+			[super^.inode_size, super^.feature_compat, super^.feature_incompat,
+			 super^.feature_ro_compat]);
+		end;
+
+	{ENDIF}
 
 	{* FIXME: there is a problem if db_count > 146 because if so,
 	 * we ask kmalloc() a block > 4096 bytes; which it cannot do *}
@@ -320,7 +330,7 @@ end;
  * ext2_set_bit
  *
  * INPUT : nr   -> Bit to set
- *    	   addr -> Address to count from
+ *    	  addr -> Address to count from
  *
  *****************************************************************************}
 function ext2_set_bit (nr : dword ; addr : pointer) : dword; [public, alias : 'EXT2_SET_BIT'];
@@ -342,7 +352,7 @@ end;
  * ext2_unset_bit
  *
  * INPUT : nr   -> Bit to set
- *    	   addr -> Address to count from
+ *    	  addr -> Address to count from
  *
  *****************************************************************************}
 function ext2_unset_bit (nr : dword ; addr : pointer) : dword; [public, alias : 'EXT2_UNSET_BIT'];
@@ -364,10 +374,10 @@ end;
  * ext2_find_first_zero_bit
  *
  * INPUT : addr -> The address to start the search at
- *    	   size -> The maximum size to search
+ *    	  size -> The maximum size to search
  *
  * OUPUT: Returns the bit-number of the first zero bit, not the number of the
- *    	  byte containing a bit.
+ *    	 byte containing a bit.
  *
  * Finds the first zero bit in a memory region.
  *
@@ -451,10 +461,6 @@ begin
    ext2_super_operations.write_super  := @ext2_write_super;
    ext2_super_operations.delete_inode := @ext2_delete_inode;
 
-   { Inode operations }
-{   ext2_inode_operations.lookup := @ext2_lookup;}
-{   ext2_inode_operations.truncate := @ext2_truncate;}
-
    { File operations }
    ext2_file_operations.read  := @ext2_file_read;
    ext2_file_operations.write := @ext2_file_write;
@@ -466,6 +472,8 @@ begin
    ext2_dir_operations.read := @ext2_readdir;
    ext2_dir_inode_operations.lookup := @ext2_lookup;
    ext2_dir_inode_operations.create := @ext2_create;
+	ext2_dir_inode_operations.mkdir  := @ext2_mkdir;
+	ext2_dir_inode_operations.rmdir  := @ext2_rmdir;
    ext2_dir_inode_operations.default_file_ops := @ext2_dir_operations;
 
    register_filesystem(@ext2_fs_type);

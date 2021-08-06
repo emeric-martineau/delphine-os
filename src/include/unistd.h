@@ -3,11 +3,13 @@
 
 #include <sys/cdefs.h>
 #include <sys/types.h>
-#include <sys/time.h>
 #include <sys/stat.h>
 #include <sys/fsuid.h>
+#include <sys/select.h>
 
-extern int optind,opterr;
+__BEGIN_DECLS
+
+extern int optind,opterr,optopt;
 extern char *optarg;
 int getopt(int argc, char *const argv[], const char *options);
 
@@ -19,7 +21,7 @@ int getopt(int argc, char *const argv[], const char *options);
 #define F_OK 0 /* Test for existence.  */
 
 /* Test for access to NAME using the real UID and real GID.  */
-extern int access (const char *__name, int __type) __THROW;
+int access (const char *__name, int __type) __THROW;
 
 #ifndef SEEK_SET
 #define SEEK_SET 0
@@ -54,8 +56,10 @@ int close(int fd) __THROW;
 
 int unlink(const char *pathname) __THROW;
 
-int pread(int fd, void *buf, size_t count, off_t offset);
-int pwrite(int fd, const void *buf, size_t count, off_t offset);
+ssize_t pread(int fd, void *buf, size_t count, off_t offset);
+ssize_t pwrite(int fd, const void *buf, size_t count, off_t offset);
+ssize_t pread64(int fd, void *buf, size_t count, off64_t offset);
+ssize_t pwrite64(int fd, const void *buf, size_t count, off64_t offset);
 
 int execve(const char *filename, char *const argv [], char *const envp[]) __THROW;
 int execlp(const char *file, const char *arg, ...) __THROW;
@@ -116,19 +120,11 @@ int isatty(int desc) __THROW;
 
 void _exit(int status) __THROW __attribute__((noreturn));
 
-extern int daemon(int nochdir,int noclose) __THROW;
+int daemon(int nochdir,int noclose) __THROW;
 
 int pause(void) __THROW;
 
-#if defined _FILE_OFFSET_BITS && _FILE_OFFSET_BITS == 64
-#define open open64
-#define creat creat64
-#define truncate truncate64
-#define ftruncate ftruncate64
-#define getdents getdents64
-#endif
-
-extern char* getlogin(void) __THROW;
+char* getlogin(void) __THROW;
 /* warning: the diet libc getlogin() simply returns getenv("LOGNAME") */
 
 int chroot(const char *path) __THROW;
@@ -154,11 +150,7 @@ int truncate64(const char *path, loff_t length) __THROW;
 int ftruncate64(int fd, loff_t length) __THROW;
 #endif
 
-int select(int n, fd_set *readfds, fd_set *writefds, fd_set *exceptfds, struct timeval *timeout) __THROW;
-
 int nice(int inc) __THROW;
-
-extern char **__environ;
 
 char *crypt(const char *key, const char *salt) __THROW;
 void encrypt(char block[64], int edflag) __THROW;
@@ -179,6 +171,9 @@ int llseek(int fildes, unsigned long hi, unsigned long lo, loff_t* result,int wh
 /* include <linux/sysctl.h> to get all the definitions! */
 struct __sysctl_args;
 int _sysctl(struct __sysctl_args *args) __THROW;
+
+#define _CS_PATH 1
+size_t confstr(int name,char*buf,size_t len) __THROW;
 
 #define _SC_CLK_TCK 1
 #define _SC_ARG_MAX 2
@@ -223,11 +218,49 @@ int setresuid32(uid32_t ruid, uid32_t euid, uid32_t suid) __THROW;
 int setresgid32(gid32_t rgid, gid32_t egid, gid32_t sgid) __THROW;
 
 #ifdef _BSD_SOURCE
-char *getusershell(void);
-void setusershell(void);
-void endusershell(void);
+char *getusershell(void) __attribute_dontuse__;
+void setusershell(void) __attribute_dontuse__;
+void endusershell(void) __attribute_dontuse__;
 #endif
 
+/* this is so bad, we moved it to -lcompat */
+#define   L_cuserid   17
+char* cuserid(char * string); /* ugh! */
+
 #define   _POSIX_VERSION  199506L
+
+#define F_ULOCK 0	/* Unlock a previously locked region.  */
+#define F_LOCK  1	/* Lock a region for exclusive use.  */
+#define F_TLOCK 2	/* Test and lock a region for exclusive use.  */
+#define F_TEST  3	/* Test a region for other processes locks.  */
+
+int lockf (int __fd, int __cmd, off_t __len) __THROW;
+int lockf64 (int __fd, int __cmd, off64_t __len) __THROW;
+
+void swab(const void *src, void *dest, ssize_t nbytes) __THROW;
+
+int vhangup(void) __THROW;
+
+extern char **__environ;
+
+#if defined _FILE_OFFSET_BITS && _FILE_OFFSET_BITS == 64
+#define open open64
+#define creat creat64
+#define truncate truncate64
+#define ftruncate ftruncate64
+#define getdents getdents64
+#endif
+
+#ifdef _LINUX_SOURCE
+int pivot_root(const char *new_root, const char *put_old) __THROW;
+/* Linux 2.6 module loading infrastructure:
+ * init_module takes a buffer where you read the module file into */
+long init_module(void *module, unsigned long len, const char *options) __THROW;
+/* flags can be O_EXCL | O_NONBLOCK | O_TRUNC (forced unloading)
+ * O_EXCL is there so the kernel can spot old rmmod versions */
+long delete_module(const char* name,unsigned int flags) __THROW;
+#endif
+
+__END_DECLS
 
 #endif

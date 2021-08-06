@@ -44,6 +44,8 @@ INTERFACE
 
 {* External procedure and functions *}
 
+procedure memcpy (src, dest : pointer ; size : dword); external;
+procedure print_bochs (format : string ; args : array of const); external;
 procedure printk (format : string ; args : array of const); external;
 procedure schedule; external;
 
@@ -96,48 +98,47 @@ begin
    if (name = NIL) then
        result := -EINVAL
    else
-       begin
-          name^.sysname[1]     := 'D';
-	   	 name^.sysname[2]     := 'e';
-	   	 name^.sysname[3]     := 'l';
-	   	 name^.sysname[4]     := 'p';
-	   	 name^.sysname[5]     := 'h';
-	   	 name^.sysname[6]     := 'i';
-	   	 name^.sysname[7]     := 'n';
-	   	 name^.sysname[8]     := 'e';
-	   	 name^.sysname[9]     := 'O';
-	   	 name^.sysname[10]    := 'S';
-	   	 name^.sysname[11]    := #0;
-	   	 name^.nodename[1]    := 'l';
-	   	 name^.nodename[2]    := 'o';
-	   	 name^.nodename[3]    := 'c';
-	   	 name^.nodename[4]    := 'a';
-	   	 name^.nodename[5]    := 'l';
-	   	 name^.nodename[6]    := 'h';
-	   	 name^.nodename[7]    := 'o';
-	   	 name^.nodename[8]    := 's';
-	   	 name^.nodename[9]    := 't';
-	   	 name^.nodename[10]   := #0;
-	   	 name^.release[1]     := 'a';
-	   	 name^.release[2]     := 'l';
-	   	 name^.release[3]     := 'p';
-	   	 name^.release[4]     := 'h';
-	   	 name^.release[5]     := 'a';
-	   	 name^.release[6]     := #0;
-	   	 name^.version[1]     := '0';
-	   	 name^.version[2]     := '.';
-	   	 name^.version[3]     := '0';
-	   	 name^.version[4]     := '.';
-	   	 name^.version[5]     := '1';
-{	   	 name^.version[6]     := 'l';}
-	   	 name^.version[6]     := #0;
-	   	 name^.machine[1]     := 'x';
-	   	 name^.machine[2]     := '8';
-	   	 name^.machine[3]     := '6';
-	   	 name^.machine[4]     := #0;
-	   	 name^.domainname[1]  := #0;
-          result := 0;
-       end;
+	begin
+		name^.sysname[1]     := 'D';
+		name^.sysname[2]     := 'e';
+		name^.sysname[3]     := 'l';
+		name^.sysname[4]     := 'p';
+		name^.sysname[5]     := 'h';
+		name^.sysname[6]     := 'i';
+		name^.sysname[7]     := 'n';
+		name^.sysname[8]     := 'e';
+		name^.sysname[9]     := 'O';
+		name^.sysname[10]    := 'S';
+		name^.sysname[11]    := #0;
+
+		name^.nodename[1]    := 'l';
+		name^.nodename[2]    := 'o';
+		name^.nodename[3]    := 'c';
+		name^.nodename[4]    := 'a';
+		name^.nodename[5]    := 'l';
+		name^.nodename[6]    := 'h';
+		name^.nodename[7]    := 'o';
+		name^.nodename[8]    := 's';
+		name^.nodename[9]    := 't';
+		name^.nodename[10]   := #0;
+
+		name^.release[1]     := '0';
+		name^.release[2]     := '.';
+		name^.release[3]     := '0';
+		name^.release[4]     := '.';
+		name^.release[5]     := '2';
+		name^.release[6]     := #0;
+
+		name^.version[1]     := #0;
+
+		name^.machine[1]     := 'x';
+		name^.machine[2]     := '8';
+		name^.machine[3]     := '6';
+		name^.machine[4]     := #0;
+
+		name^.domainname[1]  := #0;
+		result := 0;
+	end;
 
 end;
 
@@ -151,6 +152,8 @@ function sys_pause : dword; cdecl; [public, alias : 'SYS_PAUSE'];
 begin
 
 	sti();
+
+if (current^.pid <> 1) then print_bochs('Pausing process %d\n', [current^.pid]);
 
    current^.state := TASK_INTERRUPTIBLE;
    schedule();
@@ -344,7 +347,7 @@ begin
 
 	sti();
 
-   printk('sys_getrusage (%d): who=%d  ru=%h\n', [current^.pid, who, ru]);
+   print_bochs('sys_getrusage (%d): who=%d  ru=%h\n', [current^.pid, who, ru]);
 
    result := -ENOSYS;
 

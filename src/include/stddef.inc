@@ -1,8 +1,0 @@
-{$IFNDEF _STDDEF_}
-{$DEFINE _STDDEF_}
-
-
-{$DEFINE NULL NIL}
-
-
-{$ENDIF}

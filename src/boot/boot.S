@@ -365,7 +365,9 @@
     jmp @lkj
 
     db 'B.E.G'                    ; Bubule, Edo, GaLi
-    dw 47h, 47h, 47h
+
+    times 31 db 00h
+
     dw 0AA55h                     ; Boot sector signature 
 
     @lkj:

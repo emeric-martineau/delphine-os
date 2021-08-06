@@ -95,8 +95,6 @@ procedure memcpy (src, dest : pointer ; size : dword);
 procedure memset (adr : pointer ; c : byte ; size : dword);
 function  null_write (fichier : P_file_t ; buf : pointer ; count : dword) : dword;
 function  null_read (fichier : P_file_t ; buf : pointer ; count : dword) : dword;
-function  page_align (nb : longint) : dword;
-function  page_aligned (nb : longint) : boolean;
 function  PageReserved (adr : dword) : boolean;
 procedure push_page (page_addr : pointer);
 procedure set_page_rights (adr : pointer ; r :dword);
@@ -186,9 +184,8 @@ begin
 	 		free_memory   -= 4096;
 	 		mem_map[longint(tmp) shr 12].count := 1;
 	 		mem_map[longint(tmp) shr 12].flags := 0;
-	 		asm
-	    		popfd   { Fin section critique }
-	 		end;
+
+    		popfd();   { Fin section critique }
 
 	 		{$IFDEF USE_MEMSET}
 	 			memset(tmp, 0, 4096);   {* FIXME: We don't have to put this if
@@ -241,9 +238,9 @@ begin
 	 		free_memory   -= 4096;
 	 		mem_map[longint(tmp) shr 12].count := 1;
 	 		mem_map[longint(tmp) shr 12].flags := 0;
-	 		asm
-	    		popfd  { On remet les interruptions (fin section critique) }
-	 		end;
+
+    		popfd();  { On remet les interruptions (fin section critique) }
+
 	 		result := tmp;
 
 	 		{$IFDEF USE_MEMSET}
@@ -282,9 +279,7 @@ begin
          mov   eax, [ebp + 4]
 	 		mov   r_eip, eax
       end;
-      printk('push_page (%d): %h is already free (EIP=%h) !!!\n', [current^.pid, page_addr, r_eip]);
-      popfd();
-      panic('');
+      print_bochs('push_page (%d): %h is already free (EIP=%h) !!!\n', [current^.pid, page_addr, r_eip]);
    end
    else
    begin
@@ -334,8 +329,8 @@ end;
 {******************************************************************************
  * kmalloc
  *
- * Entrée : longueur desirée (<= 4096)
- * Retour : pointeur sur la zone mémoire
+ * Input  : length wanted (<= 4096)
+ * Output : pointer to allocated zone
  *
  * Cette fonction renvoie un pointeur vers une zone de mémoire de taille len.
  * ATTENTION : len doit être inferieure ou égale à 4096
@@ -352,8 +347,6 @@ var
    tmp_ptr   : ^dword;
 
 begin
-
-   { On vérifie si la demande de mémoire n'est pas supérieure à 4096 octets }
 
    if (len > 4096) then
    begin
@@ -424,7 +417,7 @@ begin
       if (tmp^.bitmap = $FFFFFFFF) then full_free_to_full(i, tmp);
 
       { On met à jour free_memory }
-      free_memory := free_memory - size_dir[i].size;
+      free_memory -= size_dir[i].size;
 
       { On renvoie au noyau l'adresse du bloc }
       result := tmp^.page + (res * size_dir[i].size);
@@ -458,6 +451,10 @@ begin
 
       { On renvoie l'adresse du bloc au noyau }
       result := tmp^.page + (((res * 32) + res2) * size_dir[i].size);
+if (longint(result) = $febfe0) then
+begin
+print_bochs('res=%d res2=%d\n', [res, res2]);
+end;
 
    end;
 
@@ -534,7 +531,7 @@ begin
 	 		repeat
 	    		desc := find_page(page, size_dir[i].full_free_list);
 	    		i += 1;
-	 		until ((desc <> NIL) or ( i = 10));
+	 		until ((desc <> NIL) or (i = 10));
 
 	 		if (i = 10) then
       	{ Le bloc n'a pas été trouvé dans la full_free_list => erreur }
@@ -543,8 +540,10 @@ begin
 					mov   eax, [ebp + 4]
 					mov   i  , eax
 	    		end;
-	    		printk('kfree_s (%d): page not found in full_free_list (%h) EIP=%h\n',
+	    		printk('kfree_s (%d): page not found in full_free_list 1 (%h) EIP=%h\n',
 	            	 [current^.pid, addr, i]);
+	    		print_bochs('kfree_s (%d): page not found in full_free_list 1 (%h) EIP=%h\n',
+	            	 		[current^.pid, addr, i]);
 	       	popfd();
 	    		exit;
 	 		end;
@@ -574,8 +573,10 @@ begin
 	       		mov   eax, [ebp + 4]
 	       		mov   i  , eax
 	    		end;
-	    		printk('kfree_s (%d): page not found in full_free_list (%h) EIP=%h\n',
+	    		printk('kfree_s (%d): page not found in full_free_list 2 (%h) EIP=%h\n',
 	            	 [current^.pid, addr, i]);
+	    		print_bochs('kfree_s (%d): page not found in full_free_list 2 (%h) EIP=%h\n',
+	            	 		[current^.pid, addr, i]);
 				popfd();
 	    		exit;
 	 		end;
@@ -594,6 +595,7 @@ begin
 	 		mov   i  , eax
       end;
       printk('kfree_s: (block mod size_dir[i].size) <> 0. (%h) EIP=%h\n', [addr, i]);
+		print_bochs('kfree_s: (block mod size_dir[i].size) <> 0. (%h) EIP=%h\n', [addr, i]);
 		popfd();
       exit;
    end;
@@ -871,6 +873,28 @@ begin
       end
       else
          src^.page := res;
+
+		{* We have to initalize the 2nd bitmap (inside the page) for i=1, 2 and 3
+		 * because we don't want to allocate the bitmap  :)  *}
+
+		case (i) of
+
+			1: begin   { object size = 16, 2nd bitmap is 32 bytes long }
+					res := pointer(longint(src^.page) + 4092);
+					dword(res^) := 3;
+				end;
+
+			2: begin   { object size = 32, 2nd bitmap is 16 bytes long }
+					res := pointer(longint(src^.page) + 4092);
+					dword(res^) := 1;
+				end;
+
+			3: begin   { object size = 64, 2nd bitmap is 8 bytes long }
+					res := pointer(longint(src^.page) + 4092);
+					dword(res^) := 1;
+				end;
+		end;
+
    end;
 end;
 
@@ -1063,7 +1087,7 @@ end;
 {******************************************************************************
  * get_page_rights
  *
- * Input  : physical address
+ * Input  : virtual address
  * Output : page rights
  *
  * NOTE : I don't think we have to put interrupts off because each process has
@@ -1185,7 +1209,7 @@ begin
       begin
 			for j := 0 to 1023 do
 			begin
-				if (pt[j] <> 0) and (pt[j] <> MAPPED_PAGE) and (ts^.real_size <> 0) then
+				if (pt[j] and $FFFFF000) <> 0 then
 	    		begin
 	       		push_page(pointer(pt[j] and $FFFFF000));
 	       		ts^.real_size -= 1;
@@ -1237,8 +1261,9 @@ begin
        result := pointer(pt[(addr and ($400000 - 1)) div 4096]);
 
    {$IFDEF DEBUG_GET_PTE}
-      printk('get_pte: addr=%h  %d  %d\n', [addr, addr div $400000,
-      	    (addr and ($400000 - 1)) div 4096]);
+      print_bochs('get_pte (%d): addr=%h  %d  %d => %h\n',
+						[current^.pid, addr, addr div $400000,
+						 (addr and ($400000 - 1)) div 4096, result]);
    {$ENDIF}
 
 end;
@@ -1266,7 +1291,7 @@ begin
       pt := get_free_page();
       if (pt = NIL) then
       begin
-			printk('set_pte: not enough memory\n', []);
+			print_bochs('WARNING: set_pte: not enough memory\n', []);
 	 		exit;
       end;
       memset(pt, 0, 4096);
@@ -1277,36 +1302,6 @@ begin
 
    mem_map[longint(pte) shr 12].flags := longint(pte) and $F;
 
-end;
-
-
-
-{******************************************************************************
- * page_align
- *
- *****************************************************************************}
-function page_align (nb : longint) : dword; [public, alias : 'PAGE_ALIGN'];
-begin
-
-   if (nb mod 4096) = 0 then
-       result := nb
-   else
-       result := (nb + 4096) and $FFFFF000;
-
-end;
-
-
-
-{******************************************************************************
- * page_aligned
- *
- *****************************************************************************}
-function page_aligned (nb : longint) : boolean; [public, alias : 'PAGE_ALIGNED'];
-begin
-   if ((nb mod 4096) <> 0) then
-       result := FALSE
-   else
-       result := TRUE;
 end;
 
 

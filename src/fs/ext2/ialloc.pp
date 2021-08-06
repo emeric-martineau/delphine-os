@@ -53,6 +53,7 @@ function  ext2_unset_bit (nr : dword ; addr : pointer) : dword; external;
 function  free_inode : P_inode_t; external;
 function  IS_DIR (inode : P_inode_t) : boolean; external;
 procedure mark_buffer_dirty (bh : P_buffer_head); external;
+procedure mark_inode_dirty (inode : P_inode_t); external;
 procedure memset (adr : pointer ; c : byte ; size : dword); external;
 procedure print_bochs (format : string ; args : array of const); external;
 procedure printk (format : string ; args : array of const); external;
@@ -138,15 +139,17 @@ end;
 function ext2_new_inode (dir : P_inode_t ; mode : dword) : P_inode_t; [public, alias : 'EXT2_NEW_INODE'];
 
 var
-   inode : P_inode_t;
-   group, i, ino, t : dword;
-   sb    : P_super_block_t;
-   bh    : P_buffer_head;
+   inode 				: P_inode_t;
+   group, i, ino, t  : dword;
+   sb    				: P_super_block_t;
+   bh    				: P_buffer_head;
+	desc					: P_ext2_group_desc;
 
 begin
 
    {$IFDEF DEBUG_EXT2_NEW_INODE}
-      print_bochs('ext2_new_inode (%d): dir->ino=%d  group=%d\n', [current^.pid, dir^.ino, dir^.ext2_i.block_group]);
+      print_bochs('ext2_new_inode (%d): dir->ino=%d mode=%h group=%d\n',
+		[current^.pid, dir^.ino, mode, dir^.ext2_i.block_group]);
    {$ENDIF}
 
    inode := alloc_inode();
@@ -156,7 +159,7 @@ begin
       exit;
    end;
 
-   sb := dir^.sb;
+   sb 	:= dir^.sb;
    group := find_group(sb, dir^.ext2_i.block_group);
 
    if (group = -1) then
@@ -175,7 +178,7 @@ begin
 
    if (bh = NIL) then
    begin
-      printk('ext2_new_inode (%d): cannot read block %d\n', [current^.pid, ext2_get_group_desc(sb, group, NIL)^.inode_bitmap]);
+      print_bochs('ext2_new_inode (%d): cannot read block %d\n', [current^.pid, ext2_get_group_desc(sb, group, NIL)^.inode_bitmap]);
       result := -EIO;
       exit;
    end;
@@ -183,7 +186,7 @@ begin
    i := ext2_find_first_zero_bit(bh^.data, sb^.ext2_sb.inodes_per_group);
    if (i >= sb^.ext2_sb.inodes_per_group) then
    begin
-      printk('EXT2-fs: Free inodes count corrupted in group %d\n', [group]);
+      print_bochs('EXT2-fs: Free inodes count corrupted in group %d\n', [group]);
       result := -ENOSPC;
       exit;
    end;
@@ -198,7 +201,7 @@ begin
    {$ENDIF}
    if (ino < EXT2_GOOD_OLD_FIRST_INO) or (ino > sb^.ext2_sb.real_sb^.inodes_count) then
    begin
-      printk('EXT2-fs: reserved inode or inode > inodes count\n', []);
+      print_bochs('EXT2-fs: reserved inode or inode > inodes count\n', []);
       result := -EIO;
       exit;
    end;
@@ -206,6 +209,7 @@ begin
    sb^.ext2_sb.real_sb^.free_inodes_count -= 1;
    mark_buffer_dirty(sb^.ext2_sb.real_sb_bh);
    sb^.dirty := 1;
+
 
    { Inode initialization }
 
@@ -230,6 +234,9 @@ begin
 
    for i := 0 to 14 do
       inode^.ext2_i.data[i] := 0;
+
+	if (IS_DIR(inode)) then
+		 ext2_get_group_desc(sb, group, NIL)^.used_dirs_count += 1;
 
    result := inode;
 
@@ -296,12 +303,12 @@ begin
       desc := ext2_get_group_desc(sb, block_group, @bh2);
       if (desc <> NIL) then
       begin
-      	 {$IFDEF DEBUG_EXT2_FREE_INODE}
-	    print_bochs('ext2_free_inode: desc^.free_inodes_count += 1;\n', []);
-	 {$ENDIF}
-      	 desc^.free_inodes_count += 1;
-	 if (is_directory) then
-	     desc^.used_dirs_count -= 1;
+			{$IFDEF DEBUG_EXT2_FREE_INODE}
+	    		print_bochs('ext2_free_inode: desc^.free_inodes_count += 1;\n', []);
+	 		{$ENDIF}
+			desc^.free_inodes_count += 1;
+	 		if (is_directory) then
+	      	 desc^.used_dirs_count -= 1;
       end;
       mark_buffer_dirty(bh2);
       {$IFDEF DEBUG_EXT2_FREE_INODE}

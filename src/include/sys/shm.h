@@ -3,6 +3,8 @@
 
 #include <sys/ipc.h>
 
+__BEGIN_DECLS
+
 #define SHMMAX 0x2000000		 /* max shared seg size (bytes) */
 #define SHMMIN 1			 /* min shared seg size (bytes) */
 #define SHMMNI 4096			 /* max num of segs system wide */
@@ -58,7 +60,7 @@ struct shm_info {
   unsigned long swap_successes;
 };
 
-#if defined(__i386__) || defined(__mips__) || defined(__arm__) || defined(__powerpc__) || defined(__s390__) || defined(__hppa__) || defined(__x86_64__) || defined(__ia64__)
+#if defined(__i386__) || defined(__mips__) || defined(__arm__) || defined(powerpc) || defined (__powerpc64__) || defined(__s390__) || defined(__hppa__) || defined(__x86_64__) || defined(__ia64__)
 #define PAGE_SIZE 4096UL
 #define PAGE_SHIFT 12
 #elif defined(__alpha__) || defined(__sparc__)
@@ -71,5 +73,7 @@ extern int shmget(key_t key, int size, int shmflg) __THROW;
 extern void *shmat(int shmid, const void *shmaddr, int shmflg) __THROW;
 extern int shmdt (const void *shmaddr) __THROW;
 extern int shmctl(int shmid, int cmd, struct shmid_ds *buf) __THROW;
+
+__END_DECLS
 
 #endif

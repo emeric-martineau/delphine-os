@@ -42,6 +42,7 @@ function  inb (port : word) : byte; external;
 procedure interruptible_sleep_on (p : PP_wait_queue); external;
 procedure memset (adr : pointer ; c : byte ; size : dword); external;
 procedure outb (port : word ; val : byte); external;
+procedure print_bochs (format : string ; args : array of const);external;
 procedure printk (format : string ; args : array of const);external;
 procedure set_intr_gate (n : dword ; addr : pointer); external;
 
@@ -54,6 +55,8 @@ function  sys_alarm (seconds : dword) : dword; cdecl;
 function  sys_gettimeofday (tv : P_timeval ; tz : P_timezone) : dword; cdecl;
 function  sys_nanosleep (rqtp, rmtp : P_timespec) : dword; cdecl;
 function  sys_time (t : pointer) : dword; cdecl;
+function  sys_times (buffer : P_tms) : dword; cdecl;
+function  sys_utime (path : pchar ; times : P_utimbuf) : dword; cdecl;
 
 
 var
@@ -199,7 +202,7 @@ begin
    if (t <> NIL) and (t > pointer(BASE_ADDR)) then
        longint(t^) := result;
 
-{printk('sys_time (%d): t=%h  result=%d\n', [current^.pid, t, result]);}
+{print_bochs('sys_time (%d): t=%h  result=%d\n', [current^.pid, t, result]);}
 
 end;
 
@@ -213,7 +216,7 @@ end;
 function sys_gettimeofday (tv : P_timeval ; tz : P_timezone) : dword; cdecl; [public, alias : 'SYS_GETTIMEOFDAY'];
 begin
 
-{   printk('sys_gettimeofday (%d): tv=%h  tz=%h\n', [current^.pid, tv, tz]);}
+   print_bochs('FIXME: sys_gettimeofday (%d): tv=%h  tz=%h\n', [current^.pid, tv, tz]);
 
 	sti();
 
@@ -274,7 +277,7 @@ begin
 
    current^.alarm := jiffies + (HZ * seconds);
 
-{   printk('sys_alarm (%d): jiffies=%d seconds=%d -> alarm=%d\n', [current^.pid, jiffies, seconds, current^.alarm]);}
+{   print_bochs('sys_alarm (%d): jiffies=%d seconds=%d -> alarm=%d\n', [current^.pid, jiffies, seconds, current^.alarm]);}
 
 end;
 
@@ -324,7 +327,7 @@ begin
    if (current^.timeout > 0) then
    begin
       {$IFDEF DEBUG_SYS_NANOSLEEP}
-      	 printk('sys_nanosleep (%d): current^.timeout=%d  =>  \n', [current^.pid, current^.timeout]);
+      	 print_bochs('sys_nanosleep (%d): current^.timeout=%d  =>  \n', [current^.pid, current^.timeout]);
       {$ENDIF}
       if (rmtp <> NIL) then
       begin
@@ -332,7 +335,7 @@ begin
 			rmtp^.tv_nsec := (current^.timeout mod HZ) * (1000000000 div HZ);
       end;
       {$IFDEF DEBUG_SYS_NANOSLEEP}
-			printk('%d secs, %d nsecs\n', [rmtp^.tv_sec, rmtp^.tv_nsec]);
+			print_bochs('%d secs, %d nsecs\n', [rmtp^.tv_sec, rmtp^.tv_nsec]);
       {$ENDIF}
       result := -EINTR;
    end
@@ -344,6 +347,50 @@ begin
 	 		rmtp^.tv_nsec := 0;
       end;
    end;
+
+end;
+
+
+
+{******************************************************************************
+ * sys_times
+ *
+ * Store process times for the calling process
+ *
+ *****************************************************************************}
+function sys_times (buffer : P_tms) : dword; cdecl; [public, alias : 'SYS_TIMES'];
+begin
+
+   print_bochs('sys_times (%d): buffer=%h\n', [current^.pid, buffer]);
+
+   if (buffer = NIL) then
+       result := -EFAULT   { FIXME: -EINVAL ??? }
+   else
+   begin
+      buffer^.tms_utime  := current^.utime;
+      buffer^.tms_stime  := current^.stime;
+      buffer^.tms_cutime := 1;
+      buffer^.tms_cstime := 1;
+      result := jiffies;
+   end;
+
+end;
+
+
+
+{******************************************************************************
+ * sys_utime
+ *
+ * FIXME: this function does nothing   :-)
+ *****************************************************************************}
+function sys_utime (path : pchar ; times : P_utimbuf) : dword; cdecl; [public, alias : 'SYS_UTIME'];
+begin
+
+	sti();
+
+   print_bochs('sys_utime (%d): %s  %h\n', [current^.pid, path, times]);
+
+   result := -ENOSYS;
 
 end;
 

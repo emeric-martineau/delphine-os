@@ -38,10 +38,10 @@
 unit fork;
 
 
-{$DEFINE DEBUG}
+{DEFINE DEBUG}
 {DEFINE SHOW_LINKS}
-{$DEFINE DEBUG_SYS_FORK}
-{$DEFINE DEBUG_COPY_MM}
+{DEFINE DEBUG_SYS_FORK}
+{DEFINE DEBUG_COPY_MM}
 
 
 INTERFACE
@@ -61,8 +61,9 @@ var
    shared_pages : dword; external name 'U_MEM_SHARED_PAGES';
 
 
-procedure add_mmap_req (p : P_task_struct ; addr : pointer ; size : dword ; flags, prot : byte ; count : word); external;
+procedure add_mmap_req (p : P_task_struct ; addr : pointer ; size : dword ; pgoff : dword ; flags, prot : byte ; count : word ; fichier : P_file_t); external;
 procedure add_task (task : P_task_struct); external;
+procedure dump_mmap_req (t : P_task_struct); external;
 function  get_free_page : pointer; external;
 function  get_new_pid : dword; external;
 procedure init_tss (tss : P_tss_struct); external;
@@ -324,11 +325,13 @@ var
 	new_page_table : P_pte_t;
 	cr3_task 		: P_pte_t;
 
+label stop_copy;
+
 begin
 
 	{$IFDEF DEBUG_COPY_MM}
-		print_bochs('sys_fork (%d): copying memory info (size=%d)\n',
-						[current^.pid, current^.real_size]);
+		print_bochs('sys_fork (%d): copying memory info (size=%d, real_size=%d)\n',
+						[current^.pid, current^.size, current^.real_size]);
 	{$ENDIF}
 
 	cr3_task := p^.cr3;
@@ -342,55 +345,61 @@ begin
     * NOTE: only the user stack is not shared *}
 
    j := 0;
-   repeat
-      for i := 0 to 254 do
-      begin
-			page_table := pointer(current^.cr3[769 + i] and $FFFFF000);
-	 		if (page_table <> NIL) then
-	 		begin
-	    		new_page_table := get_free_page();
-	    		if (new_page_table = NIL) then
-	    		begin
-	       		printk('sys_fork: not enough memory\n', []);
-	       		panic('');
-	    		end;
-	    		memset(new_page_table, 0, 4096);
+	for i := 0 to 254 do
+	begin
+		page_table := pointer(current^.cr3[769 + i] and $FFFFF000);
+	 	if (page_table <> NIL) then
+	 	begin
+	   	new_page_table := get_free_page();
+	   	if (new_page_table = NIL) then
+	   	begin
+	     		printk('sys_fork: not enough memory\n', []);
+	     		panic('');
+	   	end;
+	   	memset(new_page_table, 0, 4096);
 
-				{$IFDEF DEBUG_COPY_MM}
-					print_bochs('sys_fork (%d): checking page table %d -> ',
-									[current^.pid, i]);
-				{$ENDIF}
+			{$IFDEF DEBUG_COPY_MM}
+				print_bochs('sys_fork (%d): checking page table %d -> ',
+								[current^.pid, i]);
+			{$ENDIF}
 
-	    		for k := 0 to 1023 do
-	    		begin
-	       		if (page_table[k] <> 0) {and (page_table[k] <> NULL_PAGE)} then
-	       		begin
-	          		{$IFDEF DEBUG_COPY_MM}
-{	             		print_bochs('%h (%d)  ',
-											[page_table[k] and $FFFFF000, k]);}
-	          		{$ENDIF}
-	          		page_table[k]     := page_table[k] and (not WRITE_PAGE);
-		   			new_page_table[k] := page_table[k];
+	   	for k := 0 to 1023 do
+	   	begin
+				if ((page_table[k] and USED_ENTRY) = USED_ENTRY) then
+{	     		if (page_table[k] <> 0) and (page_table[k] <> NULL_PAGE) then}
+	     		begin
+	        		{$IFDEF DEBUG_COPY_MM}
+	           		print_bochs('%h %h (%d)  ',
+						[page_table[k], page_table[k] and (not WRITE_PAGE), k]);
+	        		{$ENDIF}
+	        		page_table[k]     := page_table[k] and (not WRITE_PAGE);
+		  			new_page_table[k] := page_table[k];
+					if ((page_table[k] and $FFFFF000) <> 0) then
+					begin
 						pushfd();
 						cli();
 						shared_pages += 1;
-		   			mem_map[page_table[k] shr 12].count += 1;
+		  				mem_map[page_table[k] shr 12].count += 1;
 						popfd();
-		   			j += 1;
-	       		end;
-	    		end;
+					end;
+		  			j += 1;
+					if (j = current^.size) then goto stop_copy;
+	     		end;
+	   	end;
 
-				{$IFDEF DEBUG_COPY_MM}
-					print_bochs('%d\n', [j]);
-				{$ENDIF}
+			{$IFDEF DEBUG_COPY_MM}
+				print_bochs('%d\n', [j]);
+			{$ENDIF}
 
-	    		cr3_task[769 + i] := longint(new_page_table) or USER_PAGE;
-	 		end;
-      end;
-   until (j = current^.real_size);
+	   	cr3_task[769 + i] := longint(new_page_table) or USER_PAGE;
+	 	end;
+	end;
+
+stop_copy:
+	cr3_task[769 + i] := longint(new_page_table) or USER_PAGE;
 
    {$IFDEF DEBUG_COPY_MM}
-{      print_bochs('\n', []);}
+      print_bochs('\n', []);
    {$ENDIF}
 
    first_req := current^.mmap;
@@ -402,8 +411,7 @@ begin
 
    if (first_req <> NIL) then
    begin
-		first_req^.count += 1;
-      add_mmap_req(p, first_req^.addr, first_req^.size, 0, 0, first_req^.count);
+      add_mmap_req(p, first_req^.addr, first_req^.size, first_req^.pgoff, first_req^.flags, first_req^.prot, first_req^.count, first_req^.fichier);
       req := first_req^.next;
       {$IFDEF DEBUG_COPY_MM}
          i += 1;
@@ -413,8 +421,7 @@ begin
          {$IFDEF DEBUG_COPY_MM}
 	    		i += 1;
 	 		{$ENDIF}
-			req^.count += 1;
-         add_mmap_req(p, req^.addr, req^.size, 0, 0, req^.count);   
+         add_mmap_req(p, req^.addr, req^.size, req^.pgoff, req^.flags, req^.prot, req^.count, req^.fichier);   
 	 		req := req^.next;
       end;
    end;

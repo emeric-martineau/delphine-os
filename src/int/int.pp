@@ -43,8 +43,10 @@ INTERFACE
 
 
 function  btod (val : byte) : dword; external;
+function  do_signal (signr : dword) : boolean; external;
+function  find_mmap_req (addr : pointer) : P_mmap_req; external;
 function  get_free_page : pointer; external;
-function  get_page_rights (adr : pointer) : dword; external;
+function  get_page_rights (adr : dword) : dword; external;
 function  get_phys_addr (adr : dword) : pointer; external;
 function  get_pte (addr : dword) : P_pte_t; external;
 function  inb (port : word) : byte; external;
@@ -62,7 +64,7 @@ procedure set_page_rights (adr : pointer ; r :dword); external;
 procedure set_pte (addr : dword ; pte : pte_t); external;
 
 
-function  do_no_page (addr : dword) : boolean;
+function  do_no_page (addr : dword ; pte : P_pte_t) : boolean;
 function  do_wp_page (addr : dword) : boolean;
 procedure ignore_int;
 
@@ -286,9 +288,9 @@ begin
       P_i387_regs := current;}
       asm
 	 		clts   { Unset TS bit in cr0 }
-			finit
+{			finit}
       end;
-   	printk('exception_7 (PID=%d): just setting the TS bit to 0\n', [current^.pid]);
+   	print_bochs('exception_7 (PID=%d): just setting the TS bit to 0\n', [current^.pid]);
 		
    end
    else
@@ -502,9 +504,9 @@ begin
    end;
 
    {$IFDEF DEBUG_14}
-      print_bochs('exception_14 (%d): %d@%h (%h) rights=%h2 BRK=%h %h\n',
+      print_bochs('exception_14 (%d): %d@%h (%h) rights=%h4 BRK=%h %h\n',
       	    		[current^.pid, error_code, address, get_pte(address),
-	      	   	 get_page_rights(get_phys_addr(address)), current^.brk,
+	      	   	 get_page_rights(address), current^.brk,
 				   	 current^.end_data]);
    {$ENDIF}
 
@@ -513,9 +515,9 @@ begin
 
    pte := get_pte(address);
 
-   if ((longint(pte) = MAPPED_PAGE) or (pte = NIL))then
+	if (longint(pte) and $FFFFF000) = 0 then
    begin
-      if (do_no_page(address) = FALSE) then
+      if (do_no_page(address, pte) = FALSE) then
 		goto bad_addr;
    end
    else
@@ -525,7 +527,7 @@ begin
       begin
 			if (mem_map[MAP_NR(address)].flags and WRITE_PAGE) = 0 then
 	 		begin
-	    		printk('exception_14 (%d): try to write on a read-only page (%h) %d\n', [current^.pid, address, mem_map[MAP_NR(address)].flags]);
+	    		print_bochs('exception_14 (%d): try to write on a read-only page (%h) %d\n', [current^.pid, address, mem_map[MAP_NR(address)].flags]);
 	    		goto bad_addr;
 	 		end;
 			if (do_wp_page(address) = FALSE) then
@@ -549,12 +551,18 @@ begin
 
 
 bad_addr:
-   {IFDEF DEBUG_14}
+   {$IFDEF DEBUG_14}
       printk('\nexception_14 (%d): bad_addr: %d@%h -> %h EIP=%h\n\n',
-				 [current^.pid, error_code, address, get_phys_addr(address), r_eip]);
-   {ENDIF}
-   send_sig(SIGSEGV, current);
-   schedule();
+		[current^.pid, error_code, address, get_phys_addr(address), r_eip]);
+   {$ENDIF}
+      print_bochs('\nexception_14 (%d): bad_addr: %d@%h -> %h EIP=%h\n\n',
+		[current^.pid, error_code, address, get_phys_addr(address), r_eip]);
+
+	{ FIXME FIXME !!! }
+
+{   send_sig(SIGSEGV, current);}
+	do_signal(SIGSEGV);
+{   schedule();}
    asm
       popad
       leave
@@ -583,8 +591,9 @@ begin
    if (mem_map[MAP_NR(addr)].count > 1) then
    begin
       {$IFDEF DEBUG_DO_WP_PAGE}
-      	 print_bochs('do_wp_page: count > 1 => COW (%d)\n',
-			 				 [mem_map[MAP_NR(addr)].flags]);
+      	 print_bochs('do_wp_page: count > 1 (%d) => COW (flags=%d)\n',
+			 				 [mem_map[MAP_NR(addr)].count,
+							  mem_map[MAP_NR(addr)].flags]);
       {$ENDIF}
 		pushfd();
 		cli();
@@ -623,41 +632,76 @@ end;
  *
  * This function is called when a page fault is due to a non present page.
  *****************************************************************************}
-function do_no_page (addr : dword) : boolean;
+function do_no_page (addr : dword ; pte : P_pte_t) : boolean;
 
 var
-   fichier       : file_t;
-   new_page, buf : pointer;
-   page_nb	     : dword;
-   res           : longint;
+	req				: P_mmap_req;
+   fichier        : file_t;
+   new_page, buf	: pointer;
+   page_nb	      : dword;
+   res            : longint;
 
 begin
 
    result := FALSE;
 
-   if (addr >= current^.end_data) then
-   { Just allocate one more page for the bss section }
-   begin
-{		if (mapped) then
+	if (longint(pte) and $FFF) = 0 then
+	{ This only happens when the process stack needs to grow up }
+	begin
+		if (addr >= BASE_ADDR) then
 		begin
-			panic('mapped file');
+			print_bochs('\nBUG: do_no_page: addr=%h  pte=%h\n\n', [addr, pte]);
+			panic('Invalid page table: addr >= BASE_ADDR and pte flags = 0');
+			exit;
+		end;
+	end;
+
+   if (addr >= current^.end_data) then
+   begin
+		if (longint(pte) and FILE_MAPPED_PAGE) = FILE_MAPPED_PAGE then
+		begin
+			req := find_mmap_req(pointer(addr));
+	      buf := get_free_page();
+			if (buf = NIL) then
+      	begin
+				printk('do_no_page: not enough memory to read a page from disk (1)\n', []);
+	 			exit;
+      	end;
+
+			{ Going to load the page from disk }
+			memset(buf, 0, 4096);
+			page_nb := (addr - longint(req^.addr)) div 4096;
+			req^.fichier^.pos := (page_nb * 4096) + req^.pgoff;
+			res := req^.fichier^.op^.read(req^.fichier, buf, 4096);
+      	if (res <= 0) then
+      	begin
+				print_bochs('do_no_page: cannot read from disk (1)\n', []);
+	 			exit;
+      	end;
+
+			{ FIXME: check req^.prot value }
+     	 	set_pte(addr, longint(buf) or USER_PAGE);
+
+      	current^.real_size += 1;
+      	result := TRUE;
 		end
 		else
-		begin}
-		{$IFDEF DEBUG_ALLOC_BSS}
-       	print_bochs('do_no_page: allocating a new page for bss (addr=%h, brk=%h)\n', [addr, current^.brk]);
-      {$ENDIF}
-      new_page := get_free_page();
-      if (new_page = NIL) then
-      begin
-			printk('do_no_page: not enough memory for bss\n', []);
-	 		exit;
-      end;
-      memset(new_page, 0, 4096);   { FIXME: Do we REALLY need this ??? }
-      set_pte(addr, longint(new_page) or USER_PAGE);
-      current^.real_size += 1;
-      result := TRUE;
-{		end;}
+		begin
+			{ Just allocate one more page for the bss section }
+			{$IFDEF DEBUG_ALLOC_BSS}
+       		print_bochs('do_no_page: allocating a new page for bss (addr=%h, brk=%h)\n', [addr, current^.brk]);
+      	{$ENDIF}
+      	new_page := get_free_page();
+      	if (new_page = NIL) then
+      	begin
+				printk('do_no_page: not enough memory for bss\n', []);
+	 			exit;
+      	end;
+      	memset(new_page, 0, 4096);   { FIXME: Do we REALLY need this ??? }
+      	set_pte(addr, longint(new_page) or USER_PAGE);
+      	current^.real_size += 1;
+      	result := TRUE;
+		end;
    end
    else if (addr < BASE_ADDR) then
    begin
@@ -686,7 +730,7 @@ begin
       buf := get_free_page();
       if (buf = NIL) then
       begin
-			printk('do_no_page: not enough memory to read a page from disk\n', []);
+			printk('do_no_page: not enough memory to read a page from disk (2)\n', []);
 	 		exit;
       end;
       memset(@fichier, 0, sizeof(fichier));
@@ -695,15 +739,15 @@ begin
       res := current^.executable^.op^.default_file_ops^.read(@fichier, buf, 4096);
       if (res <= 0) then
       begin
-			printk('do_no_page: cannot read from disk\n', []);
+			print_bochs('do_no_page: cannot read from disk (2)n', []);
 	 		exit;
       end;
       
       { Setting page rights }
       if (addr < current^.end_code) then
-      	  set_pte(addr, longint(buf) or RDONLY_PAGE)
+      	 set_pte(addr, longint(buf) or RDONLY_PAGE)
       else
-      	  set_pte(addr, longint(buf) or USER_PAGE);
+      	 set_pte(addr, longint(buf) or USER_PAGE);
 
       {$IFDEF DEBUG_DO_NO_PAGE}
       	 print_bochs('do_no_page: %h -> %h (dump=%h) page %d\n', [addr, get_pte(addr), longint(buf^), page_nb]);
@@ -758,7 +802,7 @@ begin
    end;
    printk('\nEIP: %h', [r_eip]);
 
-   panic('Exception 16');
+   panic('Floating point exception');
 
 end;
 

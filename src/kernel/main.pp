@@ -136,6 +136,7 @@ begin
    init_struct^.state         := TASK_RUNNING;
    init_struct^.tss_entry     := $08;
    init_struct^.tss           := tss_init;
+	init_struct^.size 			:= 1;
    init_struct^.real_size     := 1;    { Pages used by init }
    init_struct^.first_size    := 1;
    init_struct^.brk           := $C0401000;

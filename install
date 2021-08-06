@@ -9,7 +9,7 @@
 
 FPC_VERSION="1.0.10"    # Current FPC version
 NASM_VERSION="0.98.38"  # Current NASM version
-VERSION="0.0.1"         # Current DelphineOS version
+VERSION="0.0.2"         # Current DelphineOS version
 NOT_FOUND="\033[31;1mnot found\033[0m"
 
 OS=`uname -a|cut -d" " -f1`
@@ -89,10 +89,10 @@ compile_kernel()
 
 	if [ "$OS" == "Linux" ]; then
    	make > kernel.log 2> kernel.log
-	fi
-
-	if [ "$OS" == "FreeBSD" ]; then
-   	gmake > kernel.log 2> kernel.log
+	else
+	   if [ "$OS" == "FreeBSD" ]; then
+   	      gmake > kernel.log 2> kernel.log
+	   fi
 	fi
 
    if [ ! $? -eq 0 ]; then
@@ -253,7 +253,7 @@ case $REP in
 		if [ ! $? -eq 0 ]; then
 			echo -e $NOT_FOUND
 			echo;
-			echo -e "\033[31;1mWarning: Please install Bochs 2.0.2 or newer\033[0m"
+			echo -e "\033[31;1mWarning: Please install Bochs 2.1.1 or newer\033[0m"
 			echo;echo;
 			exit;
 		fi
@@ -261,9 +261,9 @@ case $REP in
 		echo "OK"
 
 		if [ ! -e ./bochs/delphineOS.img ]; then
-			echo -en "Creating HDD image (20Mb)...\t\t\t"
+			echo -en "Creating HDD image (100Mb)...\t\t\t"
 
-			echo -e "\n\n20\n\n" > options
+			echo -e "\n\n100\n\n" > options
 			bximage < options > /dev/null
 			rm -f options
 			mv c.img bochs/delphineOS.img
@@ -277,7 +277,7 @@ case $REP in
 
 			cp ./src/boot/mbr partoche
 			echo -en "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x80\x01" >> partoche
-			echo -en "\x01\x00\x83\x0F\x3F\x27\x3F\x00\x00\x00\x41\x9D\x00\x00\x00\x00" >> partoche
+			echo -en "\x01\x00\x83\x0F\x3F\xCA\x3F\x00\x00\x00\x11\x1F\x03\x00\x00\x00" >> partoche
 			echo -en "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00" >> partoche
 			echo -en "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00" >> partoche
 			echo -en "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x55\xAA" >> partoche
@@ -305,7 +305,7 @@ case $REP in
 
 		echo;
 		echo -e "\033[32;1mUse this for bochs:\033[0m"
-		echo -e "ata0-master: type=disk, mode=flat, path="bochs/delphineOS.img", cylinders=40,\nheads=16, spt=63, model="Bochs HD""
+		echo -e "ata0-master: type=disk, mode=flat, path="bochs/delphineOS.img", cylinders=203,\nheads=16, spt=63, model="Bochs HD""
 		;;
 
 
@@ -351,14 +351,15 @@ esac
         echo
         echo -n "Creating 'flagger' script...   "
 
+	# -nostdlib ??
 	echo "#!/bin/bash" > flagger
 	echo "#delphineOS" >> flagger
 	echo "" >> flagger
 	echo "TEST=\`echo \$@ |grep -e '-c '\`" >> flagger
 	echo "" >> flagger
 	echo "if [ ! -n \"\$TEST\" ]; then" >> flagger
-	echo -n "gcc \$@ -nostdinc -nostartfiles -nostdlib -I$PWD/src/include -static " >> flagger
-	echo -n "-Xlinker $PWD/lib/start.o -Xlinker $PWD/lib/environ.o -Xlinker $PWD/lib/dietlibc.a " >> flagger
+	echo -n "gcc \$@ -nostdinc -nostdlib -nostartfiles -I$PWD/src/include -static " >> flagger
+	echo -n "-Xlinker $PWD/lib/start.o -Xlinker $PWD/lib/environ.o -Xlinker $PWD/lib/dietlibc-0.27.a -Xlinker $PWD/lib/libgcc.a " >> flagger
 	echo "-Xlinker -T -Xlinker $PWD/lib/c_linkfile -Xlinker --strip-all" >> flagger
 	echo "else" >> flagger
 	echo "gcc \$@ -nostdinc -I$PWD/src/include" >> flagger

@@ -37,6 +37,7 @@ INTERFACE
 {* Headers *}
 
 {$I errno.inc}
+{$I fs.inc}
 {$I mm.inc}
 {$I process.inc}
 
@@ -47,7 +48,8 @@ INTERFACE
 {DEFINE DEBUG_ADD_MMAP_REQ}
 {DEFINE DEBUG_DEL_MMAP_REQ}
 {DEFINE DEBUG_SYS_MUNMAP}
-{DEFINE DEBUG_SYS_MREMAP}
+{DEFINE DEBUG_DO_MUNMAP}
+{$DEFINE DEBUG_SYS_MREMAP}
 {DEFINE DEBUG_SYS_MMAP}
 {$DEFINE DEBUG_SYS_BRK}
 
@@ -60,7 +62,6 @@ procedure kfree_s (addr : pointer ; size : dword); external;
 function  kmalloc (len : dword) : pointer; external;
 procedure memcpy (src, dest : pointer ; size : dword); external;
 procedure memset (adr : pointer ; c : byte ; size : dword); external;
-function  page_align (nb : longint) : dword; external;
 procedure panic (reason : string); external;
 procedure print_bochs (format : string ; args : array of const); external;
 procedure printk (format : string ; args : array of const); external;
@@ -79,15 +80,15 @@ var
 
 {* Procedures and functions defined in this file *}
 
-procedure add_mmap_req (p : P_task_struct ; addr : pointer ; size : dword ; flags, prot : byte ; count : word);
+procedure add_mmap_req (p : P_task_struct ; addr : pointer ; size : dword ; pgoff : dword ; flags, prot : byte ; count : word; fichier : P_file_t);
 procedure del_mmap_req (req : P_mmap_req);
 procedure do_munmap (req : P_mmap_req ; start_addr : pointer ; len : dword);
-function  find_mmap_req (addr : pointer ; size : dword) : P_mmap_req;
+function  find_mmap_req (addr : pointer) : P_mmap_req;
 function  find_page_table_ofs (nb, idx, from : dword) : longint;
 function  sys_brk (brk : dword) : dword; cdecl;
 function  sys_mmap (str : P_mmap_struct) : dword; cdecl;
 function  sys_mremap (addr, old_len, new_len, flags, new_addr : dword) : dword; cdecl;
-function  sys_munmap (start : pointer ; length : dword) : dword; cdecl;
+function  sys_munmap (start : pointer ; len : dword) : dword; cdecl;
 
 
 IMPLEMENTATION
@@ -164,14 +165,14 @@ begin
 	 * Here, cr3_idx (to know the page table) and pt_ofs (to know which entry
 	 * within the page table) are initialized *}
 
-{	if (fichier <> NIL) then
-		 vm_flags := vm_flags or MAPPED_PAGE;}
+	if (fichier <> NIL) then
+		 vm_flags := vm_flags or FILE_MAPPED_PAGE;
 
 	pt := pointer(current^.cr3[cr3_idx] and $FFFFF000);
 	j  := pt_ofs + (len div 4096) - 1;
 
 	for i := pt_ofs to j do
-		 pt[i] := MAPPED_PAGE;
+		 pt[i] := vm_flags;
 
 	{$IFDEF DEBUG_GET_UNMAPPED_AREA}
 		print_bochs('get_unmapped_area (%d): new brk: %h  | brk: %h\n', [current^.pid, (BASE_ADDR + (pt_ofs + (len div 4096)) * 4096), current^.brk]);
@@ -263,20 +264,11 @@ begin
 		fichier := current^.file_desc[fd];
 		if (fichier = NIL) then
 		begin
-			printk('sys_mmap (%d): fd %d is not opened\n', [current^.pid, fd]);
+			print_bochs('sys_mmap (%d): fd %d is not opened\n', [current^.pid, fd]);
 			result := -EBADF;
 			exit;
 		end;
-	end;
-
-	if (fichier <> NIL) then
-	begin
-		if ((fichier^.op = NIL) or (fichier^.op^.mmap = NIL)) then
-		begin
-			printk('sys_mmap (%d): mmap() not defined for fd %d\n', [current^.pid, fd]);
-			result := -ENODEV;
-			exit;
-		end;
+		print_bochs('Warning: mapping a file !!!\n', []);
 	end;
 
 	if (len = 0) then
@@ -288,7 +280,7 @@ begin
 	len := (len + 4096 - 1) and $FFFFF000;   { Page-align len }
 	if ((len = 0) or (len > TASK_SIZE)) then
 	begin
-		printk('sys_mmap (%d): len has a bad value (%d)\n', [current^.pid, len]);
+		print_bochs('sys_mmap (%d): len has a bad value (%d)\n', [current^.pid, len]);
 		result := -EINVAL;
 		exit;
 	end;
@@ -303,13 +295,13 @@ begin
 
 	{* Set vm_flags (which will be used by get_unmapped_area()
 	 *
-	 * FIXME: do this better ??? *}
-{	vm_flags := PRESENT_PAGE;
+	 * FIXME: do this better *}
+	vm_flags := USED_ENTRY;
 	if ((prot and PROT_READ) = PROT_READ) then
 		  vm_flags := vm_flags or USER_MODE;
 	if ((prot and PROT_WRITE) = PROT_WRITE) then
-		  vm_flags := vm_flags or WRITE_PAGE;}
-vm_flags := 0;
+		  vm_flags := vm_flags or WRITE_PAGE;
+
 	addr := get_unmapped_area(fichier, len, vm_flags);
 	if ((addr and $fff) > 0) then
 	begin
@@ -317,7 +309,9 @@ vm_flags := 0;
 		exit;
 	end;
 
-	add_mmap_req(current, pointer(addr), len, 0, 0, 1);
+	add_mmap_req(current, pointer(addr), len, pgoff, flags, prot, 1, fichier);
+
+	current^.size += len div 4096;
 
 
 {------------------------------------------------------------------------------}
@@ -339,7 +333,7 @@ end;
  * sys_munmap
  *
  *****************************************************************************}
-function sys_munmap (start : pointer ; length : dword) : dword; cdecl; [public, alias : 'SYS_MUNMAP'];
+function sys_munmap (start : pointer ; len : dword) : dword; cdecl; [public, alias : 'SYS_MUNMAP'];
 
 var
    i   : dword;
@@ -348,24 +342,32 @@ var
 begin
 
    {$IFDEF DEBUG_SYS_MUNMAP}
-      print_bochs('sys_munmap (%d): %h %d\n', [current^.pid, start, length]);
+      print_bochs('sys_munmap (%d): %h %d\n', [current^.pid, start, len]);
    {$ENDIF}
 
 	sti();
 
    result := -EINVAL;
 
-   { Check if 'start' and 'length' are page-aligned }
-   if (longint(start) mod 4096 <> 0) or ((length mod 4096) <> 0) then exit;
+   { Check if 'start' is page-aligned and if len <> 0}
+   if (longint(start) mod 4096 <> 0) or (len = 0) then
+	begin
+		print_bochs('sys_munmap (%d): start=%h (not page-aligned) len=%d\n',
+		[current^.pid, start, len]);
+		exit;
+	end;
 
-   req := find_mmap_req(start, length);
+	len := page_align(len);
+
+   req := find_mmap_req(start);
    if (req = NIL) then
    begin
-      printk('BUG -> sys_munmap (%d): couldn''t find request\n', [current^.pid]);
-      result := -ENOSYS;
+      print_bochs('BUG -> sys_munmap (%d): couldn''t find request\n', [current^.pid]);
+      result := -EINVAL;
       exit;
    end;
 
+	{ FIXME; we should call do_munmap(req, start, len) }
    do_munmap(req, req^.addr, req^.size);
 
    { Remove the request from the list }
@@ -391,14 +393,38 @@ end;
  *
  * NOTE: 'start_addr' and 'len' have to be page-aligned
  *****************************************************************************}
-procedure do_munmap (req : P_mmap_req ; start_addr : pointer ; len : dword);
+procedure do_munmap (req : P_mmap_req ; start_addr : pointer ; len : dword); [public, alias : 'DO_MUNMAP'];
 
 var
    i, nb, a : dword;
    nb_pages : dword;
    addr		: pointer;
+	res		: longint;
+	flush 	: boolean;
 
 begin
+
+	{$IFDEF DEBUG_DO_MUNMAP}
+		asm
+			mov   eax, [ebp + 4]
+			mov   a  , eax
+		end;
+		print_bochs('do_munmap (%d): start=%h len=%d %h\n',
+		[current^.pid, start_addr, len, a]);
+	{$ENDIF}
+
+	flush := false;
+
+	if (req^.fichier <> NIL) then
+	begin
+		if (req^.prot and PROT_WRITE) = PROT_WRITE then
+		begin
+			req^.fichier^.pos := req^.pgoff;
+			res := req^.fichier^.op^.write(req^.fichier, req^.addr, req^.size);
+			if (res <= 0) then
+				 print_bochs('do_munmap: cannot write file to disk !!!\n', []);
+		end;
+	end;
 
    a := longint(start_addr);
 
@@ -406,7 +432,7 @@ begin
    if (longint(start_addr) - BASE_ADDR) mod 4096 <> 0 then
        nb_pages += 1;
 
-   {$IFDEF DEBUG_SYS_MUNMAP}
+   {$IFDEF DEBUG_DO_MUNMAP}
       print_bochs('do_munmap: start_addr=%h\n', [get_pte(longint(start_addr))]);
    {$ENDIF}
 
@@ -415,22 +441,26 @@ begin
    for i := 1 to nb do
    begin
       addr := get_phys_addr(start_addr);
-      if (addr <> NIL) and (longint(addr) <> MAPPED_PAGE) then
+      if (longint(addr) and $FFFFF000) <> 0 then
       begin
 			{$IFDEF DEBUG_SYS_MUNMAP}
 				print_bochs('do_munmap: freeing page %h\n', [addr]);
 	 		{$ENDIF}
 			push_page(addr);
-	 		set_pte(longint(start_addr), 0);
 	 		current^.real_size -= 1;
+			flush := true;
       end;
+		set_pte(longint(start_addr), 0);
       start_addr += 4096;
+		current^.size -= 1;
    end;
 
    req^.size -= len;
 
    if (current^.brk = a + len) then
        current^.brk -= len;
+
+	if (flush) then flush_tlb();
 
 end;
 
@@ -451,63 +481,91 @@ var
    new_page    : pointer;
    req         : P_mmap_req;
    pt 	      : P_pte_t;
+	pte			: pte_t;
 
 label out;
 
 begin
 
-   {$IFDEF DEBUG_SYS_MREMAP}
-      print_bochs('sys_mremap (%d): IN %h  %d -> %d  %h  %h\n', [current^.pid, addr, old_len, new_len, flags,
-      	             	      	             	      	    new_addr]);
-   {$ENDIF}
+   {IFDEF DEBUG_SYS_MREMAP}
+      print_bochs('sys_mremap (%d): IN %h  %d -> %d  %h  %h\n',
+		[current^.pid, addr, old_len, new_len, flags, new_addr]);
+   {ENDIF}
 
 	sti();
 
    ret := -EINVAL;
 
-   if (flags and (not (MREMAP_MAYMOVE or MREMAP_FIXED))) <> 0 then goto out;
+   if (flags and (not (MREMAP_MAYMOVE or MREMAP_FIXED))) <> 0 then
+	begin
+		print_bochs('sys_mremap (%d): flags have a bad value (%d)\n',
+		[current^.pid, flags]);
+		goto out;
+	end;
 
    { Check if addr is page-aligned }
-   if (addr and $FFF) <> 0 then goto out;
+   if not page_aligned(addr) then
+	begin
+		print_bochs('sys_mremap (%d): addr is not page-aligned (%h)\n',
+		[current^.pid, addr]);
+		goto out;
+	end;
 
    old_len := page_align(old_len);
    new_len := page_align(new_len);
 
    { new_addr is only valid if MREMAP_FIXED is specified }
    if (flags and MREMAP_FIXED) = MREMAP_FIXED then
-       printk('sys_mremap (%d): MREMAP_FIXED\n', [current^.pid]);
+	begin
+      print_bochs('sys_mremap (%d): MREMAP_FIXED (not supported)\n', [current^.pid]);
+		result := -ENOSYS;
+		goto out;
+	end;
 
    ret := addr;
 
-   req := find_mmap_req(pointer(addr), old_len);
+   { It sometimes happens. Dietlibc bug ??? }
+   if (new_len = old_len) then
+	begin
+		print_bochs('sys_mremap (%d): new_len = old_len = %d\n',
+		[current^.pid, new_len]);
+		goto out;
+	end;
+
+   req := find_mmap_req(pointer(addr));
    if (req = NIL) then
    begin
-      printk('sys_mremap (%d): old request not found\n', [current^.pid]);
-      ret := -ENOSYS;   { FIXME: another erro code ??? }
+      print_bochs('sys_mremap (%d): old request not found\n', [current^.pid]);
+      ret := -EINVAL;
       goto out;
    end;
 
    { Do we have to shrink the old request ??? }
-   if (old_len >= new_len) then
-   begin
-      if (old_len > new_len) then
-      	 do_munmap(req, pointer(addr + new_len), old_len - new_len);
-      if (new_addr = addr) or ((flags and MREMAP_FIXED) <> MREMAP_FIXED) then
-          goto out;
-   end;
+	if (old_len > new_len) then
+	begin
+		{$IFDEF DEBUG_SYS_MREMAP}
+			print_bochs('sys_mremap (%d): old_len > new_len => do_munmap(%h, %d)\n',
+			[current^.pid, pointer(addr + new_len), old_len - new_len]);
+		{$ENDIF}
+     	do_munmap(req, pointer(addr + new_len), old_len - new_len);
+
+		req^.size := new_len;
+		goto out;
+	end;
 
    { Ok, we need to grow..  or relocate. }
 
    { Trying to just expand the area }
 
-   { It sometimes happens. Dietlibc bug ??? }
-   if (new_len = old_len) then goto out;
-
    ret := -ENOMEM;
 
    nb_pages := (new_len - old_len) div 4096;
    ofs := find_page_table_ofs(nb_pages, 769, 0);
-   if (ofs = 0) then goto out;
+   if (ofs = 0) then
+	begin
+		print_bochs('sys_mremap (%d): find_page_table_ofs() returned 0\n', [current^.pid]);
+		goto out;
+	end;
 
    pt := pointer(current^.cr3[769] and $FFFFF000);
 
@@ -519,16 +577,7 @@ begin
       {$ENDIF}
       for i := ofs to (ofs + nb_pages - 1) do
       begin
-         new_page := get_free_page();
-	 		if (new_page = NIL) then
-	 		begin
-	    		printk('sys_mremap (%d): no enough memory to add %d pages\n', [current^.pid, (new_len - old_len) div 4096]);
-	    		goto out;
-	 		end;
-	 		pt[i] := longint(new_page) or USER_PAGE;
-	 		{$IFDEF DEBUG_SYS_MREMAP}
-	    		print_bochs('sys_mremap (%d): i=%d page=%h\n', [current^.pid, i, new_page]);
-	 		{$ENDIF}
+	 		pt[i] := USED_ENTRY;
       end;
 
       req^.size := new_len;
@@ -536,7 +585,7 @@ begin
       if (addr + new_len) > current^.brk then   { FIXME: test this }
           current^.brk := addr + new_len;
 
-      current^.real_size += nb_pages;
+      current^.size += nb_pages;
       ret := addr;
 
       {$IFDEF DEBUG_SYS_MREMAP}
@@ -550,21 +599,39 @@ begin
       {$IFDEF DEBUG_SYS_MREMAP}
       	 print_bochs('sys_mremap (%d): need to realloc\n', [current^.pid]);
       {$ENDIF}
-      for i := ofs to (ofs + (new_len div 4096) - 1) do
+      for i := 0 to ((old_len div 4096) - 1) do
       begin
-			new_page := get_free_page();
-	 		if (new_page = NIL) then
-	 		begin
-	    		printk('sys_mremap (%d): not enoug memoty to reallocate\n', [current^.pid]);
-	    		goto out;
-	 		end;
-	 		pt[i] := longint(new_page) or USER_PAGE;
+			pte := longint(get_pte(longint(addr) + (i * 4096)));
+print_bochs('%h: pte=%h  ->  %h\n', [longint(addr) + (i * 4096),pte,(ofs * 4096) + BASE_ADDR + (i * 4096)]);
+			set_pte((ofs * 4096) + BASE_ADDR + (i * 4096), pte);
+{			if (pte and $FFFFF000) <> 0 then
+				 memcpy(req^.addr, pointer((ofs * 4096) + BASE_ADDR), req^.size);}
+			set_pte(longint(addr) + (i * 4096), 0);
       end;
-      memcpy(req^.addr, pointer((ofs * 4096) + BASE_ADDR), req^.size);
-      do_munmap(req, req^.addr, req^.size);
-      current^.real_size += new_len div 4096;
+
+		for i := (old_len div 4096) to ((new_len div 4096) - 1) do
+		begin
+print_bochs('%h: %h4\n', [(ofs * 4096) + BASE_ADDR + (i * 4096), USED_ENTRY]);
+			set_pte((ofs * 4096) + BASE_ADDR + (i * 4096), USED_ENTRY or 6);
+		end;
+
+print_bochs('\n', []);
+for i := 0 to (new_len div 4096) - 1 do
+print_bochs('%h -> %h\n',
+[(ofs * 4096) + BASE_ADDR + (i * 4096), get_pte((ofs * 4096) + BASE_ADDR + (i *
+4096))]);
+
+		flush_tlb();
+{      memcpy(req^.addr, pointer((ofs * 4096) + BASE_ADDR), req^.size);}
+
+      current^.size += (new_len - old_len) div 4096;
       req^.addr := pointer((ofs * 4096) + BASE_ADDR);
       req^.size := new_len;
+
+		{ Update BRK }
+		if ((longint(req^.addr + req^.size)) > current^.brk) then
+			 current^.brk := longint(req^.addr + req^.size);
+
       ret := (ofs * 4096) + BASE_ADDR;
    end;
 
@@ -580,7 +647,8 @@ out:
    result := ret;
 
    {$IFDEF DEBUG_SYS_MREMAP}
-      print_bochs('sys_mremap (%d): END result=%h\n', [current^.pid, result]);
+      print_bochs('sys_mremap (%d): END result=%h (%h, %d) brk=%h\n',
+		[current^.pid, result, req^.addr, req^.size, current^.brk]);
    {$ENDIF}
 
 end;
@@ -653,12 +721,14 @@ end;
  * This function is used by mmap() and copy_mm() (src/kernel/fork.pp) to add a
  * request so that we know all the requests the process have made.
  *****************************************************************************}
-procedure add_mmap_req (p : P_task_struct ; addr : pointer ; size : dword ; flags, prot : byte ; count : word); [public, alias : 'ADD_MMAP_REQ'];
+procedure add_mmap_req (p : P_task_struct ; addr : pointer ; size : dword ; pgoff : dword ; flags, prot : byte ; count : word ; fichier : P_file_t); [public, alias : 'ADD_MMAP_REQ'];
 
 var
    req : P_mmap_req;
 
 begin
+
+{print_bochs('add_mmap_req: PID=%d\n', [current^.pid]);}
 
    req := kmalloc(sizeof(mmap_req));
    if (req = NIL) then
@@ -667,24 +737,28 @@ begin
       exit;
    end;
 
+	if (fichier <> NIL) then fichier^.count += 1;
+
+   req^.addr   	:= addr;
+   req^.size   	:= size;
+	req^.pgoff   	:= pgoff;
+	req^.flags		:= flags;
+	req^.prot		:= prot;
+	req^.fichier	:= fichier;
+	req^.count		:= count;
+
    if (p^.mmap = NIL) then
    begin
-      p^.mmap        := req;
-      p^.mmap^.addr  := addr;
-      p^.mmap^.size  := size;
-		p^.mmap^.count := count;
-      p^.mmap^.next  := p^.mmap;
-      p^.mmap^.prev  := p^.mmap;
+      p^.mmap     := req;
+      req^.next  	:= p^.mmap;
+      req^.prev	:= p^.mmap;
    end
    else
    begin
-      req^.addr  := addr;
-      req^.size  := size;
-		req^.count := count;
-      req^.prev  := p^.mmap^.prev;
-      req^.next  := p^.mmap;
-      p^.mmap^.prev^.next := req;
-      p^.mmap^.prev := req;
+      req^.prev				:= p^.mmap^.prev;
+      req^.next				:= p^.mmap;
+      p^.mmap^.prev^.next	:= req;
+      p^.mmap^.prev  		:= req;
    end;
 
    {$IFDEF DEBUG_ADD_MMAP_REQ}
@@ -703,17 +777,23 @@ end;
 procedure del_mmap_req (req : P_mmap_req); [public, alias : 'DEL_MMAP_REQ'];
 begin
 
+{print_bochs('del_mmap_req: PID=%d\n', [current^.pid]);}
+
    {$IFDEF DEBUG_DEL_MMAP_REQ}
       print_bochs('del_mmap_req (%d): req=%h (%h, %h)\n', [current^.pid, req, req^.next, req^.prev]);
    {$ENDIF}
 
-	req^.count -= 1;
-	if (req^.count = 0) then
+	if (req^.next = req) then
+		current^.mmap := NIL
+	else
 	begin
    	req^.prev^.next := req^.next;
-   	req^.next^.prev := req^.prev;
-   	kfree_s(req, sizeof(mmap_req));
+  		req^.next^.prev := req^.prev;
+		if (req = current^.mmap) then current^.mmap := req^.next;
 	end;
+
+	req^.count -= 1;
+	if (req^.count = 0) then kfree_s(req, sizeof(mmap_req));
 
 end;
 
@@ -724,7 +804,7 @@ end;
  *
  * This function looks for a request in current^.mmap list
  *****************************************************************************}
-function find_mmap_req (addr : pointer ; size : dword) : P_mmap_req;
+function find_mmap_req (addr : pointer) : P_mmap_req; [public, alias : 'FIND_MMAP_REQ'];
 
 var
    res, tmp : P_mmap_req;
@@ -735,8 +815,9 @@ begin
    tmp := current^.mmap;
 
    repeat
-{      printk('find_mmap_req: %h %d\n', [tmp^.addr, tmp^.size]);}
-      if (tmp^.addr = addr) and (tmp^.size = size) then
+{      print_bochs('find_mmap_req: %h => %h %d\n',
+						 [addr, tmp^.addr, tmp^.size]);}
+      if (tmp^.addr <= addr) and (longint(addr) < (longint(tmp^.addr) + tmp^.size)) then
       begin
          res := tmp;
 	 		break;

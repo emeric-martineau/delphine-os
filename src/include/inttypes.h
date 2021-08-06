@@ -4,6 +4,8 @@
 #include <sys/cdefs.h>
 #include <endian.h>
 
+__BEGIN_DECLS
+
 # if __WORDSIZE == 64
 #  define __PRI64_PREFIX	"l"
 #  define __PRIPTR_PREFIX	"l"
@@ -237,11 +239,16 @@ typedef unsigned int uint32_t;
 typedef signed long int intptr_t;
 typedef unsigned long int uintptr_t;
 
-#ifndef __STRICT_ANSI__
+#if !defined(__STRICT_ANSI__) || __STDC_VERSION__ + 0 >= 199900L
 __extension__ typedef signed long long int64_t;
 __extension__ typedef unsigned long long uint64_t;
 __extension__ typedef signed long long int intmax_t;
 __extension__ typedef unsigned long long int uintmax_t;
 #endif
+
+intmax_t strtoimax (const char *nptr, char **endptr, int base);
+uintmax_t strtoumax (const char *nptr, char **endptr, int base);
+
+__END_DECLS
 
 #endif

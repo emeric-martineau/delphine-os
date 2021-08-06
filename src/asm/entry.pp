@@ -5,8 +5,6 @@
  *
  * Copyleft 2002 GaLi
  *
- * version 0.0 - ??/04/2002 - GaLi - Initial version
- *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
  * Free Software Foundation; either version 2 of the License, or (at your
@@ -32,6 +30,7 @@ INTERFACE
 {$I config.inc}
 
 
+function  do_signal (signr : dword) : boolean; external;
 procedure panic (reason : string); external;
 procedure print_bochs (format : string ; args : array of const); external;
 procedure printk (format : string ; args : array of const); external;
@@ -64,6 +63,7 @@ function  sys_getuid : dword; cdecl; external;
 function  sys_ioctl(fd, req : dword ; argp : pointer) : dword; cdecl; external;
 function  sys_kill (pid, sig : dword) : dword; cdecl; external;
 function  sys_lseek (fd, offset, whence : dword) : dword; external;
+function  sys_mkdir (pathname : pchar ; mode : dword) : dword; external;
 function  sys_mmap (test : pointer) : pointer; external;
 procedure sys_mount_root; external;
 function  sys_mremap (addr, old_len, new_len, flags, new_addr : dword) : dword; external;
@@ -75,6 +75,7 @@ function  sys_pipe (fildes : pointer) : dword; cdecl; external;
 function  sys_read (fd : dword ; buffer : pointer ; count : dword) : dword; external;
 function  sys_readlink (path : pchar ; buf : pchar ; bufsiz : dword) : dword; external;
 function  sys_reboot (magic1, magic2, cmd : dword ; arg : pointer) : dword; cdecl; external;
+function  sys_rmdir (pathname : pchar ; mode : dword) : dword; external;
 function  sys_rt_sigsuspend (unewset : P_sigset_t ; sigsetsize : dword) : dword; external;
 function  sys_select (n : dword ; inp, outp, exp : pointer ; tvp : pointer) : dword; external;
 function  sys_setpgid (pid, pgid : dword) : dword; external;
@@ -107,7 +108,7 @@ var
 
 IMPLEMENTATION
 
-
+{DEFINE DEBUG_SYSTEM_CALL}
 
 {******************************************************************************
  * bad_syscall
@@ -133,7 +134,6 @@ begin
    end;
 
    printk('\nSystem call %d not implemented (PID=%d) addr=%h\n', [nb, current^.pid, addr]);
-   panic('Missing system call');
 
 end;
 
@@ -151,7 +151,12 @@ begin
 
 	pid := current^.pid;
 
+	if (pid <> 1) then
 	print_bochs('%d: System call %d\n', [pid, nb]);
+
+	asm
+		mov   eax, -38
+	end;
 
 end;
 
@@ -159,6 +164,7 @@ end;
 
 procedure end_system_call; [public, alias : 'END_SYSTEM_CALL'];
 begin
+	if (current^.pid <> 1) then
 	print_bochs('End of system call\n', []);
 end;
 
@@ -224,13 +230,15 @@ asm
       mov   dword [esp+32], eax
       
       { Check if there are pending signals }
-{      mov   eax, current
+      mov   eax, current
       push  eax
       call  SIGNAL_PENDING
       cmp   eax, 0
-      je    @no_signals     
+      je    @no_signals
+		push  eax
+		call  DO_SIGNAL
 
-      @no_signals:}
+      @no_signals:
 
       pop   ebx
       pop   ecx
@@ -283,8 +291,8 @@ asm
    dd SYS_SYNC
    dd SYS_KILL
    dd BAD_SYSCALL       { (rename) }
-   dd BAD_SYSCALL       { (mkdir) }
-   dd BAD_SYSCALL       { System call 40 (rmdir) }
+   dd SYS_MKDIR
+   dd SYS_RMDIR			{ System call 40 }
    dd SYS_DUP
    dd SYS_PIPE
    dd SYS_TIMES

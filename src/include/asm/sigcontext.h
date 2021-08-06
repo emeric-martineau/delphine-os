@@ -1,8 +1,16 @@
 #ifndef _ASM_SIGCONTEXT_H
 #define _ASM_SIGCONTEXT_H
 
-#if defined(__i386__) || defined(__x86_64__)
+#include <sys/cdefs.h>
+
+__BEGIN_DECLS
+
+#if defined(__i386__)
 #include <asm/i386-sigcontext.h>
+#endif
+
+#if defined(__x86_64__)
+#include <asm/x86_64-sigcontext.h>
 #endif
 
 #ifdef __sparc__
@@ -13,7 +21,7 @@
 #include <asm/mips-sigcontext.h>
 #endif
 
-#ifdef __powerpc__
+#if defined(powerpc) || defined(__powerpc64__)
 #include <asm/ppc-sigcontext.h>
 #endif
 
@@ -32,5 +40,11 @@
 #ifdef __ia64__
 #include <asm/ia64-sigcontext.h>
 #endif
+
+#ifdef __s390__
+#include <asm/s390-sigcontext.h>
+#endif
+
+__END_DECLS
 
 #endif

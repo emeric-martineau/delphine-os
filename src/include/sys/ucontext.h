@@ -4,9 +4,13 @@
 #include <asm/sigcontext.h>
 #include <signal.h>
 
-typedef struct sigcontext mcontext_t;
+__BEGIN_DECLS
 
-#if defined(__i386__) || defined(__arm__) || defined(__mips__) || defined(__mips64__) || defined(__powerpc__) || defined(__hppa__)
+#if !defined(__sparc__) && !defined(__sparc64__)
+typedef struct sigcontext mcontext_t;
+#endif
+
+#if defined(__i386__) || defined(__arm__) || defined(__mips__) || defined(__mips64__) || defined(powerpc) || defined(__powerpc64__) || defined(__hppa__)
 struct ucontext {
   unsigned long		uc_flags;
   struct ucontext	*uc_link;
@@ -101,10 +105,22 @@ struct ucontext {
 #define uc_link		uc_mcontext.sc_gr[0]	/* wrong type; nobody cares */
 #define uc_sigmask	uc_mcontext.sc_sigmask
 #define uc_stack	uc_mcontext.sc_stack
+#elif defined(__x86_64__)
+
+struct ucontext {
+	unsigned long	  uc_flags;
+	struct ucontext  *uc_link;
+	stack_t		  uc_stack;
+	struct sigcontext uc_mcontext;
+	sigset_t	  uc_sigmask;	/* mask last for extensibility */
+};
+
 #else
 #error NEED TO PORT <sys/sigcontext.h>!
 #endif
 
 typedef struct ucontext ucontext_t;
+
+__END_DECLS
 
 #endif

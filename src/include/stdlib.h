@@ -7,15 +7,17 @@
 #include <sys/types.h>
 #include <alloca.h>
 
-void *calloc(size_t nmemb, size_t size) __attribute_malloc__ __THROW;
-void *malloc(size_t size) __attribute_malloc__ __THROW;
-void free(void *ptr) __THROW;
-void *realloc(void *ptr, size_t size) __attribute_malloc__ __THROW;
+__BEGIN_DECLS
 
-char *getenv(const char *name) __THROW __pure__;
+void *calloc(size_t nmemb, size_t size) __THROW __attribute_malloc__;
+void *malloc(size_t size)  __THROW __attribute_malloc__;
+void free(void *ptr) __THROW;
+void *realloc(void *ptr, size_t size) __THROW __attribute_malloc__;
+
+char *getenv(const char *name) __THROW __pure;
 int putenv(const char *string) __THROW;
 int setenv(const char *name, const char *value, int overwrite) __THROW;
-void unsetenv(const char *name) __THROW;
+int unsetenv(const char *name) __THROW;
 
 int system (const char * string) __THROW;
 int atexit(void (*function)(void)) __THROW;
@@ -29,7 +31,7 @@ unsigned long int strtoul(const char *nptr, char **endptr, int base) __THROW;
 extern int __ltostr(char *s, unsigned int size, unsigned long i, unsigned int base, int UpCase) __THROW;
 extern int __dtostr(double d,char *buf,unsigned int maxlen,unsigned int prec,unsigned int prec2) __THROW;
 
-#ifndef __STRICT_ANSI__
+#if !defined(__STRICT_ANSI__) || __STDC_VERSION__ + 0 >= 199900L
 __extension__ long long int strtoll(const char *nptr, char **endptr, int base) __THROW;
 __extension__ unsigned long long int strtoull(const char *nptr, char **endptr, int base) __THROW;
 __extension__ int __lltostr(char *s, unsigned int size, unsigned long long i, unsigned int base, int UpCase) __THROW;
@@ -38,6 +40,7 @@ __extension__ int __lltostr(char *s, unsigned int size, unsigned long long i, un
 int atoi(const char *nptr) __THROW;
 long int atol(const char *nptr) __THROW;
 double atof(const char *nptr) __THROW;
+__extension__ long long int atoll(const char *nptr);
 
 void exit(int status) __THROW __attribute__((noreturn));
 void abort(void) __THROW;
@@ -46,8 +49,8 @@ extern int rand(void) __THROW;
 extern int rand_r(unsigned int *seed) __THROW;
 extern void srand(unsigned int seed) __THROW;
 #ifdef _BSD_SOURCE
-extern int random(void) __THROW;
-extern void srandom(unsigned int seed) __THROW;
+extern int random(void) __THROW __attribute_dontuse__;
+extern void srandom(unsigned int seed) __THROW __attribute_dontuse__;
 #endif
 
 typedef unsigned short randbuf[3];
@@ -96,5 +99,7 @@ char *ptsname (int fd) __THROW;
 #define RAND_MAX 	((1<<31) -2)
 
 #define MB_CUR_MAX 1
+
+__END_DECLS
 
 #endif

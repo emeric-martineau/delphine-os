@@ -40,8 +40,10 @@ function  bread (major, minor : byte ; block, size : dword) : P_buffer_head; ext
 procedure brelse (bh : P_buffer_head); external;
 function  ext2_add_link (dir : P_inode_t ; name : pchar ; inode : P_inode_t) : dword; external;
 function  ext2_delete_entry (inode : P_inode_t ; dir : P_ext2_dir_entry ; bh : P_buffer_head) : dword; external;
+function  ext2_empty_dir (inode : P_inode_t) : boolean; external;
 function  ext2_find_entry (dir : P_inode_t ; name : pchar ; len : dword ; res_bh : PP_buffer_head) : P_ext2_dir_entry; external;
 function  ext2_get_group_desc (sb : P_super_block_t ; block_group : dword ; bh : PP_buffer_head) : P_ext2_group_desc; external;
+function  ext2_make_empty (inode, parent : P_inode_t) : dword; external;
 function  ext2_new_inode (dir : P_inode_t ; mode : dword) : P_inode_t; external;
 procedure ext2_read_inode (inode : P_inode_t); external;
 procedure free_inode (inode : P_inode_t); external;
@@ -55,16 +57,46 @@ procedure printk (format : string ; args : array of const); external;
 var
    current : P_task_struct; external name 'U_PROCESS_CURRENT';
    ext2_file_inode_operations : inode_operations; external name 'U__EXT2_FILE_EXT2_FILE_INODE_OPERATIONS';
+	ext2_dir_inode_operations : inode_operations; external name 'U_EXT2_SUPER_EXT2_DIR_INODE_OPERATIONS';
 
 
 
+function  ext2_add_nondir (dir : P_inode_t ; name : pchar ; inode : P_inode_t) : dword;
 function  ext2_create (dir : P_inode_t ; name : pchar ; mode : dword) : P_inode_t;
+procedure ext2_dec_count(inode : P_inode_t);
+procedure ext2_inc_count(inode : P_inode_t);
 function  ext2_lookup (dir : P_inode_t ; name : pchar ; len : dword ; res_inode : PP_inode_t) : boolean;
+function  ext2_mkdir (dir : P_inode_t ; name : pchar ; mode : dword) : dword;
+function  ext2_rmdir (dir : P_inode_t ; name : pchar ; inode : P_inode_t) : dword;
 function  ext2_unlink (dir : P_inode_t ; name : pchar ; inode : P_inode_t) : dword;
 
 
 
 IMPLEMENTATION
+
+
+
+{******************************************************************************
+ * ext2_inc_count
+ *
+ *****************************************************************************}
+procedure ext2_inc_count(inode : P_inode_t);
+begin
+	inode^.nlink += 1;
+	mark_inode_dirty(inode);
+end;
+
+
+
+{******************************************************************************
+ * ext2_dec_count
+ *
+ *****************************************************************************}
+procedure ext2_dec_count(inode : P_inode_t);
+begin
+	inode^.nlink -= 1;
+	mark_inode_dirty(inode);
+end;
 
 
 
@@ -103,7 +135,7 @@ begin
    res := ext2_add_link(dir, name, inode);
    if (res < 0) then
    begin
-      printk('ext2_create (%d): cannot add link\n', [current^.pid]);
+      print_bochs('ext2_create (%d): cannot add link\n', [current^.pid]);
       free_inode(inode);
       result := pointer(res);
       exit;
@@ -167,6 +199,7 @@ end;
 {******************************************************************************
  * ext2_unlink
  *
+ * Code from inspired from linux-2.6.7
  *****************************************************************************}
 function ext2_unlink (dir : P_inode_t ; name : pchar ; inode : P_inode_t) : dword; [public, alias : 'EXT2_UNLINK'];
 
@@ -187,7 +220,6 @@ begin
    {$ENDIF}
 
    de := ext2_find_entry(dir, name, len, @bh);
-
    if (de = NIL) then
 	begin
 		{$IFDEF DEBUG_EXT2_UNLINK}
@@ -197,27 +229,152 @@ begin
 	end;
 
    res := ext2_delete_entry(inode, de, bh);
-
    if (res <> 0) then
 	begin
-		{$IFDEF DEBUG_EXT2_UNLINK}
-			print_bochs('ext2_unlink: error in ext2_delete_entry()\n', []);
-		{$ENDIF}
+		print_bochs('ext2_unlink: error in ext2_delete_entry()\n', []);
       result := res;
 	end
    else
    begin
-      { FIXME: update c_time ??? }
-      
-      inode^.nlink -= 1;
-      mark_inode_dirty(inode);
-      
+		inode^.ctime := dir^.ctime;
+		inode^.dtime := 1;   { FIXME }
+      ext2_dec_count(inode);
       result := 0;
    end;
 
 	{$IFDEF DEBUG_EXT2_UNLINK}
 		print_bochs('ext2_unlink: END\n', []);
 	{$ENDIF}
+
+end;
+
+
+
+{******************************************************************************
+ * ext2_mkdir
+ *
+ * Code from inspired from linux-2.6.7
+ *****************************************************************************}
+function ext2_mkdir (dir : P_inode_t ; name : pchar ; mode : dword) : dword; [public, alias : 'EXT2_MKDIR'];
+
+var
+	err	: longint;
+	len	: dword;
+	inode : P_inode_t;
+
+label out, out_dir, out_fail;
+
+begin
+
+	{$IFDEF DEBUG_EXT2_MKDIR}
+		print_bochs('ext2_mkdir (%d): dir^.nlink=%d dir^.ino=%d dir^.blocks=%d\n',
+						[current^.pid, dir^.nlink, dir^.ino, dir^.blocks]);
+	{$ENDIF}
+
+	err := -EMLINK;
+
+	if (dir^.nlink >= EXT2_LINK_MAX) then
+		 goto out;
+
+	ext2_inc_count(dir);
+
+	inode := ext2_new_inode(dir, IFDIR or mode);
+	if (longint(inode) < 0) then
+		 goto out_dir;
+
+	{$IFDEF DEBUG_EXT2_MKDIR}
+		print_bochs('ext2_mkdir (%d): OK, new inode created (%d)\n',
+						[current^.pid, inode^.ino]);
+	{$ENDIF}
+
+	inode^.op := @ext2_dir_inode_operations;
+
+	ext2_inc_count(inode);
+
+	err := ext2_make_empty(inode, dir);
+	if (err <> 0) then
+		goto out_fail;
+
+	err := ext2_add_link(dir, name, inode);
+	if (err <> 0) then
+		goto out_fail;
+
+   { Put the new inode in the lookup cache }
+   len := 0;
+   while (name[len] <> #0) do len += 1;
+   lc_add_entry(dir, name, len, @inode);
+
+
+out:
+	result := err;
+	exit;
+
+out_fail:
+	ext2_dec_count(inode);
+	ext2_dec_count(inode);
+	free_inode(inode);
+
+out_dir:
+	ext2_dec_count(dir);
+	goto out;
+
+end;
+
+
+
+{******************************************************************************
+ * ext2_rmdir
+ *
+ * Code from inspired from linux-2.6.7
+ *****************************************************************************}
+function ext2_rmdir (dir : P_inode_t ; name : pchar ; inode : P_inode_t) : dword; [public, alias : 'EXT2_RMDIR'];
+
+var
+	err : dword;
+
+begin
+
+	err := -ENOTEMPTY;
+
+	if (ext2_empty_dir(inode)) then
+	begin
+print_bochs('ext2_rmdir: ino=%d  nlink=%d\n', [inode^.ino, inode^.nlink]);
+		err := ext2_unlink(dir, name, inode);
+print_bochs('ext2_rmdir: ino=%d  nlink=%d  err=%d\n',
+[inode^.ino, inode^.nlink, err]);
+		if (err <> 0) then
+		begin
+			print_bochs('ext2_rmdir: ext2_unlink() failed (%d) !!!\n', [err]);
+		end
+		else
+		begin
+			ext2_dec_count(inode);
+			ext2_dec_count(dir);
+		end;
+	end;
+print_bochs('ext2_rmdir: ino=%d  nlink=%d\n', [inode^.ino, inode^.nlink]);
+	result := err;
+
+end;
+
+
+
+{******************************************************************************
+ * ext2_add_nondir
+ *
+ *****************************************************************************}
+function ext2_add_nondir (dir : P_inode_t ; name : pchar ; inode : P_inode_t) : dword; [public, alias : 'EXT2_ADD_NONDIR'];
+
+var
+	err : longint;
+
+begin
+
+	err := ext2_add_link(dir, name, inode);
+	if (err = 0) then
+		 ext2_dec_count(inode);
+
+	result := err;
 
 end;
 

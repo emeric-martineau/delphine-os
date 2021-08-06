@@ -1,0 +1,6 @@
+DelphineOS changelog. Just to see that I'm doing something !!!
+
+
+	20040811 	Grégory Cavelier <g_cavelier@yahoo.fr>
+			Fix a stupid bug un kfree_s(). I allocated the space reserved for
+			bitmaps  :)

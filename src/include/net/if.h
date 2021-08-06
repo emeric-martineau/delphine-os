@@ -4,6 +4,8 @@
 #include <sys/cdefs.h>
 #include <sys/socket.h>
 
+__BEGIN_DECLS
+
 /* Standard interface flags. */
 #define IFF_UP		0x1		/* interface is up		*/
 #define IFF_BROADCAST	0x2		/* broadcast address valid	*/
@@ -39,10 +41,11 @@ struct ifmap {
 
 struct ifreq {
 #define IFHWADDRLEN	6
-#define IFNAMSIZ	16
+#define IF_NAMESIZE	16
+#define IFNAMSIZ	IF_NAMESIZE
   union
   {
-    char	ifrn_name[IFNAMSIZ];		/* if name, e.g. "en0" */
+    char	ifrn_name[IF_NAMESIZE];		/* if name, e.g. "en0" */
   } ifr_ifrn;
   union {
     struct sockaddr ifru_addr;
@@ -54,8 +57,8 @@ struct ifreq {
     int ifru_ivalue;
     int ifru_mtu;
     struct ifmap ifru_map;
-    char ifru_slave[IFNAMSIZ];	/* Just fits the size */
-    char ifru_newname[IFNAMSIZ];
+    char ifru_slave[IF_NAMESIZE];	/* Just fits the size */
+    char ifru_newname[IF_NAMESIZE];
     char* ifru_data;
   } ifr_ifru;
 };
@@ -98,5 +101,7 @@ struct if_nameindex {
 
 struct if_nameindex* if_nameindex(void) __THROW;
 void if_freenameindex(struct if_nameindex* ptr) __THROW;
+
+__END_DECLS
 
 #endif

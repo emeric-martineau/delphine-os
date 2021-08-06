@@ -77,9 +77,14 @@ begin
    outb($70, $14);
    val := inb($71);
    if (val and $02 <> $00) then
-       result := TRUE
+	begin
+		asm
+			finit
+		end;
+      result := TRUE;
+	end
    else
-       result := FALSE;
+      result := FALSE;
 
 end;
 
@@ -406,7 +411,7 @@ begin
    {* Determines if ID flag (bit flag) can be set to 1 or 0. If yes,
     * execute CPUID instruction *}
 
-   fpu_present := check_fpu;
+   fpu_present := check_fpu();
 
    printk('CPU: ', []);
 

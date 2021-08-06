@@ -6,39 +6,39 @@ const
    _NSIG = 64;
    
    SIGHUP    = 1;    {* Hangup detected on controlling terminal or death of a
-      	              * controlling process *}
+      	             * controlling process *}
 
    SIGINT    = 2;    {* Interrupt special character typed on controlling
-      	              * keyboard *}
+      	             * keyboard *}
 
    SIGQUIT   = 3;    {* Quit special character typed on controlling keyboard *}
 
    SIGILL    = 4;    {* Illegal instruction indicating a program error.
-      	              * Applications may wish to catch this signal and attempt
-		      * to recover from bugs. A portable program should not
-		      * intentionally generate illegal instructions *}
+      	             * Applications may wish to catch this signal and attempt
+		      			 * to recover from bugs. A portable program should not
+		      			 * intentionally generate illegal instructions *}
 
    SIGTRAP   = 5;    {* *}
 
    SIGABRT   = 6;    {* Abnormal termination signal caused by the abort()
-      	              * function. A portable program should avoid catching
-		      * SIGABRT *}
+      	             * function. A portable program should avoid catching
+		      			 * SIGABRT *}
 
    SIGIOT    = 6;    {* *}
 
    SIGBUS    = 7;    {* *}
 
    SIGFPE    = 8;    {* Arithmetic exception, such as overflow or division by
-      	              * zero *}
+      	             * zero *}
 
    SIGKILL   = 9;    {* Termination signal. This signal cannot be caught
-      	              * or ignored *}
+      	             * or ignored *}
 
    SIGUSR1   = 10;   {* Application-defined signal 1 *}
 
    SIGSEGV   = 11;   {* Invalid memory reference. Like SIGILL, portable
-      	              * programs should not intentionally generate invalid
-		      * memory reference *}
+      	             * programs should not intentionally generate invalid
+		      			 * memory reference *}
 
    SIGUSR2   = 12;   {* Application-defined signal 2 *}
 
@@ -51,10 +51,10 @@ const
    SIGSTKFLT = 16;
 
    SIGCHLD   = 17;   {* Child process terminated or stopped. By default, this
-      	              * signal is ignored *}
+      	             * signal is ignored *}
 
    SIGCONT   = 18;   {* Continue the process if it is currently stopped;
-      	              * otherwise, ignore the signal *}
+      	             * otherwise, ignore the signal *}
 
    SIGSTOP   = 19;   {* Stop signal. This signal cannot be caught or ignored *}
 
@@ -62,10 +62,10 @@ const
       	              * keyboard *}
 
    SIGTTIN   = 21;   {* Read from the controlling terminal attempted by a
-      	              * member of a background process group *}
+      	             * member of a background process group *}
 
    SIGTTOU   = 22;   {* Write to controlling terminal attempted by a member
-      	              * of a background process group *}
+      	             * of a background process group *}
 
    SIGURG    = 23;   {* *}
 
@@ -96,14 +96,14 @@ const
    SIG_DFL = 0;   {* Signal-specific default action *}
 
    SIG_IGN = 1;   {* Ignore the signal.
-      	           * 
-		   * It is possible to ignore SIGFPE, SIGILL and SIGSEGV;
-		   * however, programs with illegal instructions are not
-		   * portable.
-		   *
-		   * The default for SIGCHLD is to ignore the signal.
-		   * Applications that wish to ignore SIGCHLD should set the
-		   * action to be SIG_DFL, not to SIG_IGN *}
+      	          * 
+		   			 * It is possible to ignore SIGFPE, SIGILL and SIGSEGV;
+		   			 * however, programs with illegal instructions are not
+		   			 * portable.
+		   			 *
+		   			 * The default for SIGCHLD is to ignore the signal.
+		   			 * Applications that wish to ignore SIGCHLD should set the
+		   			 * action to be SIG_DFL, not to SIG_IGN *}
 
    SIG_ERR = -1;
 
@@ -147,19 +147,22 @@ type
       sa_handler  : procedure (num : dword);   {* SIG_DFL for the default action.
       	             	      	             	* or:
       	             	      	             	* SIG_IGN to ignore this signal
-						* or:
-						* pointer to the signal-catching function *}
+																* or:
+																* pointer to the signal-catching
+																* function *}
 
       sa_flags    : dword;    	               {* This member is used only for the SIGCHLD
-      	             	      	             	* signal. If the value SA_NOCLDSTOP is used,
-						* then SIGCHLD will not be generated when
-						* children stop *}
+      	             	      	             	 * signal. If the value
+																 * SA_NOCLDSTOP is used, then
+																 * SIGCHLD will not be generated
+																 * when children stop *}
 
       sa_restorer : procedure;	               {* Only used by DelphineOS *}
 
-      sa_mask     : sigset_t; 	               {* Additional signals to be blocked during
-      	             	      	             	* the execution of the signal-catching
-						* function. *}
+      sa_mask     : sigset_t; 	               {* Additional signals to be
+																 * blocked during the execution
+																 * of the signal-catching
+																 * function. *}
    end;
 
 {$ENDIF}

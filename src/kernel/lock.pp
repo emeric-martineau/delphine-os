@@ -42,6 +42,7 @@ INTERFACE
 
 {* External procedure and functions *}
 
+procedure print_bochs (format : string ; args : array of const); external;
 procedure printk (format : string ; args : array of const); external;
 procedure schedule; external;
 
@@ -98,7 +99,7 @@ procedure read_lock (rw : P_rwlock_t); [public, alias : 'READ_LOCK'];
 begin
 
    {$IFDEF DEBUG_READ_lOCK}
-      printk('read_lock: trying to lock %h (lock=%h)\n', [rw, rw^.lock]);
+      print_bochs('read_lock: trying to lock %h (lock=%h)\n', [rw, rw^.lock]);
    {$ENDIF}
 
    asm
@@ -118,7 +119,7 @@ cli
    end;
 
    {$IFDEF DEBUG_READ_lOCK}
-      printk('read_lock: BYE (lock=%h)\n', [rw^.lock]);
+      print_bochs('read_lock: BYE (lock=%h)\n', [rw^.lock]);
    {$ENDIF}
 
 end;
@@ -139,7 +140,7 @@ begin
    end;
 
    {$IFDEF DEBUG_READ_UNlOCK}
-      printk('read_unlock: rw unlocked (lock=%h)\n', [rw^.lock]);
+      print_bochs('read_unlock: rw unlocked (lock=%h)\n', [rw^.lock]);
    {$ENDIF}
 
 end;
@@ -151,10 +152,24 @@ end;
  *
  *****************************************************************************}
 procedure write_lock (rw : P_rwlock_t); [public, alias : 'WRITE_LOCK'];
+
+{$IFDEF DEBUG_WRITE_lOCK}
+var
+	addr : dword;
+{$ENDIF}
+
 begin
 
+	asm
+		{$IFDEF DEBUG_WRITE_lOCK}
+			mov   eax, [ebp + 4]
+			mov   addr, eax
+		{$ENDIF}
+	end;
+
    {$IFDEF DEBUG_WRITE_lOCK}
-      printk('write_lock: trying to lock %h (lock=%h)\n', [rw, rw^.lock]);
+      print_bochs('write_lock: trying to lock %h (lock=%h) %h\n',
+						[rw, rw^.lock, addr]);
    {$ENDIF}
 
    asm
@@ -178,7 +193,7 @@ cli
    end;
 
    {$IFDEF DEBUG_WRITE_lOCK}
-      printk('write_lock: BYE (lock=%h)\n', [rw^.lock]);
+      print_bochs('write_lock: BYE (lock=%h)\n', [rw^.lock]);
    {$ENDIF}
 
 end;
@@ -190,15 +205,25 @@ end;
  *
  *****************************************************************************}
 procedure write_unlock (rw : P_rwlock_t); [public, alias : 'WRITE_UNLOCK'];
+
+{$IFDEF DEBUG_WRITE_UNLOCK}
+var
+	addr : dword;
+{$ENDIF}
+
 begin
 
    asm
+		{$IFDEF DEBUG_WRITE_UNLOCK}
+			mov   eax, [ebp + 4]
+			mov   addr, eax
+		{$ENDIF}
       mov   eax, rw
       btr   dword [eax], 31
    end;
 
    {$IFDEF DEBUG_WRITE_UNLOCK}
-      printk('write_unlock: rw unlocked (lock=%h)\n', [rw^.lock]);
+      print_bochs('write_unlock: rw unlocked (lock=%h) %h\n', [rw^.lock, addr]);
    {$ENDIF}
 
 end;

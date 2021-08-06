@@ -5,6 +5,8 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 
+__BEGIN_DECLS
+
 typedef struct __stdio_file FILE;
 
 FILE *fopen (const char *path, const char *mode) __THROW;
@@ -38,34 +40,48 @@ int vfscanf(FILE *stream, const char *format, va_list ap) __THROW __attribute__(
 int fgetc(FILE *stream) __THROW;
 int fgetc_unlocked(FILE *stream) __THROW;
 char *fgets(char *s, int size, FILE *stream) __THROW;
-int getc(FILE *stream) __THROW;
-int getchar(void) __THROW;
+char *fgets_unlocked(char *s, int size, FILE *stream) __THROW;
+
 char *gets(char *s) __THROW;
 int ungetc(int c, FILE *stream) __THROW;
+int ungetc_unlocked(int c, FILE *stream) __THROW;
 
 int fputc(int c, FILE *stream) __THROW;
 int fputc_unlocked(int c, FILE *stream) __THROW;
 int fputs(const char *s, FILE *stream) __THROW;
+int fputs_unlocked(const char *s, FILE *stream) __THROW;
 
+int getc(FILE *stream) __THROW;
+int getchar(void) __THROW;
 int putchar(int c) __THROW;
+int putchar_unlocked(int c) __THROW;
 
 #define putc(c,stream) fputc(c,stream)
 #define putchar(c) fputc(c,stdout)
+#define putc_unlocked(c,stream) fputc_unlocked(c,stream)
+#define putchar_unlocked(c) fputc_unlocked(c,stdout)
 
-#define getchar() fgetc(stdin)
 #define getc(stream) fgetc(stream)
+#define getchar() fgetc(stdin)
 #define getc_unlocked(stream) fgetc_unlocked(stream)
+#define getchar_unlocked() fgetc_unlocked(stdin)
 
 int puts(const char *s) __THROW;
 
 int fseek(FILE *stream, long offset, int whence) __THROW;
+int fseek_unlocked(FILE *stream, long offset, int whence) __THROW;
 long ftell(FILE *stream) __THROW;
+long ftell_unlocked(FILE *stream) __THROW;
 int fseeko(FILE *stream, off_t offset, int whence) __THROW;
+int fseeko_unlocked(FILE *stream, off_t offset, int whence) __THROW;
 off_t ftello(FILE *stream) __THROW;
+off_t ftello_unlocked(FILE *stream) __THROW;
 
 #ifndef __NO_STAT64
 int fseeko64(FILE *stream, loff_t offset, int whence) __THROW;
+int fseeko64_unlocked(FILE *stream, loff_t offset, int whence) __THROW;
 loff_t ftello64(FILE *stream) __THROW;
+loff_t ftello64_unlocked(FILE *stream) __THROW;
 
 #if defined _FILE_OFFSET_BITS && _FILE_OFFSET_BITS == 64
 #define off_t loff_t
@@ -80,17 +96,25 @@ int fgetpos(FILE *stream, fpos_t *pos) __THROW;
 int fsetpos(FILE *stream, fpos_t *pos) __THROW;
 
 size_t fread(void *ptr, size_t size, size_t nmemb, FILE *stream) __THROW;
+size_t fread_unlocked(void *ptr, size_t size, size_t nmemb, FILE *stream) __THROW;
 
 size_t fwrite(const void *ptr, size_t size, size_t nmemb, FILE *stream) __THROW;
+size_t fwrite_unlocked(const void *ptr, size_t size, size_t nmemb, FILE *stream) __THROW;
 
 int fflush(FILE *stream) __THROW;
+int fflush_unlocked(FILE *stream) __THROW;
 
 int fclose(FILE *stream) __THROW;
+int fclose_unlocked(FILE *stream) __THROW;
 
-int feof (FILE *stream) __THROW;
+int feof(FILE *stream) __THROW;
+int feof_unlocked(FILE *stream) __THROW;
 int ferror(FILE *stream) __THROW;
+int ferror_unlocked(FILE *stream) __THROW;
 int fileno(FILE *stream) __THROW;
+int fileno_unlocked(FILE *stream) __THROW;
 void clearerr(FILE *stream) __THROW;
+void clearerr_unlocked(FILE *stream) __THROW;
 
 int remove(const char *pathname) __THROW;
 
@@ -107,6 +131,7 @@ extern FILE *stdin, *stdout, *stderr;
 #define _IOFBF 2
 
 int setvbuf(FILE *stream, char *buf, int mode , size_t size) __THROW;
+int setvbuf_unlocked(FILE *stream, char *buf, int mode , size_t size) __THROW;
 
 #define setbuf(stream,buf) setvbuf(stream,buf,buf?_IOFBF:_IONBF,BUFSIZ)
 #define setbuffer(stream,buf,size) setvbuf(stream,buf,buf?_IOFBF:_IONBF,size)
@@ -126,22 +151,27 @@ int pclose(FILE *stream) __THROW;
 char* tmpnam(char *s) __THROW;	/* DO NOT USE!!! Use mkstemp instead! */
 char* tempnam(char* dir,char* _template);	/* dito */
 FILE* tmpfile(void) __THROW;
+FILE* tmpfile_unlocked(void) __THROW;
 
 #define FILENAME_MAX 4095
 #define FOPEN_MAX 16
 
-#ifdef _POSIX_SOURCE
+#define TMP_MAX 10000
+
+/* this is so bad, we moved it to -lcompat */
 #define L_ctermid 9
-#define L_cuserid 9
-#endif
+char* ctermid(char* s); /* returns "/dev/tty" */
 
 void flockfile(FILE* f) __THROW;
 void funlockfile(FILE* f) __THROW;
+int ftrylockfile (FILE *__stream) __THROW;
 
 #ifdef _GNU_SOURCE
+int vasprintf(char **strp, const char *fmt, va_list ap);
 ssize_t getline(char **lineptr, size_t *n, FILE *stream);
 ssize_t getdelim(char **lineptr, size_t *n, int delim, FILE *stream);
-#define getline(lineptr,n,stream) getdelim(lineptr,n,'\n',stream)
 #endif
+
+__END_DECLS
 
 #endif

@@ -3,10 +3,11 @@
 
 #include <sys/cdefs.h>
 
+__BEGIN_DECLS
+
 #define __WANT_POSIX1B_SIGNALS__
 
 #include <sys/types.h>
-#include <sys/time.h>
 
 #define NSIG		32
 
@@ -30,8 +31,8 @@
 #define SIGALRM		14
 #define SIGTERM		15
 #define SIGUNUSED	31
-#if defined(__i386__) || defined(__x86_64__) || defined(__powerpc__) || defined(__arm__) \
-	|| defined(__s390__) || defined(__ia64__)
+#if defined(__i386__) || defined(__x86_64__) || defined(powerpc) || defined(__arm__) \
+	|| defined(__s390__) || defined(__ia64__) || defined(__powerpc64__)
 #define SIGBUS		 7
 #define SIGUSR1		10
 #define SIGUSR2		12
@@ -124,13 +125,13 @@
 #endif
 
 #define SIGCLD		SIGCHLD
-#define SIGLOST		SIGPWR
 #define SIGPOLL		SIGIO
 
 /* These should not be considered constants from userland.  */
 #ifdef __hppa__
 #define SIGRTMIN	37
 #else
+#define SIGLOST		SIGPWR
 #define SIGRTMIN	32
 #endif
 #define SIGRTMAX	(_NSIG-1)
@@ -204,10 +205,14 @@
 #define MINSIGSTKSZ	2048
 #define SIGSTKSZ	8192
 
-#if defined(__alpha__) || defined(__mips__)
-#define SIG_BLOCK	1	/* for blocking signals */
-#define SIG_UNBLOCK	2	/* for unblocking signals */
-#define SIG_SETMASK	3	/* for setting the signal mask */
+#if defined(__sparc__)
+#define SIG_BLOCK	1
+#define SIG_UNBLOCK	2
+#define SIG_SETMASK	4
+#elif defined(__alpha__) || defined(__mips__)
+#define SIG_BLOCK	1
+#define SIG_UNBLOCK	2
+#define SIG_SETMASK	3
 #else
 #define SIG_BLOCK	0	/* for blocking signals */
 #define SIG_UNBLOCK	1	/* for unblocking signals */
@@ -220,6 +225,10 @@ typedef void (*sighandler_t)(int);
 
 #ifdef _BSD_SOURCE
 typedef sighandler_t sig_t;
+#endif
+
+#ifdef _GNU_SOURCE
+typedef sighandler_t __sighandler_t;	/* shoot the glibc people! */
 #endif
 
 #define SIG_DFL ((sighandler_t)0)	/* default signal handling */
@@ -455,6 +464,36 @@ struct sigaction {
 #define sa_handler	_u._sa_handler
 #define sa_sigaction	_u._sa_sigaction
 
+
+#define SIGEV_SIGNAL    0       /* notify via signal */
+#define SIGEV_NONE      1       /* other notification: meaningless */
+#define SIGEV_THREAD    2       /* deliver via thread creation */
+#define SIGEV_THREAD_ID 4       /* deliver to thread */
+
+#define SIGEV_MAX_SIZE  64
+#ifndef SIGEV_PAD_SIZE
+#define SIGEV_PAD_SIZE  ((SIGEV_MAX_SIZE/sizeof(int)) - 3)
+#endif
+
+typedef struct sigevent {
+  sigval_t sigev_value;
+  int sigev_signo;
+  int sigev_notify;
+  union {
+    int _pad[SIGEV_PAD_SIZE];
+    int _tid;
+
+    struct {
+      void(*_function)(sigval_t);
+      void*_attribute; /* really pthread_attr_t */
+    } _sigev_thread;
+  } _sigev_un;
+} sigevent_t;
+
+#define sigev_notify_function   _sigev_un._sigev_thread._function
+#define sigev_notify_attributes _sigev_un._sigev_thread._attribute
+#define sigev_notify_thread_id  _sigev_un._tid
+
 typedef struct sigaltstack {
 #if defined(__mips__)
   void *ss_sp;
@@ -486,6 +525,8 @@ int kill(pid_t pid, int sig) __THROW;
 
 int sigaction(int signum, const struct sigaction *act, struct sigaction *oldact) __THROW;
 
+#include <sys/time.h>
+
 int sigtimedwait(const sigset_t *mask, siginfo_t *info, const struct timespec *ts) __THROW;
 int sigqueueinfo(int pid, int sig, siginfo_t *info) __THROW;
 int siginterrupt(int sig, int flag) __THROW;
@@ -495,6 +536,12 @@ int killpg(int pgrp, int sig) __THROW;
 /* 0 is OK ! kernel puts in MAX_THREAD_TIMEOUT :) */
 #define sigwaitinfo(m, i) sigtimedwait((m),(i),0)
 
-extern const char *const sys_siglist[];
+int sigwait(const sigset_t* set,int* sig) __THROW;
+
+extern const char *const* sys_siglist;
+
+#include <sys/ucontext.h>
+
+__END_DECLS
 
 #endif

@@ -42,6 +42,8 @@ INTERFACE
 {DEFINE DEBUG}
 {DEFINE DEBUG_BREAD}
 {DEFINE DEBUG_WAIT_ON_BUFFER}
+{DEFINE DEBUG_FREE_BUFFERS}
+{DEFINE DEBUG_UNLOCK_BUFFER}
 
 
 procedure free_inode (inode : P_inode_t); external;
@@ -82,7 +84,7 @@ procedure brelse (bh : P_buffer_head);
 function  buffer_dirty (bh : P_buffer_head) : boolean;
 function  buffer_lock (bh : P_buffer_head) : boolean;
 function  buffer_uptodate (bh : P_buffer_head) : boolean;
-function  find_buffer (major, minor : byte ; block, size : dword) : P_buffer_head;
+function  find_buffer (major, minor : byte ; block, size : dword ; ind : pointer) : P_buffer_head;
 procedure free_buffers;
 function  getblk (major, minor : byte ; block, size : dword) : P_buffer_head;
 procedure insert_buffer_head (bh : P_buffer_head);
@@ -129,7 +131,7 @@ begin
 	cli();
 
    {$IFDEF DEBUG_LOCK_BUFFER}
-      printk('lock_buffer (%d): Trying to lock buffer %h\n', [current^.pid, bh]);
+      printk('lock_buffer (%d): Trying to lock buffer %h => %h\n', [current^.pid, bh]);
    {$ENDIF}
 
    { Wait for the buffer to be unlocked }
@@ -156,20 +158,31 @@ end;
  *
  *****************************************************************************}
 procedure unlock_buffer (bh : P_buffer_head); [public, alias : 'UNLOCK_BUFFER'];
+
+{$IFDEF DEBUG_UNLOCK_BUFFER}
+var
+	i : dword;
+{$ENDIF}
+
 begin
 
 	cli();
 
    if (bh^.state and BH_Lock) = 0 then
-       printk('unlock_buffer (%d): buffer not locked !!!\n', [current^.pid])
+       print_bochs('unlock_buffer (%d): buffer not locked !!!\n', [current^.pid])
    else
    begin
-       {$IFDEF DEBUG_UNLOCK_BUFFER}
-	  printk('unlock_buffer (%d): unlock buffer %h\n', [current^.pid, bh]);
-       {$ENDIF}
-       bh^.state := bh^.state and (not BH_Lock);
-       if (bh^.wait <> NIL) then
-           interruptible_wake_up(@bh^.wait, FALSE);
+		{$IFDEF DEBUG_UNLOCK_BUFFER}
+			asm
+				mov eax, [ebp + 4]
+				mov   i, eax
+			end;
+			print_bochs('unlock_buffer (%d): EIP=%h  unlock buffer %h\n',
+							[current^.pid, i, bh]);
+		{$ENDIF}
+		bh^.state := bh^.state and (not BH_Lock);
+		if (bh^.wait <> NIL) then
+			 interruptible_wake_up(@bh^.wait, FALSE);
    end;
 
 	sti();
@@ -238,8 +251,11 @@ begin
 
 	cli();
 
-   bh^.state := bh^.state and (not BH_Dirty);
-   nr_buffer_head_dirty -= 1;
+	if (bh^.state and BH_Dirty) = BH_Dirty then
+	begin
+   	bh^.state := bh^.state and (not BH_Dirty);
+   	nr_buffer_head_dirty -= 1;
+	end;
 
 	sti();
 
@@ -304,10 +320,11 @@ end;
  *
  * Insert bh in buffer_head_list
  *
- * FIXME: For the moment, we can only insert 1024 buffers. It could be great if
- *        we used a hash table.
+ * FIXME: For the moment, we can only insert BUFFER_HEAD_LIST_MAX_ENTRIES
+ * buffers. It could be great if we used a hash table.
+ *
  *****************************************************************************}
-procedure insert_buffer_head (bh : P_buffer_head);
+procedure insert_buffer_head (bh : P_buffer_head); [public, alias : 'INSERT_BUFFER_HEAD'];
 
 var
    i : dword;
@@ -316,21 +333,27 @@ begin
 
    i := 1;
 
+	write_lock(@buffer_head_list_lock);
+
    if (nr_buffer_head = BUFFER_HEAD_LIST_MAX_ENTRIES) then
    begin
 		{$IFDEF DEBUG_KFLUSHD}
-      	print_bochs('insert_buffer_head: calling free_buffers()\n', []);
+      	print_bochs('insert_buffer_head: calling free_buffers()... ', []);
 		{$ENDIF}
+		write_unlock(@buffer_head_list_lock);
 		free_buffers();
+		{$IFDEF DEBUG_KFLUSHD}
+      	print_bochs('BACK\n', []);
+		{$ENDIF}
+		write_lock(@buffer_head_list_lock);
    end;
 
-   write_lock(@buffer_head_list_lock);
-
-   while ((buffer_head_list[i] <> NIL) and (i <= 1024)) do
-           i := i + 1;
+   while ((buffer_head_list[i] <> NIL) and (i <= BUFFER_HEAD_LIST_MAX_ENTRIES)) do
+           i += 1;
 
    {$IFDEF DEBUG}
-      printk('insert_buffer_head at position %d\n', [i]);
+		print_bochs('insert_buffer_head: %d %h  (pos=%d))\n',
+						[bh^.blocknr, bh^.data, i]);
    {$ENDIF}
 
    buffer_head_list[i] := bh;
@@ -348,16 +371,20 @@ end;
  *          minor -> device minor number
  *          block -> block number
  *          size  -> block size (in bytes)
+ *          ind   -> pointer to a dword (if buffer is found, initialized to
+ *                   buffer_head_list index for found buffer. If the buffer is
+ *                   not found, initialized to 0.
+ *                   NOTE: you can set ind to NIL if you don't care aboutt the
+ *                         index in buffer_head_list.
  *
  * OUTPUT : NIL if the buffer isn't in buffer_head_list or, if it has been
  *          found, his address.
  *
- * Cette fonction parcours la liste buffer_head_list afin de trouver un tampon
- * correspondant à celui demandé.
+ * This function go through buffer_head_list to find for the asked buffer.
  *
  * FIXME: HASH TABLE ?????????????????????????????????
  *****************************************************************************}
-function find_buffer (major, minor : byte ; block, size : dword) : P_buffer_head; [public, alias : 'FIND_BUFFER'];
+function find_buffer (major, minor : byte ; block, size : dword ; ind : pointer) : P_buffer_head; [public, alias : 'FIND_BUFFER'];
 
 var
    i, i_max : dword;
@@ -369,27 +396,36 @@ begin
 
    result := NIL;
    i_max  := nr_buffer_head;
+	if (ind <> NIL) then	dword(ind^) := 0;
 
-   for i := 1 to 1024 do
+   for i := 1 to BUFFER_HEAD_LIST_MAX_ENTRIES do
    begin
       tmp := buffer_head_list[i];
       if (tmp <> NIL) then
       begin
-         if (tmp^.major = major) and (tmp^.minor = minor) and 
-            (tmp^.blocknr = block) and (tmp^.size = size) then
-	 begin
-	    result := tmp;
-	    {$IFDEF DEBUG}
-	       printk('find_buffer: buffer found at position %d\n', [i]);
-	    {$ENDIF}
-	    read_unlock(@buffer_head_list_lock);
-	    exit;
-         end
-	 else
-	 begin
-	    i_max -= 1;
-	    if (longint(i_max) <= 0) then break;
-	 end;
+			lock_buffer(tmp);
+         if (tmp^.blocknr = block) and (tmp^.size = size) and
+				(tmp^.major = major) and (tmp^.minor = minor) then
+	 		begin
+	    		result := tmp;
+	    		{$IFDEF DEBUG}
+	       		print_bochs('find_buffer: buffer found at position %d\n', [i]);
+	    		{$ENDIF}
+				unlock_buffer(tmp);
+				read_unlock(@buffer_head_list_lock);
+				if (ind <> NIL) then	dword(ind^) := i;
+	    		exit;
+			end
+	 		else
+	 		begin
+	    		i_max -= 1;
+	    		if (longint(i_max) <= 0) then
+				begin
+					unlock_buffer(tmp);
+					break;
+				end;
+	 		end;
+			unlock_buffer(tmp);
       end;
    end;
 
@@ -412,12 +448,12 @@ var
 
 begin
 
-   tmp := find_buffer(major, minor, block, size);
+   tmp := find_buffer(major, minor, block, size, NIL);
 
    if (tmp <> NIL) then
    begin
       {$IFDEF DEBUG}
-         printk('getblk: Buffer found in cache (%h)\n', [tmp]);
+         print_bochs('getblk: Buffer found in cache (%h)\n', [tmp]);
       {$ENDIF}
       tmp^.count += 1;
       result := tmp;
@@ -425,18 +461,17 @@ begin
    else
    begin
       {$IFDEF DEBUG}
-         printk('getblk: buffer not found in cache\n', []);
+         print_bochs('getblk: buffer not found in cache\n', []);
       {$ENDIF}
       tmp := alloc_buffer_head(major, minor, block, size);
       if (tmp = NIL) then
       begin
-			printk('getblk (%d): not enough memory for buffer !!!\n', [current^.pid]);
+			print_bochs('getblk (%d): not enough memory for buffer !!!\n', [current^.pid]);
 	 		result := NIL;
 	 		exit;
       end;
       result := tmp;
    end;
-
 end;
 
 
@@ -490,15 +525,14 @@ begin
 	cli();
 
    {$IFDEF DEBUG_WAIT_ON_BUFFER}
-      printk('wait_on_buffer (%d): buffer state=%d (BH_Lock=%d)\n', [current^.pid, bh^.state, BH_Lock]);
+      print_bochs('wait_on_buffer (%d): buffer state=%d (BH_Lock=%d)\n', [current^.pid, bh^.state, BH_Lock]);
    {$ENDIF}
+
    while (bh^.state and BH_Lock) = BH_Lock do
    begin
-		sti();
       interruptible_sleep_on(@bh^.wait);
-		cli();
       {$IFDEF DEBUG_WAIT_ON_BUFFER}
-         printk('wait_on_buffer (%d): buffer still locked\n', [current^.pid]);
+         print_bochs('wait_on_buffer (%d): buffer still locked\n', [current^.pid]);
       {$ENDIF}
    end;
 
@@ -543,7 +577,8 @@ var
 begin
 
    {$IFDEF DEBUG_BREAD}
-      printk('bread (%d): dev %d:%d block %d size %d\n', [current^.pid, major, minor, block, size]);
+      print_bochs('bread (%d): dev %d:%d block %d size %d\n',
+						[current^.pid, major, minor, block, size]);
    {$ENDIF}
 
 	sti();
@@ -551,7 +586,7 @@ begin
    bh := getblk(major, minor, block, size);
    if (bh = NIL) then
    begin
-      printk('bread (%d): getblk returned NIL\n', [current^.pid]);
+      print_bochs('bread (%d): getblk returned NIL\n', [current^.pid]);
       result := NIL;
       exit;
    end;
@@ -561,7 +596,7 @@ begin
    if buffer_uptodate(bh) then
    begin
       {$IFDEF DEBUG_BREAD}
-         printk('bread (%d): Buffer is uptodate\n', [current^.pid]);
+         print_bochs('bread (%d): Buffer is uptodate\n', [current^.pid]);
       {$ENDIF}
       unlock_buffer(bh);
       result := bh;
@@ -569,22 +604,26 @@ begin
    else
    begin
       {$IFDEF DEBUG_BREAD}
-         printk('bread (%d): going to read block (%d) -> %h\n', [current^.pid, bh^.blocknr, bh^.data]);
+         print_bochs('bread (%d): going to read block (%d) -> %h\n', [current^.pid, bh^.blocknr, bh^.data]);
       {$ENDIF}
       ll_rw_block(READ, bh);
       {$IFDEF DEBUG_BREAD}
-         printk('bread (%d): waiting for buffer\n', [current^.pid]);
+         print_bochs('bread (%d): waiting for buffer\n', [current^.pid]);
       {$ENDIF}
       wait_on_buffer(bh);
 
       if (buffer_uptodate(bh)) then
           result := bh
       else
-          result := NIL;   { FIXME: we also have to free bh }
+		begin
+			print_bochs('bread: buffer is not uptodate\n', []);
+         result := NIL;   { FIXME: we also have to free bh }
+		end;
    end;
 
    {$IFDEF DEBUG_BREAD}
-      printk('bread (%d): exiting (result=%h)\n', [current^.pid, result]);
+      print_bochs('bread (%d): exiting (result=%h) bh^.wait=%h\n',
+						[current^.pid, result, bh^.wait]);
    {$ENDIF}
 
 end;
@@ -598,7 +637,6 @@ end;
  *****************************************************************************}
 procedure brelse (bh : P_buffer_head); [public, alias : 'BRELSE'];
 begin
-
    if (bh <> NIL) then
    begin
       wait_on_buffer(bh);
@@ -607,7 +645,6 @@ begin
       else
       	 printk('brelse: Trying to release a free buffer head\n', []);
    end;
-
 end;
 
 
@@ -868,12 +905,21 @@ procedure free_buffers; [public, alias : 'FREE_BUFFERS'];
 
 var
 	i, nr : dword;
+	bh 	: P_buffer_head;
 
 begin
 
+	{$IFDEF DEBUG_FREE_BUFFERS}
+		print_bochs('free_buffers: lock ', []);
+	{$ENDIF}
+
 	write_lock(@buffer_head_list_lock);
 
-	i  := 1;
+	{$IFDEF DEBUG_FREE_BUFFERS}
+		print_bochs('OK\n', []);
+	{$ENDIF}
+
+	i := 1;
 
 	{ Nb of buffers we want to free }
 	if (nr_buffer_head < FREE_BUFFER_MAX) then
@@ -883,24 +929,27 @@ begin
 
 	while (nr <> 0) do
 	begin
-		if (buffer_head_list[i] <> NIL) then
+		bh := buffer_head_list[i];
+		if (bh <> NIL) then
 		begin
-			lock_buffer(buffer_head_list[i]);
-			if (buffer_head_list[i]^.count = 0) then
+			lock_buffer(bh);
+			if (bh^.count = 0) then
 			begin
-				if (buffer_dirty(buffer_head_list[i])) then
+				if (buffer_dirty(bh)) then
 				begin
-	    			ll_rw_block(WRITE, buffer_head_list[i]);
-	    			wait_on_buffer(buffer_head_list[i]);
-	    			mark_buffer_clean(buffer_head_list[i]);
+	    			ll_rw_block(WRITE, bh);
+	    			wait_on_buffer(bh);
+	    			mark_buffer_clean(bh);
 				end;
+				kfree_s(bh^.data, bh^.size);
+				kfree_s(bh, sizeof(buffer_head));
 				buffer_head_list[i] := NIL;
 				nr_buffer_head -= 1;
 			end
 			else
-				unlock_buffer(buffer_head_list[i]);		
+				unlock_buffer(bh);		
 			nr -= 1;
-		end;	
+		end;
 		i += 1;	
 	end;
 

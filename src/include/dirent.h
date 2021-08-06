@@ -5,6 +5,8 @@
 #include <sys/types.h>
 #include <limits.h>
 
+__BEGIN_DECLS
+
 struct dirent {
   long		d_ino;
   off_t		d_off;
@@ -12,7 +14,7 @@ struct dirent {
   char		d_name[256]; /* We must not include limits.h! */
 };
 
-#ifndef __STRICT_ANSI__
+#if !defined(__STRICT_ANSI__) || __STDC_VERSION__ + 0 >= 199900L
 struct dirent64 {
   uint64_t	d_ino;
   int64_t	d_off;
@@ -51,7 +53,7 @@ int alphasort64(const struct dirent64 **a, const struct dirent64 **b) __THROW __
 #define MAXNAMLEN NAME_MAX
 
 #ifdef _BSD_SOURCE
-extern int dirfd(DIR *dirp) __THROW;
+extern int dirfd(DIR *dirp) __THROW __attribute_dontuse__;
 #endif
 
 #if defined _FILE_OFFSET_BITS && _FILE_OFFSET_BITS == 64
@@ -60,5 +62,36 @@ extern int dirfd(DIR *dirp) __THROW;
 #define scandir scandir64
 #define alphasort alphasort64
 #endif
+
+#ifdef _BSD_SOURCE
+/* File types for `d_type'.  */
+enum
+  {
+    DT_UNKNOWN = 0,
+# define DT_UNKNOWN	DT_UNKNOWN
+    DT_FIFO = 1,
+# define DT_FIFO	DT_FIFO
+    DT_CHR = 2,
+# define DT_CHR		DT_CHR
+    DT_DIR = 4,
+# define DT_DIR		DT_DIR
+    DT_BLK = 6,
+# define DT_BLK		DT_BLK
+    DT_REG = 8,
+# define DT_REG		DT_REG
+    DT_LNK = 10,
+# define DT_LNK		DT_LNK
+    DT_SOCK = 12,
+# define DT_SOCK	DT_SOCK
+    DT_WHT = 14
+# define DT_WHT		DT_WHT
+  };
+
+/* Convert between stat structure types and directory types.  */
+# define IFTODT(mode)	(((mode) & 0170000) >> 12)
+# define DTTOIF(dirtype)	((dirtype) << 12)
+#endif
+
+__END_DECLS
 
 #endif

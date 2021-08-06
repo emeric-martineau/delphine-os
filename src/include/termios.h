@@ -4,6 +4,8 @@
 #include <sys/cdefs.h>
 #include <sys/types.h>
 
+__BEGIN_DECLS
+
 struct winsize {
   unsigned short ws_row;
   unsigned short ws_col;
@@ -101,7 +103,7 @@ struct termios {
 	cc_t c_line;			/* line discipline */
 	cc_t c_cc[NCCS];		/* control characters */
 };
-#elif defined(powerpc) || defined(__alpha__)
+#elif defined(powerpc) || defined(__powerpc64__) || defined(__alpha__)
 #define NCCS	19
 struct termios {
 	tcflag_t c_iflag;		/* input mode flags */
@@ -165,7 +167,7 @@ struct termios {
 #define VLNEXT	15
 #define VEOF	16
 #define VEOL	17
-#elif defined(__powerpc__)
+#elif defined(powerpc) || defined(__powerpc64__)
 #define VINTR	0
 #define VQUIT	1
 #define VERASE	2
@@ -379,5 +381,7 @@ int tcflush(int fd, int queue_selector) __THROW;
 int tcdrain(int fd) __THROW;
 int tcflow (int fd,int action) __THROW;
 int tcsendbreak (int fd,int duration) __THROW;
+
+__END_DECLS
 
 #endif

@@ -3,6 +3,8 @@
 
 #include <sys/cdefs.h>
 
+__BEGIN_DECLS
+
 #ifdef __i386__
 #ifndef __ASSEMBLER__
 typedef int __jmp_buf[6];
@@ -168,7 +170,7 @@ typedef int __jmp_buf[24];
 #endif
 #endif
 
-#ifdef __powerpc__
+#if defined(powerpc) || defined(__powerpc64__)
 # define JB_GPR1   0  /* Also known as the stack pointer */
 # define JB_GPR2   1
 # define JB_LR     2  /* The address we will return to */
@@ -227,5 +229,7 @@ extern void siglongjmp(sigjmp_buf __env,int __val)
 #define sigsetjmp(a,b) __sigsetjmp(a,b)
 
 #endif
+
+__END_DECLS
 
 #endif

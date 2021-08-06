@@ -347,7 +347,7 @@ begin
    raw_inode^.mode 			:= inode^.mode;
    raw_inode^.uid  			:= inode^.uid;
    raw_inode^.size 			:= inode^.size;
-   raw_inode^.blocks 	   := inode^.blocks * (blocksize div 512);
+   raw_inode^.blocks 	   := inode^.blocks;
    raw_inode^.atime  	   := inode^.atime;
    raw_inode^.ctime  	   := inode^.ctime;
    raw_inode^.mtime  	   := inode^.mtime;
@@ -378,10 +378,13 @@ end;
 procedure ext2_truncate (inode : P_inode_t); [public, alias : 'EXT2_TRUNCATE'];
 begin
 
-   if (IS_DIR(inode) or not IS_REG(inode) or IS_LNK(inode)) then exit;
-
-   if (inode^.blocks <> 0) then
-       ext2_free_data(inode);
+	if (IS_REG(inode) or IS_DIR(inode)) then
+	begin
+	   if (inode^.blocks <> 0) then
+       	 ext2_free_data(inode);
+	end
+	else
+		print_bochs('ext2_truncate:  don''t know what to do with non regular files\n', []);
 
 end;
 
@@ -405,10 +408,10 @@ begin
 
    blocksize := inode^.blksize;
    nblocks   := inode^.size div blocksize;
-   if (inode^.size mod blocksize) <> 0 then nblocks += 1;
+   if ((inode^.size mod blocksize) <> 0) then nblocks += 1;
 
    {$IFDEF DEBUG_EXT2_FREE_DATA}
-      printk('ext2_free_data (%d): inode size=%d -> going to free %d blocks\n', [current^.pid, inode^.size, nblocks]);
+      print_bochs('ext2_free_data (%d): inode size=%d -> going to free %d blocks\n', [current^.pid, inode^.size, nblocks]);
    {$ENDIF}
 
    { Free direct blocks }
@@ -417,12 +420,12 @@ begin
    begin
       if (inode^.ext2_i.data[n] <> 0) then
       begin
-      	 {$IFDEF DEBUG_EXT2_FREE_DATA}
-	    printk('ext2_free_data (%d): freeing file block %d (%d)\n', [current^.pid, n, inode^.ext2_i.data[n]]);
-	 {$ENDIF}
-	 ext2_free_block(inode, inode^.ext2_i.data[n]);
-	 inode^.ext2_i.data[n] := 0;
-	 nblocks -= 1;
+			{$IFDEF DEBUG_EXT2_FREE_DATA}
+	    		print_bochs('ext2_free_data (%d): freeing file block %d (%d)\n', [current^.pid, n, inode^.ext2_i.data[n]]);
+	 		{$ENDIF}
+	 		ext2_free_block(inode, inode^.ext2_i.data[n]);
+	 		inode^.ext2_i.data[n] := 0;
+	 		nblocks -= 1;
       end;
       n += 1;
    end;
@@ -435,27 +438,27 @@ begin
       if (inode^.ext2_i.data[EXT2_IND_BLOCK] <> 0) then
       { We have to free simple indirection blocks }
       begin
-      	 bh := bread(major, minor, inode^.ext2_i.data[EXT2_IND_BLOCK], blocksize);
-	 if (bh = NIL) then
-	 begin
-	    printk('ext2_free_data (%d): cannot read simple indirection block (%d)\n', [current^.pid, inode^.ext2_i.data[EXT2_IND_BLOCK]]);
-	    goto finish;
-	 end;
-	 tmp := bh^.data;
-	 while (nblocks <> 0) and (tmp < (bh^.data + blocksize)) do
-	 begin
-	    if (longint(tmp^) <> 0) then
-	    begin
-	       {$IFDEF DEBUG_EXT2_FREE_DATA}
-	          printk('ext2_free_data (%d): going to free block %d\n', [current^.pid, longint(tmp^)]);
-	       {$ENDIF}
-	       ext2_free_block(inode, longint(tmp^));
-	       nblocks -= 1;
-	    end;
-	    tmp += 4;
-	 end;
-	 brelse(bh);
-	 ext2_free_block(inode, inode^.ext2_i.data[EXT2_IND_BLOCK]);
+			bh := bread(major, minor, inode^.ext2_i.data[EXT2_IND_BLOCK], blocksize);
+	 		if (bh = NIL) then
+	 		begin
+	    		print_bochs('ext2_free_data (%d): cannot read simple indirection block (%d)\n', [current^.pid, inode^.ext2_i.data[EXT2_IND_BLOCK]]);
+	    		goto finish;
+	 		end;
+	 		tmp := bh^.data;
+	 		while (nblocks <> 0) and (tmp < (bh^.data + blocksize)) do
+	 		begin
+	    		if (longint(tmp^) <> 0) then
+	    		begin
+	       		{$IFDEF DEBUG_EXT2_FREE_DATA}
+	          		print_bochs('ext2_free_data (%d): going to free block %d\n', [current^.pid, longint(tmp^)]);
+	       		{$ENDIF}
+	       		ext2_free_block(inode, longint(tmp^));
+	       		nblocks -= 1;
+	    		end;
+	    		tmp += 4;
+	 		end;
+	 		brelse(bh);
+	 		ext2_free_block(inode, inode^.ext2_i.data[EXT2_IND_BLOCK]);
       end;
    end;
 
@@ -464,8 +467,8 @@ begin
       if (inode^.ext2_i.data[EXT2_DIND_BLOCK] <> 0) then
       { We have to free double indirection blocks }
       begin
-      	 printk('ext2_free_data (%d): got to free double indirection blocks (not implemented)\n', [current^.pid]);
-	 goto finish;
+			print_bochs('ext2_free_data (%d): got to free double indirection blocks (not implemented)\n', [current^.pid]);
+	 		goto finish;
       end;
    end;
 
@@ -483,7 +486,7 @@ end;
 {******************************************************************************
  * ext2_delete_inode
  *
- * Called by free_inode() when inode^.count=0.
+ * Called by free_inode() when inode^.nlink=0.
  *****************************************************************************}
 procedure ext2_delete_inode (inode : P_inode_t); [public, alias : 'EXT2_DELETE_INODE'];
 begin

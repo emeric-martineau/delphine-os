@@ -5,21 +5,32 @@
 #include <sys/types.h>
 #include <time.h>
 
+__BEGIN_DECLS
+
 #define UT_LINESIZE	32
 #define UT_NAMESIZE	32
 #define UT_HOSTSIZE	256
 
 #define _PATH_UTMP	"/var/run/utmp"
 #define _PATH_WTMP	"/var/log/wtmp"
-
 #define UTMP_FILE _PATH_UTMP
 #define WTMP_FILE _PATH_WTMP
+
+#ifdef _BSD_SOURCE
+/* die, BSD, die!!! */
+#define UTMP_FILE _PATH_UTMP
+#define WTMP_FILE _PATH_WTMP
+#endif
 
 /* The structure describing an entry in the database of
    previous logins.  */
 struct lastlog
   {
+#if __WORDSIZE == 64 && defined __WORDSIZE_COMPAT32
+    int32_t ll_time;
+#else
     time_t ll_time;
+#endif
     char ll_line[UT_LINESIZE];
     char ll_host[UT_HOSTSIZE];
   };
@@ -44,9 +55,21 @@ struct utmp
 #define ut_name ut_user
   struct exit_status ut_exit;	/* Exit status of a process marked
 				   as DEAD_PROCESS.  */
+/* The ut_session and ut_tv fields must be the same size when compiled
+   32- and 64-bit.  This allows data files and shared memory to be
+   shared between 32- and 64-bit applications.  */
+#if __WORDSIZE == 64 && defined __WORDSIZE_COMPAT32
+  int32_t ut_session;		/* Session ID, used for windowing.  */
+  struct
+  {
+    int32_t tv_sec;		/* Seconds.  */
+    int32_t tv_usec;		/* Microseconds.  */
+  } ut_tv;			/* Time entry was made.  */
+#else
   long int ut_session;		/* Session ID, used for windowing.  */
-#define ut_time ut_tv.tv_sec
   struct timeval ut_tv;		/* Time entry was made.  */
+#endif
+#define ut_time ut_tv.tv_sec
 #define ut_addr ut_addr_v6[0]
   int32_t ut_addr_v6[4];	/* Internet address of remote host.  */
   char __unused[20];		/* Reserved for future use.  */
@@ -88,5 +111,7 @@ void utmpname(const char *file) __THROW;
 
 void updwtmp(const char *wtmp_file, const struct utmp *ut);
 void logwtmp(const char *line, const char *name, const char *host);
+
+__END_DECLS
 
 #endif

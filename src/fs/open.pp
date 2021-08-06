@@ -46,6 +46,7 @@ INTERFACE
 {DEFINE DEBUG_SYS_CHMOD}
 {DEFINE DEBUG_SYS_CLOSE}
 {DEFINE DEBUG_SYS_ACCESS}
+{DEFINE DEBUG_SYS_CHDIR}
 {DEFINE SYS_ACCESS_WARNING}
 {DEFINE OPEN_WARNING}
 {DEFINE CLOSE_WARNING}
@@ -69,8 +70,10 @@ procedure kfree_s (adr : pointer ; len : dword); external;
 function  kmalloc (len : dword) : pointer; external;
 procedure lock_inode (inode : P_inode_t); external;
 function  lookup (dir : P_inode_t ; name : pchar ; len : dword ; res_inode : PP_inode_t) : longint; external;
+procedure mark_inode_dirty (inode : P_inode_t); external;
 procedure memset (adr : pointer ; c : byte ; size : dword); external;
 function  namei (path : pchar) : P_inode_t; external;
+procedure print_bochs (format : string ; args : array of const); external;
 procedure printk (format : string ; args : array of const); external;
 procedure unlock_inode (inode : P_inode_t); external;
 
@@ -91,7 +94,6 @@ function  sys_chmod (filename : pchar ; mode : dword) : dword; cdecl;
 function  sys_close (fd : dword) : dword; cdecl;
 function  sys_fchdir (fd : dword) : dword; cdecl;
 function  sys_open (path : pchar ; flags, mode : dword) : dword; cdecl;
-function  sys_utime (path : pchar ; times : P_utimbuf) : dword; cdecl;
 
 
 IMPLEMENTATION
@@ -131,7 +133,7 @@ var
 begin
 
    {$IFDEF DEBUG_SYS_OPEN}
-      printk('sys_open (%d): PATH=%s flags=%h mode=%h\n', [current^.pid, path, flags, mode]);
+      print_bochs('sys_open (%d): PATH=%s flags=%h mode=%h\n', [current^.pid, path, flags, mode]);
    {$ENDIF}
 
 	sti();
@@ -156,13 +158,13 @@ begin
       memset(fichier, 0, sizeof(file_t));
 
       {$IFDEF DEBUG_SYS_OPEN}
-         printk('sys_open (%d): going to call dir_namei(path)...', [current^.pid]);
+         print_bochs('sys_open (%d): going to call dir_namei(path)...', [current^.pid]);
       {$ENDIF}
 
       dir_inode := dir_namei(path, @filename);
 
       {$IFDEF DEBUG_SYS_OPEN}
-         printk('   OK\n', []);
+         print_bochs('   OK\n', []);
       {$ENDIF}
 
       if (longint(dir_inode) < 0) then
@@ -171,10 +173,10 @@ begin
        * create it *}
       begin
          {$IFDEF OPEN_WARNING}
-            printk('sys_open (%d): no inode returned by dir_namei (%d)\n', [current^.pid, dir_inode]);
+            print_bochs('sys_open (%d): no inode returned by dir_namei (%d)\n', [current^.pid, dir_inode]);
 	 		{$ENDIF}
 	 		{$IFDEF DEBUG_SYS_OPEN}
-	    		printk('sys_open (%d): no inode returned by dir_namei (%d)\n', [current^.pid, dir_inode]);
+	    		print_bochs('sys_open (%d): no inode returned by dir_namei (%d)\n', [current^.pid, dir_inode]);
 	 		{$ENDIF}
       	kfree_s(fichier, sizeof(file_t));
       	result := longint(dir_inode);
@@ -188,7 +190,7 @@ begin
       file_inode := alloc_inode();
 
       {$IFDEF DEBUG_SYS_OPEN}
-      	 printk('sys_open (%d): calling lookup %s\n', [current^.pid, filename]);
+      	 print_bochs('sys_open (%d): calling lookup %s\n', [current^.pid, filename]);
       {$ENDIF}
 
       if (lookup(dir_inode, @filename, i, @file_inode) < 0) then
@@ -198,6 +200,7 @@ begin
 	    		result := -ENOENT;
 	    		free_inode(dir_inode);
 	    		free_inode(file_inode);
+				kfree_s(fichier, sizeof(file_t));
 	    		exit;
 	 		end
 	 		else
@@ -207,10 +210,26 @@ begin
 	    		begin
 	       		free_inode(dir_inode);
 	       		result := longint(file_inode);
+					kfree_s(fichier, sizeof(file_t));
 	       		exit;
 	    		end;
 	 		end;
-      end;
+      end
+		else
+		begin
+      	if not (access_rights_ok(flags, file_inode)) then
+      	begin
+      		{$IFDEF DEBUG_SYS_OPEN}
+	    			print_bochs('sys_open (%d): permission denied\n', [current^.pid]);
+	 			{$ENDIF}
+	 			kfree_s(fichier, sizeof(file_t));
+	 			free_inode(dir_inode);
+	 			free_inode(file_inode);
+	 			result := -EACCES;
+	 			exit;
+      	end;
+		end;
+
 
       if ((flags and O_DIRECTORY) = O_DIRECTORY) and
       	 (not IS_DIR(file_inode)) then
@@ -219,24 +238,13 @@ begin
       	result := -ENOTDIR;
 	 		free_inode(dir_inode);
 	 		free_inode(file_inode);
+			kfree_s(fichier, sizeof(file_t));
 	 		exit;
       end;
 
       {$IFDEF DEBUG_SYS_OPEN}
-         printk('sys_open (%d): %s has inode number %d\n', [current^.pid, path, file_inode^.ino]);
+         print_bochs('sys_open (%d): %s has inode number %d\n', [current^.pid, path, file_inode^.ino]);
       {$ENDIF}
-
-      if not (access_rights_ok(flags, file_inode)) then
-      begin
-      	{$IFDEF DEBUG_SYS_OPEN}
-	    		printk('sys_open (%d): permission denied\n', [current^.pid]);
-	 		{$ENDIF}
-	 		kfree_s(fichier, sizeof(file_t));
-	 		free_inode(dir_inode);
-	 		free_inode(file_inode);
-	 		result := -EACCES;
-	 		exit;
-      end;
 
       if (flags and O_APPEND) = O_APPEND then
       	 fichier^.pos := file_inode^.size
@@ -266,7 +274,7 @@ begin
       result := fd;  { OK, stop here (that was not funny) }
 
       {$IFDEF DEBUG_SYS_OPEN}
-         printk('sys_open (%d): fd %d (%h) is opened (%s)\n', [current^.pid, fd, current^.file_desc[fd], path]);
+         print_bochs('sys_open (%d): fd %d (%h) is opened (%s)\n', [current^.pid, fd, current^.file_desc[fd], path]);
       {$ENDIF}
 
    end
@@ -293,7 +301,7 @@ var
 begin
 
    {$IFDEF DEBUG_SYS_CLOSE}
-      printk('sys_close (%d): fd=%d (%h) \n', [current^.pid, fd, current^.file_desc[fd]]);
+      print_bochs('sys_close (%d): fd=%d (%h) \n', [current^.pid, fd, current^.file_desc[fd]]);
    {$ENDIF}
 
 	sti();
@@ -304,14 +312,14 @@ begin
    if ((fichier = NIL) or (fd >= OPEN_MAX)) then
    begin
       {$IFDEF DEBUG_SYS_CLOSE}
-         printk('sys_close (%d): fd #%d is not opened. Can''t close it  :-)\n', [current^.pid, fd]);
+         print_bochs('sys_close (%d): fd #%d is not opened. Can''t close it  :-)\n', [current^.pid, fd]);
       {$ENDIF}
       result := -EBADF;
       exit;
    end;
 
    {$IFDEF DEBUG_SYS_CLOSE}
-      printk(' f_count: %d  i_count: %d\n', [fichier^.count, fichier^.inode^.count]);
+      print_bochs(' f_count: %d  i_count: %d\n', [fichier^.count, fichier^.inode^.count]);
    {$ENDIF}
 
    fichier^.count -= 1;
@@ -319,19 +327,20 @@ begin
    if (fichier^.count = 0) then
    begin
       {$IFDEF DEBUG_SYS_CLOSE}
-         printk('sys_close (%d): freeing fichier\n', [current^.pid]);
+         print_bochs('sys_close (%d): freeing fichier\n', [current^.pid]);
       {$ENDIF}
       if ((fichier^.op <> NIL) and (fichier^.op^.close <> NIL)) then
       begin
 	 		{$IFDEF DEBUG_SYS_CLOSE}
-	    		printk('sys_close (%d): calling specific close() function\n', [current^.pid]);
+	    		print_bochs('sys_close (%d): calling specific close() function -> %h\n',
+				[current^.pid, fichier^.op^.close]);
 	 		{$ENDIF}
          result := fichier^.op^.close(fichier);
       end
       else
       begin
          {$IFDEF DEBUG_SYS_CLOSE}
-	    		printk('sys_close (%d): ''close'' operation is not defined for fd #%d.\n', [current^.pid, fd]);
+	    		print_bochs('sys_close (%d): ''close'' operation is not defined for fd #%d.\n', [current^.pid, fd]);
 	 		{$ENDIF}
 	 		result := 0;
       end;
@@ -342,26 +351,8 @@ begin
    current^.file_desc[fd] := NIL;
 
 	{$IFDEF DEBUG_SYS_CLOSE}
-		printk('sys_close (%d): BYE fd=%d res=%d\n', [current^.pid, fd, result]);
+		print_bochs('sys_close (%d): BYE fd=%d res=%d\n', [current^.pid, fd, result]);
 	{$ENDIF}
-
-end;
-
-
-
-{******************************************************************************
- * sys_utime
- *
- * FIXME: this function does nothing   :-)
- *****************************************************************************}
-function sys_utime (path : pchar ; times : P_utimbuf) : dword; cdecl; [public, alias : 'SYS_UTIME'];
-begin
-
-	sti();
-
-   printk('sys_utime (%d): %s  %h\n', [current^.pid, path, times]);
-
-   result := -ENOSYS;
 
 end;
 
@@ -378,6 +369,10 @@ var
    inode : P_inode_t;
 
 begin
+
+	{$IFDEF DEBUG_SYS_CHDIR}
+		print_bochs('sys_chdir (%d): filename=%s\n', [current^.pid, filename]);
+	{$ENDIF}
 
 	sti();
 
@@ -423,14 +418,14 @@ begin
 
    if (fd >= OPEN_MAX) or (current^.file_desc[fd] = NIL) then
    begin
-      printk('sys_fchdir: fd %d is not a valid fd\n', [fd]);
+      print_bochs('sys_fchdir: fd %d is not a valid fd\n', [fd]);
       result := -EBADF;
       exit;
    end;
 
    if (not IS_DIR(current^.file_desc[fd]^.inode)) then
    begin
-      printk('sys_fchdir: fd %d is not a directory\n', [fd]);
+      print_bochs('sys_fchdir: fd %d is not a directory\n', [fd]);
       result := -ENOTDIR;
       exit;
    end;
@@ -460,7 +455,7 @@ var
 begin
 
    {$IFDEF DEBUG_SYS_ACCESS}
-      printk('Welcome in sys_access (%s, %h)\n', [filename, mode]);
+      print_bochs('sys_access: %s, %h\n', [filename, mode]);
    {$ENDIF}
 
 	sti();
@@ -478,14 +473,14 @@ begin
     * It means that the file hasn't been found *}
    begin
       {$IFDEF DEBUG_SYS_ACCESS}
-         printk('sys_access: no inode returned by namei()\n', []);
+         print_bochs('sys_access: no inode returned by namei()\n', []);
       {$ENDIF}
       result := longint(inode);
       exit;
    end;
 
    {$IFDEF SYS_ACCESS_WARNING}
-      printk('WARNING: sys_access %s (mode=%h)\n', [filename, mode]);
+      print_bochs('WARNING: sys_access %s (mode=%h)\n', [filename, mode]);
    {$ENDIF}
 
    free_inode(inode);
@@ -508,39 +503,47 @@ var
 begin
 
 	{$IFDEF DEBUG_SYS_CHMOD}
-		printk('sys_chmod (%d): %s (mode=%h4)\n', [current^.pid, filename, mode]);
+		print_bochs('sys_chmod (%d): %s (mode=%h4)\n', [current^.pid, filename, mode]);
 	{$ENDIF}
 
 	sti();
 
-	{* Check 'mode' value *}
-	if (mode > $8ff) then
-	begin
-		{$IFDEF DEBUG_SYS_CHMOD}
-			printk('sys_chmod (%d): mode has a bad value (%h4)\n', [current^.pid, mode]);
-		{$ENDIF}
-		result := -EINVAL;
-		exit;
-	end;
+	{* FIXME: check mode value
+	 *
+	 * Following code from linux-0.01 :
+	 *
+	 * if (current->uid && current->euid)
+	 * if (current->uid!=inode->i_uid && current->euid!=inode->i_uid) "then"
+	 *		iput(inode);
+	 * 	return -EACCES;
+	 * "end";
+	 *  else 
+	 * mode = (mode & 0777) | (inode->i_mode & 07000);
+	 * inode->i_mode = (mode & 07777) | (inode->i_mode & ~07777);
+	 *}
+
 
 	{* Check if the file exists *}
    inode := namei(filename);
-
    if (longint(inode) < 0) then
    {* namei() returned an error code, not a valid pointer.
     * It means that the file hasn't been found *}
    begin
       {$IFDEF DEBUG_SYS_CHMOD}
-         printk('sys_chmod (%d): no inode returned by namei()\n', [current^.pid]);
+         print_bochs('sys_chmod (%d): no inode returned by namei()\n', [current^.pid]);
       {$ENDIF}
       result := longint(inode);
       exit;
    end;
 
-	if (inode^.uid <> current^.uid) and (current^.uid <> 0) then
+	{$IFDEF DEBUG_SYS_CHMOD}
+		print_bochs('sys_chmod (%d): inode mode=%h4\n', [current^.pid, inode^.mode]);
+	{$ENDIF}
+
+	if (current^.uid <> 0) and (inode^.uid <> current^.uid) then
 	begin
 		{$IFDEF DEBUG_SYS_CHMOD}
-			printk('sys_chmod (%d): permission denied\n', [current^.pid]);
+			print_bochs('sys_chmod (%d): permission denied\n', [current^.pid]);
 		{$ENDIF}
 		free_inode(inode);
 		result := -EPERM;
@@ -548,15 +551,16 @@ begin
 	end;
 
 	{$IFDEF DEBUG_SYS_CHMOD}
-		printk('sys_chmod (%d): %h4 -> ', [current^.pid, inode^.mode]);
+		print_bochs('sys_chmod (%d): %h4 -> ', [current^.pid, inode^.mode]);
 	{$ENDIF}
 
-	inode^.mode := mode or (inode^.mode and IFMT);
+	inode^.mode := (mode and not IFMT) or (inode^.mode and IFMT);
 
 	{$IFDEF DEBUG_SYS_CHMOD}
-		printk('%h4\n', [current^.pid, inode^.mode]);
+		print_bochs('%h4\n', [inode^.mode]);
 	{$ENDIF}
 
+	mark_inode_dirty(inode);
 	free_inode(inode);
 
 	result := 0;
@@ -596,8 +600,8 @@ begin
 
    if (dir^.op = NIL) or (dir^.op^.create = NIL) then
    begin
-      printk('create (%d): create() operation not defined for inode %d\n', [current^.pid, dir^.ino]);
-      result := -EACCES;   { FIXME: another error code ??? }
+      print_bochs('create (%d): create() operation not defined for inode %d\n', [current^.pid, dir^.ino]);
+      result := -ENOSYS;
       unlock_inode(dir);
       exit;
    end;
@@ -605,7 +609,6 @@ begin
    mode := mode and $1FF and (not current^.umask);
 
    new_inode := dir^.op^.create(dir, path, mode);
-
    if (longint(new_inode) < 0) then
    begin
       result := new_inode;

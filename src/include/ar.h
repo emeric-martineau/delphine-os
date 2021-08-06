@@ -1,34 +1,16 @@
-/* Header describing `ar' archive file format.
-   Copyright (C) 1996 Free Software Foundation, Inc.
-   This file is part of the GNU C Library.
+#ifndef _AR_H
+#define _AR_H
 
-   The GNU C Library is free software; you can redistribute it and/or
-   modify it under the terms of the GNU Lesser General Public
-   License as published by the Free Software Foundation; either
-   version 2.1 of the License, or (at your option) any later version.
+/* this header is obsolete, don't rely on it! */
 
-   The GNU C Library is distributed in the hope that it will be useful,
-   but WITHOUT ANY WARRANTY; without even the implied warranty of
-   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
-   Lesser General Public License for more details.
-
-   You should have received a copy of the GNU Lesser General Public
-   License along with the GNU C Library; if not, write to the Free
-   Software Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA
-   02111-1307 USA.  */
-
-#ifndef __AR__
-#define __AR__
-
-/* Archive files start with the ARMAG identifying string.  Then follows a
-   `struct ar_hdr', and as many bytes of member file data as its `ar_size'
-   member indicates, for each member file.  */
+#include <sys/cdefs.h>
 
 #define ARMAG	"!<arch>\n"	/* String that begins an archive file.  */
 #define SARMAG	8		/* Size of that string.  */
 
 #define ARFMAG	"`\n"		/* String in ar_fmag at end of each header.  */
 
+__BEGIN_DECLS
 
 struct ar_hdr
   {
@@ -40,5 +22,6 @@ struct ar_hdr
     char ar_fmag[2];		/* Always contains ARFMAG.  */
   };
 
+__END_DECLS
 
 #endif

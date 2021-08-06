@@ -5,6 +5,8 @@
 #include <sys/types.h>
 #include <endian.h>
 
+__BEGIN_DECLS
+
 #if defined(__i386__)
 struct stat {
 	unsigned short	st_dev;
@@ -62,6 +64,59 @@ __extension__	long long	st_size;
 
 __extension__	unsigned long long	st_ino;
 };
+#elif defined(__sparc__) && defined(__arch64__)
+
+struct stat {
+	unsigned int  st_dev;
+	unsigned long   st_ino;
+	unsigned int  st_mode;
+	short   st_nlink;
+	unsigned int   st_uid;
+	unsigned int   st_gid;
+	unsigned int  st_rdev;
+	long   st_size;
+	time_t  st_atime;
+	time_t  st_mtime;
+	time_t  st_ctime;
+	long   st_blksize;
+	long   st_blocks;
+	unsigned long  __unused4[2];
+};
+
+struct stat64 {
+	unsigned long long	st_dev;
+
+	unsigned long long	st_ino;
+
+	unsigned int	st_mode;
+	unsigned int	st_nlink;
+
+	unsigned int	st_uid;
+	unsigned int	st_gid;
+
+	unsigned long long	st_rdev;
+
+	unsigned char	__pad3[8];
+
+	long long	st_size;
+	unsigned int	st_blksize;
+
+	unsigned char	__pad4[8];
+	unsigned int	st_blocks;
+
+	unsigned int	st_atime;
+	unsigned int	st_atime_nsec;
+
+	unsigned int	st_mtime;
+	unsigned int	st_mtime_nsec;
+
+	unsigned int	st_ctime;
+	unsigned int	st_ctime_nsec;
+
+	unsigned int	__unused4;
+	unsigned int	__unused5;
+};
+
 #elif defined(__sparc__)
 struct stat {
 	unsigned short	st_dev;
@@ -193,7 +248,8 @@ __extension__ long long	st_size;
 	unsigned long	st_pad2;
 __extension__ long long	st_blocks;
 };
-#elif defined(__powerpc__)
+#elif defined(powerpc) || defined(__powerpc64__)
+#if defined(powerpc)
 struct stat {
 	dev_t		st_dev;
 	ino_t		st_ino;
@@ -214,6 +270,29 @@ struct stat {
 	unsigned long	__unused4;
 	unsigned long	__unused5;
 };
+#else
+struct stat {
+	unsigned long	st_dev;
+	ino_t		st_ino;
+	nlink_t		st_nlink;
+	mode_t		st_mode;
+	uid_t 		st_uid;
+	gid_t 		st_gid;
+	unsigned long	st_rdev;
+	off_t		st_size;
+	unsigned long  	st_blksize;
+	unsigned long  	st_blocks;
+	unsigned long  	st_atime;
+	unsigned long	st_atime_nsec;
+	unsigned long  	st_mtime;
+	unsigned long  	st_mtime_nsec;
+	unsigned long  	st_ctime;
+	unsigned long  	st_ctime_nsec;
+	unsigned long  	__unused4;
+	unsigned long  	__unused5;
+	unsigned long  	__unused6;
+};
+#endif
 
 /* This matches struct stat64 in glibc2.1.
  */
@@ -299,6 +378,28 @@ __extension__	long long	st_size;
 __extension__	unsigned long long	st_ino;
 };
 #elif defined(__s390__)
+#if defined(__s390x__)
+struct stat {
+        unsigned long  st_dev;
+        unsigned long  st_ino;
+        unsigned long  st_nlink;
+        unsigned int   st_mode;
+        unsigned int   st_uid;
+        unsigned int   st_gid;
+        unsigned int   __pad1;
+        unsigned long  st_rdev;
+        unsigned long  st_size;
+        unsigned long  st_atime;
+        unsigned long   __reserved0;    /* reserved for atime.nanoseconds */
+        unsigned long  st_mtime;
+        unsigned long   __reserved1;    /* reserved for mtime.nanoseconds */
+        unsigned long  st_ctime;
+        unsigned long   __reserved2;    /* reserved for ctime.nanoseconds */
+        unsigned long  st_blksize;
+        long           st_blocks;
+        unsigned long  __unused[3];
+};
+#else
 struct stat {
 	unsigned short	st_dev;
 	unsigned short	__pad1;
@@ -321,6 +422,7 @@ struct stat {
 	unsigned long	__unused4;
 	unsigned long	__unused5;
 };
+#endif
 struct stat64 {
 	unsigned char	__pad0[6];
 	unsigned short	st_dev;
@@ -351,25 +453,34 @@ __extension__	unsigned long long	st_ino;
 #elif defined(__hppa__)
 
 struct stat {
-	unsigned long long st_dev;
-	unsigned short int _pad1;
-	unsigned long st_ino;
-	unsigned long st_mode;
-	unsigned long st_nlink;
-	unsigned long st_uid;
-	unsigned long st_gid;
-	unsigned long long st_rdev;
-	unsigned short int _pad2;
-	unsigned long st_size;
-	unsigned long st_blksize;
-	unsigned long st_blocks;
-	unsigned long st_atime;
-	unsigned long int unused1;
-	unsigned long st_mtime;
-	unsigned long int unused2;
-	unsigned long st_ctime;
-	unsigned long int unused3;
-	unsigned long long unused4;
+       unsigned long   st_dev;         /* dev_t is 32 bits on parisc */
+       unsigned long   st_ino;         /* 32 bits */
+       unsigned short  st_mode;        /* 16 bits */
+       unsigned short  st_nlink;       /* 16 bits */
+       unsigned short  st_reserved1;   /* old st_uid */
+       unsigned short  st_reserved2;   /* old st_gid */
+       unsigned long   st_rdev;
+       unsigned long   st_size;
+       unsigned long   st_atime;
+       unsigned long   st_spare1;
+       unsigned long   st_mtime;
+       unsigned long   st_spare2;
+       unsigned long   st_ctime;
+       unsigned long   st_spare3;
+       long            st_blksize;
+       long            st_blocks;
+       unsigned long   __unused1;      /* ACL stuff */
+       unsigned long   __unused2;      /* network */
+       unsigned long   __unused3;      /* network */
+       unsigned long   __unused4;      /* cnodes */
+       unsigned short  __unused5;      /* netsite */
+       short           st_fstype;
+       unsigned long   st_realdev;
+       unsigned short  st_basemode;
+       unsigned short  st_spareshort;
+       unsigned long   st_uid;
+       unsigned long   st_gid;
+       unsigned long   st_spare4[3];
 };
 
 struct stat64 {
@@ -384,7 +495,7 @@ struct stat64 {
 	unsigned long long st_rdev;
 	unsigned int __pad2;
 	unsigned long long st_size;
-	unsigned long long st_blksize;
+	unsigned long st_blksize;
 
 	unsigned long long st_blocks;
  	unsigned long st_atime;
@@ -512,5 +623,7 @@ extern int mkfifo (const char *__path, mode_t __mode) __THROW;
 #define S_IREAD S_IRUSR
 #define S_IWRITE S_IWUSR
 #define S_IEXEC S_IXUSR
+
+__END_DECLS
 
 #endif

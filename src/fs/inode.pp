@@ -349,17 +349,18 @@ begin
       	mov   eax, [ebp + 4]
 	 		mov   r_eip, eax
       end;
-      printk('free_inode (%d): ino=%d count=%d nlink=%d state=%h2  EIP=%h\n', [current^.pid,
-      	    inode^.ino, inode^.count, inode^.nlink, inode^.state, r_eip]);
+      print_bochs('free_inode (%d): ino=%d count=%d nlink=%d state=%h2  EIP=%h\n', [current^.pid,
+      	    		inode^.ino, inode^.count, inode^.nlink, inode^.state, r_eip]);
    {$ENDIF}
 
    if (inode = NIL) then   { FIXME: remove this test, it's debugging code }
 	begin
-		printk('free_inode: called with inode=NIL\n', []);
+		print_bochs('free_inode: called with inode=NIL\n', []);
 		exit;
 	end;
 
 	wait_on_inode(inode);
+	lock_inode(inode);
 
    inode^.count -= 1;
 
@@ -379,8 +380,7 @@ begin
 	 		end
 			else
 	 		begin
-	    		printk('\nfree_inode(): nlink=0 but delete_inode() not defined\n', []);
-	    		panic('');
+	    		print_bochs('\nfree_inode(): nlink=0 but delete_inode() not defined\n', []);
 	 		end;
       end;
 
@@ -395,12 +395,13 @@ begin
 	 		end
 	 		else
 	 		begin
-	    		printk('\nfree_inode(): inode is dirty but write_inode not defined\n', []);
-	    		panic('');
+	    		print_bochs('\nfree_inode(): inode is dirty but write_inode not defined\n', []);
 	 		end;
       end;
 
    end;   { if (inode^.count = 0) }
+
+	unlock_inode(inode);
 
    exit;
 
@@ -408,7 +409,7 @@ free_inode_memory:
 
    if (inode^.wait <> NIL) then
    begin
-      printk('free_inode (%d): inode wait queue is not empty.\n', [current^.pid]);
+      print_bochs('free_inode (%d): inode wait queue is not empty.\n', [current^.pid]);
       {FIXME: do something clean }
       while (inode^.wait <> NIL) do
       	    interruptible_wake_up(@inode^.wait, TRUE);

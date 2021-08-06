@@ -10,7 +10,7 @@ type
 
 { ATTENTION : chaque structure buffer_head ne gère qu'un seul bloc logique }
 
-   buffer_head = record
+   buffer_head = record  { 32 bytes }
       blocknr : dword;   { Numéro de bloc logique }
       size    : dword;   { Taille du bloc en octets }
       count   : dword;

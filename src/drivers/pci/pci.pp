@@ -117,7 +117,7 @@ begin
 			if (crc <> 0) then goto again;
 
 			found := true;
-			printk('PCI: BSD entry point at %h\n', [base^.phys_entry]);
+			printk('PCI: BIOS32 entry point at %h\n', [base^.phys_entry]);
 			check_pci_devices();
 			exit;
 		end; { -> if }

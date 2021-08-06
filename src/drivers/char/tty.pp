@@ -284,9 +284,9 @@ begin
 	if (tty^.count = 0) then
 	begin
 		if (tty^.last_c <> tty^.next_c) then
-			 printk('free_tty (%d): some characters in keyboard buffer\n', [current^.pid]);
-		kfree_s(tty, sizeof(tty_struct));
+			 print_bochs('free_tty (%d): some characters in keyboard buffer\n', [current^.pid]);
 		push_page(tty^.buffer_keyboard);
+		kfree_s(tty, sizeof(tty_struct));
 	end;
 
 end;
@@ -418,11 +418,12 @@ end;
  *
  * NOTE : le caractère 0x0a (ou #10) est considéré comme un retour charriot
  *        le caractère 0x08 (ou #08) est considéré comme un backspace
+ *        le caractère 0x09 (ou #09) est considéré comme une tabulation
  *****************************************************************************}
 procedure putc (car : char ; tty_index : byte); [public,alias : 'PUTC'];
 
 var
-   ofs, dep             : dword;
+   ofs, dep, i          : dword;
    colonne, ligne, attr : byte;
 
 begin
@@ -446,17 +447,24 @@ begin
    end
 	else if (car = #09) then
 	begin
-		dump_task();
+		i := 8 - colonne;
+		if (i = 0) then i := 8;
+
       asm
 	 		mov   edi, ofs
 	 		add   edi, dep
 	 		add   edi, video_ram_start
-	 		sub   edi, 2
-	 		mov   ah , attr
-	 		mov   al , $20
-	 		mov   word [edi], ax
+
+			mov   ecx, i
+
+			@tab:
+	 			mov   ah , attr
+	 			mov   al , $20
+	 			mov   word [edi], ax
+				add   edi, 2
+			loop  @tab
       end;
-		ofs += 2;
+		ofs += i * 2;
 	end
    else if (car = #08) then   { Backspace ?? }
    begin
@@ -971,8 +979,8 @@ begin
 	tty := ttys[tty_index];
 
 	{$IFDEF DEBUG_TTY_WRITE}
-		printk('tty_write: fichier=%h  buf=%h  count=%d  tty=%h (%d)\n',
-					[fichier, buf, count, tty, tty^.count]);
+		print_bochs('tty_write: fichier=%h  buf=%h  count=%d  tty=%h (%d)\n',
+						[fichier, buf, count, tty, tty^.count]);
 	{$ENDIF}
 
    if ((tty^.flags.c_lflag and ECHO) = ECHO) then
@@ -1004,6 +1012,16 @@ begin
 
 		      			 	 	else if (car = #8) then
 									{ Baskspace character }
+									begin
+										putc(car, tty_index);
+									end
+
+									else if (car = #9) then
+									{ tab character }
+									begin
+										putc(car, tty_index);
+									end;
+
 								end;
 	       	ESesc: 	begin
 		      				case (car) of
@@ -1072,10 +1090,8 @@ begin
 
 		end;   { ...for }
 
-      asm
-         pushfd
-         cli
-      end;
+		pushfd();
+		cli();
 
       fichier^.pos := (tty^.y * 160) + (tty^.x * 2);
 
@@ -1084,9 +1100,8 @@ begin
       tty^.x := i mod 80;
       if (tty_index = current_tty) then
           update_cursor(tty_index);
-      asm 
-         popfd
-      end;
+
+		popfd();
       
       result := count;
    end

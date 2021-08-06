@@ -3,7 +3,7 @@
 
 #include <unistd.h>
 
-extern int optopt;
+__BEGIN_DECLS
 
 struct option {
   const char* name;
@@ -24,5 +24,6 @@ extern int getopt_long_only(int argc, char *const *argv,
 			    const char *shortopts, const struct option *longopts,
 			    int *longind);
 
+__END_DECLS
 
 #endif

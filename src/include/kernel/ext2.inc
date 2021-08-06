@@ -17,6 +17,18 @@ const
    EXT2_ERROR_FS = 2;	{* Errors detected *}
 
 
+	{*
+ 	 * Revision levels
+ 	 *}
+	EXT2_GOOD_OLD_REV	= 0;	{* The good old (original) format *}
+	EXT2_DYNAMIC_REV	= 1; 	{* V2 format w/ dynamic inode sizes *}
+
+	EXT2_CURRENT_REV	= EXT2_GOOD_OLD_REV;
+	EXT2_MAX_SUPP_REV	= EXT2_DYNAMIC_REV;
+
+	EXT2_GOOD_OLD_INODE_SIZE = 128;
+
+
    {* Special inode numbers *}
    EXT2_BAD_INO	     	= 1;	{* Bad blocks inode *}
    EXT2_ROOT_INO			= 2;	{* Root inode *}
@@ -57,6 +69,8 @@ const
    EXT2_N_BLOCKS     = (EXT2_TIND_BLOCK + 1);
 
 
+	EXT2_LINK_MAX		= 32000;
+
 type
 
    P_ext2_inode       = ^ext2_inode;
@@ -91,7 +105,30 @@ type
       rev_level         : dword; { Revision level }
       def_resuid     	: word;  { Default uid for reserved blocks }
       def_resgid     	: word;  { Default gid for reserved blocks }
-      reserved          : array [0..234] of dword;
+		{*
+	 	 * These fields are for EXT2_DYNAMIC_REV superblocks only.
+	 	 *
+	 	 * Note: the difference between the compatible feature set and
+	 	 * the incompatible feature set is that if there is a bit set
+	 	 * in the incompatible feature set that the kernel doesn't
+	 	 * know about, it should refuse to mount the filesystem.
+	 	 * 
+	 	 * e2fsck's requirements are more strict; if it doesn't know
+	 	 * about a feature in either the compatible or incompatible
+	 	 * feature set, it must abort and not try to meddle with
+	 	 * things it doesn't understand...
+	 	 *}
+		first_inode 		: dword; { First non-reserved inode }
+		inode_size			: word;  { size of inode structure }
+		block_group_nr 	: word; 	{* block group # of this superblock *}
+		feature_compat 	: dword;	{* compatible feature set *}
+		feature_incompat	: dword;	{* incompatible feature set *}
+		feature_ro_compat : dword;	{* readonly-compatible feature set *}
+		uuid					: array[0..15] of byte;	{* 128-bit uuid for volume *}
+		volume_name 		: array[0..15] of char;	{* volume name *}
+		last_mounted 		: array[0..63] of char; {* directory where last mounted *}
+		algorithm_usage_bitmap : dword; {* For compression *}
+      reserved          : array [0..204] of dword;
    end;
 
    ext2_sb_info = record

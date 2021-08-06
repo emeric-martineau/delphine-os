@@ -4,6 +4,8 @@
 #include <inttypes.h>
 #include <stddef.h>
 
+__BEGIN_DECLS
+
 typedef unsigned long int blkcnt_t;	/* Used for file block counts */
 typedef unsigned long int blksize_t;	/* Used for block sizes */
 typedef unsigned long int clock_t;	/* Used for system times in
@@ -41,29 +43,42 @@ typedef unsigned long int clock_t;	/* Used for system times in
              Used for timer ID returned by timer_create().
 */
 
-#if defined(__alpha__) || defined(__mips__) || defined(__powerpc__) || defined(__hppa__) || defined(__sparc64__) \
- || defined(__x86_64__) || defined(__ia64__)
-typedef unsigned int uid_t;		/* Used for user IDs. */
-typedef unsigned int gid_t;		/* Used for group IDs. */
-typedef unsigned int dev_t;		/* Used for device IDs. */
-#else
-typedef unsigned short uid_t;		/* Used for user IDs. */
-typedef unsigned short gid_t;		/* Used for group IDs. */
-typedef unsigned short dev_t;		/* Used for device IDs. */
-#endif
-
-#if defined(__alpha__) || defined(__mips__) || defined(__powerpc__) || defined(__sparc64__) \
- || defined(__x86_64__) || defined(__ia64__)
-typedef unsigned int mode_t;		/* Used for some file attributes. */
-#else
-typedef unsigned short mode_t;		/* Used for some file attributes. */
-#endif
-
-#if defined(__alpha__) || defined(__mips__) || defined(__sparc64__) \
- || defined(__x86_64__) || defined(__ia64__)
-typedef unsigned int nlink_t;		/* Used for link counts. */
-#else
-typedef unsigned short nlink_t;		/* Used for link counts. */
+#if defined(__alpha__) || defined(__ia64__) || defined(__sparc64__) || defined(__s390x__)
+    typedef unsigned int dev_t;		/* Used for device IDs. */
+    typedef unsigned int gid_t;		/* Used for group IDs. */
+    typedef unsigned int mode_t;	/* Used for some file attributes. */
+    typedef unsigned int nlink_t;	/* Used for link counts. */
+    typedef unsigned int uid_t;		/* Used for user IDs. */
+#elif defined(__arm__) || defined(__i386__) || defined(__sparc__) || defined(__s390__) /* make sure __s390x__ hits before __s390__ */
+    typedef unsigned short dev_t;
+    typedef unsigned short gid_t;
+    typedef unsigned short mode_t;
+    typedef unsigned short nlink_t;
+    typedef unsigned short uid_t;
+#elif defined(__hppa__)
+    typedef unsigned int dev_t;
+    typedef unsigned int gid_t;
+    typedef unsigned short mode_t;
+    typedef unsigned short nlink_t;
+    typedef unsigned int uid_t;
+#elif defined(__mips__)
+    typedef unsigned int dev_t;
+    typedef int gid_t;
+    typedef unsigned int mode_t;
+    typedef int nlink_t;
+    typedef int uid_t;
+#elif defined(powerpc)
+    typedef unsigned int dev_t;
+    typedef unsigned int gid_t;
+    typedef unsigned int mode_t;
+    typedef unsigned short nlink_t;
+    typedef unsigned int uid_t;
+#elif defined(__powerpc64__) || defined(__x86_64__)
+    typedef unsigned long dev_t;
+    typedef unsigned int gid_t;
+    typedef unsigned int mode_t;
+    typedef unsigned long nlink_t;
+    typedef unsigned int uid_t;
 #endif
 
 typedef signed int id_t;		/* Used as a general identifier; can be
@@ -93,38 +108,67 @@ __extension__ typedef signed long long blkcnt64_t;
 typedef uint32_t uid32_t;
 typedef uint32_t gid32_t;
 
+typedef int clockid_t;
+typedef int timer_t;
+
 typedef long int fpos_t;
 
 #define __socklen_t_defined
 typedef unsigned int socklen_t;
 typedef unsigned short sa_family_t;
 
+typedef unsigned char u_char __attribute_dontuse__;
+typedef unsigned short u_short __attribute_dontuse__;
+typedef unsigned int u_int __attribute_dontuse__;
+typedef unsigned char uchar __attribute_dontuse__;
+typedef unsigned short ushort __attribute_dontuse__;
+typedef unsigned int uint __attribute_dontuse__;
+typedef uint32_t u_long __attribute_dontuse__;
+typedef uint32_t n_long __attribute_dontuse__;
+typedef uint32_t n_time __attribute_dontuse__;
+typedef uint16_t n_short __attribute_dontuse__;
+typedef uint32_t ulong __attribute_dontuse__;
+typedef uint32_t nlong __attribute_dontuse__;
+typedef uint32_t ntime __attribute_dontuse__;
+typedef uint16_t nshort __attribute_dontuse__;
+
 #ifdef _BSD_SOURCE
 /* die, BSD, die! */
-typedef char* caddr_t;
-typedef unsigned char u_char;
-typedef unsigned short u_short;
-typedef unsigned int u_int;
-typedef unsigned char uchar;
-typedef unsigned short ushort;
-typedef unsigned int uint;
-typedef uint32_t u_long;
-typedef uint32_t n_long;
-typedef uint32_t n_time;
-typedef uint16_t n_short;
-typedef uint32_t ulong;
-typedef uint32_t nlong;
-typedef uint32_t ntime;
-typedef uint16_t nshort;
+typedef char* caddr_t __attribute_dontuse__;
+typedef unsigned char u_char __attribute_dontuse__;
+typedef unsigned short u_short __attribute_dontuse__;
+typedef unsigned int u_int __attribute_dontuse__;
+typedef unsigned char uchar __attribute_dontuse__;
+typedef unsigned short ushort __attribute_dontuse__;
+typedef unsigned int uint __attribute_dontuse__;
+typedef uint32_t u_long __attribute_dontuse__;
+typedef uint32_t n_long __attribute_dontuse__;
+typedef uint32_t n_time __attribute_dontuse__;
+typedef uint16_t n_short __attribute_dontuse__;
+typedef uint32_t ulong __attribute_dontuse__;
+typedef uint32_t nlong __attribute_dontuse__;
+typedef uint32_t ntime __attribute_dontuse__;
+typedef uint16_t nshort __attribute_dontuse__;
+
+/* never heard of these two, but dump uses them */
+#if !defined(__STRICT_ANSI__) || __STDC_VERSION__ + 0 >= 199900L
+typedef int64_t quad_t __attribute_dontuse__;
+typedef uint64_t u_quad_t __attribute_dontuse__;
+#endif
+typedef long daddr_t __attribute_dontuse__;
+
+typedef daddr_t __daddr_t __attribute_dontuse__;
 #endif
 
 #ifdef _GNU_SOURCE
-typedef uint8_t u_int8_t;
-typedef uint16_t u_int16_t;
-typedef uint32_t u_int32_t;
-#ifndef __STRICT_ANSI__
-typedef uint64_t u_int64_t;
+typedef uint8_t u_int8_t __attribute_dontuse__;
+typedef uint16_t u_int16_t __attribute_dontuse__;
+typedef uint32_t u_int32_t __attribute_dontuse__;
+#if !defined(__STRICT_ANSI__) || __STDC_VERSION__ + 0 >= 199900L
+typedef uint64_t u_int64_t __attribute_dontuse__;
 #endif
 #endif
+
+__END_DECLS
 
 #endif
